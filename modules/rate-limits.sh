@@ -1,7 +1,8 @@
 # shellcheck shell=bash
 # =============================================================================
 # Rate Limits Module - Shows 5-hour and 7-day usage with projections
-# Reads an owner-only Claude Code credential file; never accesses macOS Keychain
+# Prefers the rate limits Claude Code puts in the statusline payload; otherwise
+# reads an owner-only Claude Code credential file. Never accesses macOS Keychain.
 # =============================================================================
 # Configuration options:
 #   RATE_SHOW_5H            - Show 5-hour rate limit (default: true)
@@ -111,6 +112,37 @@ _check_backoff() {
         rm -f "$backoff_file" 2>/dev/null
         return 1
     fi
+}
+
+# Rate limits from the statusline payload. Claude Code sends them after the
+# first turn of a session (observed in 2.1.330):
+#   rate_limits.five_hour.used_percentage, rate_limits.five_hour.resets_at (Unix s)
+#   rate_limits.seven_day.used_percentage, rate_limits.seven_day.resets_at
+# Prints them in the usage API's shape ({five_hour:{utilization,resets_at}, ...},
+# resets_at as an ISO 8601 UTC string) so the renderer below needs no second path.
+# Prints nothing unless both windows carry a numeric percentage: a partial or
+# malformed object falls back to the credential path rather than rendering a guess.
+# A reset time that is neither a number nor a strict ISO 8601 string is dropped
+# (no countdown), because it is written into the comma-separated history file.
+_usage_from_payload() {
+    local input="$1"
+    [ -n "$input" ] || return 0
+    printf '%s' "$input" | jq -c '
+        def window:
+            if type == "object" and (.used_percentage | type) == "number"
+            then {utilization: .used_percentage,
+                  resets_at: (if (.resets_at | type) == "number"
+                              then (.resets_at | floor | todate)
+                              elif (.resets_at | type) == "string"
+                                   and (.resets_at | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})?$"))
+                              then .resets_at
+                              else null end)}
+            else null end;
+        (.rate_limits // null)
+        | select(type == "object")
+        | {five_hour: (.five_hour | window), seven_day: (.seven_day | window)}
+        | select(.five_hour != null and .seven_day != null)
+    ' 2>/dev/null
 }
 
 # Fetch usage from Anthropic API
@@ -250,6 +282,7 @@ _render_placeholder() {
 }
 
 module_rate_limits() {
+    local input="${1:-}"
     local show_5h="${RATE_SHOW_5H:-true}"
     local show_7d="${RATE_SHOW_7D:-true}"
     local show_time="${RATE_SHOW_TIME_REMAINING:-true}"
@@ -277,26 +310,41 @@ module_rate_limits() {
     local in_backoff=false
     local backoff_remaining=0
 
-    # Check if we're in API backoff (429 cooldown). The probe result is shared
-    # with _get_claude_usage so it does not repeat the check in this process.
-    if backoff_remaining=$(_check_backoff); then
-        in_backoff=true
-        export RATE_BACKOFF_PROBED=true RATE_BACKOFF_ACTIVE=true
-        export RATE_BACKOFF_REMAINING="$backoff_remaining"
-    fi
-
-    # Read from shared cache if fresh
-    usage_data=$(cache_get "$cache_key" "$cache_ttl")
-
-    # Fetch fresh data if cache miss
-    if [ -z "$usage_data" ]; then
-        usage_data=$(_get_claude_usage)
-        if [ -n "$usage_data" ]; then
-            cache_set "$cache_key" "$usage_data"
+    # Prefer the payload: it is current, needs no credential, and costs no
+    # request. It is deliberately not written to the shared usage cache, which is
+    # served for up to 24 hours when a fetch fails; a payload reading replayed at
+    # the next session's start would read as current when it is not.
+    usage_data=$(_usage_from_payload "$input")
+    if [ -n "$usage_data" ]; then
+        # The payload arrives on every render. Record a history point (which
+        # drives the projections) at most once per cache interval, as the API
+        # path does, so the history file does not grow on every redraw.
+        if ! cache_get "rate_limits_payload_recorded" "$cache_ttl" >/dev/null; then
+            cache_set "rate_limits_payload_recorded" "$(date +%s)"
             fresh_fetch=true
-        else
-            # API failed (429/error/timeout) — serve stale cache if available
-            usage_data=$(cache_get "$cache_key" 86400)
+        fi
+    else
+        # Check if we're in API backoff (429 cooldown). The probe result is shared
+        # with _get_claude_usage so it does not repeat the check in this process.
+        if backoff_remaining=$(_check_backoff); then
+            in_backoff=true
+            export RATE_BACKOFF_PROBED=true RATE_BACKOFF_ACTIVE=true
+            export RATE_BACKOFF_REMAINING="$backoff_remaining"
+        fi
+
+        # Read from shared cache if fresh
+        usage_data=$(cache_get "$cache_key" "$cache_ttl")
+
+        # Fetch fresh data if cache miss
+        if [ -z "$usage_data" ]; then
+            usage_data=$(_get_claude_usage)
+            if [ -n "$usage_data" ]; then
+                cache_set "$cache_key" "$usage_data"
+                fresh_fetch=true
+            else
+                # API failed (429/error/timeout) — serve stale cache if available
+                usage_data=$(cache_get "$cache_key" 86400)
+            fi
         fi
     fi
 

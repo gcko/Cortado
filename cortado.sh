@@ -260,7 +260,7 @@ run_module() {
         directory)
             "$func_name" "$current_dir"
             ;;
-        context|model|cost)
+        context|model|cost|rate-limits)
             "$func_name" "$input_json"
             ;;
         git|project)
