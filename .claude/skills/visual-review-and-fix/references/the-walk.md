@@ -51,13 +51,20 @@ window size. Claude Code's own context display may count differently.
 
 **A reading:** `5h:42% 🟢 (2h 0m) 7d:10% 🟢 (2h 0m)`, the reset countdown in brackets.
 
+**Sources:** the payload's `rate_limits` first (sent after a session's first turn), then the usage
+API with an owner-only credential file. Walk both.
+
 **Force these absences:**
 
-- No `$CLAUDE_CONFIG_DIR/.credentials.json`. The line reads `5h:-- 7d:--`, which is honest, and says
-  nothing about why. A Claude Code login kept only in the macOS Keychain lands here, because the
-  module never reads the Keychain.
-- A credentials file that is not owner-only (mode 644). Same placeholder; the refusal is only in the
-  debug log.
+- A payload with no `rate_limits`, as at session start, and no credential file. The line reads
+  `5h:-- 7d:--`, which is honest, and says nothing about why.
+- A payload with `rate_limits` beside a cached API reading or a 429 backoff file: the payload's
+  figures, with no cooldown marker.
+- A payload with one window, or a non-numeric `used_percentage`: the placeholder, not a guess.
+- A payload reading followed by a payload without one: the placeholder, not the earlier reading
+  replayed as current.
+- A credentials file that is not owner-only (mode 644), on the API path. Same placeholder; the
+  refusal is only in the debug log.
 - A fetch that fails with a cached reading on disk. Plant one with `SEED_CACHE` and `SEED_AGE=6H`:
   today the six-hour-old reading renders exactly as a fresh one.
 - A 429 backoff with nothing cached: `⏸ API cooldown 5m` (`WAIT: API cooldown 5m` in monochrome).
@@ -66,8 +73,9 @@ window size. Claude Code's own context display may count differently.
 - One window present and the other `null`: the whole segment falls back to the placeholder.
 - A `resets_at` already in the past.
 
-**The limit:** the figures are what the Anthropic usage endpoint returns for the logged-in account,
-no more often than the cache TTL (`RATE_CACHE_TTL`, 120 seconds by default).
+**The limit:** the figures are what Claude Code last sent, or what the Anthropic usage endpoint
+returns for the logged-in account, no more often than the cache TTL (`RATE_CACHE_TTL`, 120 seconds
+by default).
 
 ## S4. What is this costing, and on which model?
 
