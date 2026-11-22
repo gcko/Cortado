@@ -1,0 +1,4 @@
+interface:
+  display_name: "Issue and Milestone Burndown"
+  short_description: "Plan and land Cortado GitHub work, optionally delegated"
+  default_prompt: "Use $burndown to plan, build and reconcile the given Cortado GitHub issue, issue list or milestone."

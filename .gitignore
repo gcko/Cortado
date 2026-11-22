@@ -24,3 +24,6 @@ cortado.local.conf
 
 # Claude Code local settings (not shared)
 .claude/settings.local.json
+
+# Agent worktrees (burndown, parallel builders)
+.claude/worktrees/

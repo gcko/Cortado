@@ -1,0 +1,4 @@
+interface:
+  display_name: "Cortado Release"
+  short_description: "Cut a Cortado release and confirm installs see it"
+  default_prompt: "Use $cortado-release to decide the next Cortado version and cut the release."

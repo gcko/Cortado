@@ -1,0 +1,341 @@
+# Cortado - Claude Code Statusline
+
+A modular, shell-based statusline for Claude Code CLI that displays real-time development information including context usage, rate limits, costs, git status, and more.
+
+This file is the canonical repository contract for every agent (Claude Code, Codex, Antigravity). `CLAUDE.md` imports it, so keep Claude-only notes there and everything else here.
+
+## Project Overview
+
+Cortado began as a fork of [Barista](https://github.com/pstuart/Barista) (pstuart/Barista, MIT) and is now an independent project at `gcko/Cortado`, licensed Apache 2.0. The upstream MIT notice is kept in `NOTICE`, so don't remove it. Upstream issue references such as `#21`, `#24`, and `#28` in comments point to pstuart/Barista.
+
+Cortado is a **Bash shell script** project (Bash 3.2+ compatible for macOS). It generates a customizable status line that Claude Code displays at the bottom of the terminal. The architecture is modular - each piece of information (git, battery, CPU, etc.) is handled by a separate module in the `modules/` directory.
+
+## Architecture
+
+```
+Cortado/
+├── cortado.sh          # Main entry point - loads config, modules, orchestrates output
+├── cortado.conf        # Default configuration file (sourced as bash)
+├── install.sh          # Interactive installer with arrow key navigation
+├── VERSION             # Version tracking (semver), edited only by a release
+├── AGENTS.md           # This contract (canonical)
+├── CLAUDE.md           # `@AGENTS.md` plus Claude-only notes
+├── LICENSE, NOTICE     # Apache 2.0, and the upstream Barista MIT notice
+├── lib/
+│   └── config-tui.sh   # Runtime config TUI (`cortado config`) - must ship with install
+├── modules/
+│   ├── utils.sh        # Shared utility functions (MUST load first)
+│   ├── directory.sh    # Current directory module
+│   ├── context.sh      # Context window usage with progress bar
+│   ├── git.sh          # Git branch and status
+│   ├── project.sh      # Project type detection (Node, Rust, Python, etc.)
+│   ├── model.sh        # Current Claude model info
+│   ├── cost.sh         # Session cost and burn rate
+│   ├── rate-limits.sh  # 5-hour and 7-day rate limit tracking
+│   ├── time.sh         # Date and time display
+│   ├── battery.sh      # Battery percentage (macOS)
+│   ├── cpu.sh          # CPU usage
+│   ├── memory.sh       # RAM usage
+│   ├── disk.sh         # Disk space
+│   ├── network.sh      # Network info
+│   ├── node.sh         # Node.js version
+│   ├── docker.sh       # Docker container status
+│   ├── weather.sh      # Weather via wttr.in
+│   ├── sandbox.sh      # Lock icon when in a macOS app sandbox
+│   ├── version.sh      # Cortado version, shown briefly after startup
+│   ├── update.sh       # Daily GitHub check for new releases
+│   └── ...             # Additional modules
+├── tests/              # Regression tests (bash tests/test_*.sh, standalone)
+├── .claude/skills/     # Repository development skills (canonical; see "Repository skills")
+├── .agents/skills/     # Relative symlinks to .claude/skills/* so Codex reads the same skills
+├── .shellcheckrc       # Shellcheck policy (SC2155, SC2034 disabled)
+└── README.md
+```
+
+## How It Works
+
+1. **Claude Code calls `cortado.sh`** with JSON input containing workspace info, model, context window data, etc.
+2. **Configuration is loaded** in order of precedence:
+   - Built-in defaults in `cortado.sh`
+   - `cortado.conf` in script directory
+   - `$CLAUDE_CONFIG_DIR/cortado.conf` (user overrides, defaults to `~/.claude/`)
+   - `.cortado.conf` in current project directory (per-project overrides)
+
+   Pre-rename fallbacks: if `cortado.conf` is missing, `cortado.sh` copies `$CLAUDE_CONFIG_DIR/barista.conf` to it once (with `cp -p`, falling back to reading the legacy file directly). A project's `.barista.conf` is read only when that project has no `.cortado.conf`. Keep these fallbacks until Barista users have had time to migrate.
+
+   Packaged `cortado.conf` and the user override (`$CLAUDE_CONFIG_DIR/cortado.conf`) are sourced as bash after a group/world-writable check. Per-directory `.cortado.conf` is untrusted: `load_config_safe` (KEY=VALUE allowlist) never sources it. Config-derived numerics are validated before they reach `bc`/URL sinks. `cortado config --project` uses the same safe parser.
+3. **Modules are loaded** from `modules/` directory (`utils.sh` first, then all others)
+4. **Modules are executed** in the order specified by `MODULE_ORDER` config
+5. **Output is concatenated** with the configured `SEPARATOR` and printed
+
+## Key Files
+
+### `cortado.sh` (Main Entry Point)
+- Resolves `CLAUDE_CONFIG_DIR` (env var or defaults to `$HOME/.claude`)
+- Defines default configuration values
+- Loads configuration files in precedence order
+- Loads all module files from `modules/`
+- Contains module registry mapping names to functions
+- Executes enabled modules and joins output with separator
+- Adjusts separator spacing based on `DISPLAY_MODE`
+
+### `modules/utils.sh` (Required Utilities)
+- **Theme system**: `apply_theme()` sets icons and indicators based on `COLOR_THEME`
+- **Cache system**: File-based caching for expensive operations
+- **Safe number handling**: `safe_int()`, `safe_divide()`, `safe_percent()`
+- **Status indicators**: `get_status()` (3-level), `get_status_4level()` (4-level for rate limits)
+- **Icon handling**: `get_icon()` respects `USE_ICONS` setting
+- **Progress bar**: `progress_bar()` generates visual bars
+- **JSON helpers**: `json_get()`, `json_get_int()` for safe extraction
+- **Display mode checks**: `is_compact()`
+- **Logging**: `log_debug()` for debug mode
+
+### `cortado.conf` (Configuration)
+All settings are documented with comments. Key settings:
+- `SEPARATOR` - Character(s) between modules (default: `" | "`)
+- `DISPLAY_MODE` - `"normal"`, `"compact"`, or `"verbose"`
+- `COLOR_THEME` - `"default"`, `"minimal"`, `"vibrant"`, `"monochrome"`, or `"nerd"`
+- `USE_ICONS` - Enable/disable emoji icons
+- `STATUS_STYLE` - `"emoji"`, `"ascii"`, or `"dots"`
+- `MODULE_*` - Enable/disable individual modules
+- `MODULE_ORDER` - Comma-separated list defining display order
+
+## Color Themes
+
+COLOR_THEME fills status indicators and icons only when those variables are still unset; shipped cortado.conf assigns the default emoji first, so minimal, vibrant, and nerd do not restyle them, while monochrome still forces STATUS_STYLE=ascii and USE_ICONS=false.
+
+| Theme | Status Indicators | Icon Style | Use Case |
+|-------|-------------------|------------|----------|
+| **default** | 🟢 🟡 🟠 🔴 | Standard emoji (📁 📊 🌿) | General use |
+| **minimal** | ◦ ◦ ◦ ● | Geometric (→ ◐ ⎇ ◈) | Clean, subtle look |
+| **vibrant** | 💚 💛 🧡 ❤️ | Expressive (📂 🎯 🔀 🧠) | High visibility |
+| **monochrome** | [OK] [~~] [!!] [XX] | ASCII text (DIR: CTX: GIT:) | Terminal compatibility |
+| **nerd** |     | Nerd Font glyphs | Requires Nerd Font |
+
+Themes are applied via `apply_theme()` in `utils.sh` after all configs are loaded.
+
+## Module Structure
+
+Each module follows this pattern:
+
+```bash
+# =============================================================================
+# Module Name - Brief description
+# =============================================================================
+# Configuration options:
+#   OPTION_NAME    - Description (default: value)
+# =============================================================================
+
+module_name() {
+    local input="$1"  # JSON input (for modules that need it)
+
+    # Get configuration with defaults
+    local icon=$(get_icon "${MODULE_ICON:-📊}" "FALLBACK:")
+    local some_option="${SOME_OPTION:-default}"
+
+    # Do work...
+
+    # Build and output result
+    local result="$icon some_value"
+    echo "$result"
+}
+```
+
+### Module Types
+
+1. **Input-dependent modules** (context, model, cost): Receive JSON input as `$1`
+2. **Directory-dependent modules** (git, project): Receive current directory as `$1`
+3. **Standalone modules** (time, battery, cpu): Take no arguments
+
+### What a module prints when it does not know
+
+A module that has no reading must say so, never print a value that reads as an all-clear. `rate-limits` prints `5h:-- 7d:--` rather than `0%`; follow that pattern. "Zero", "green" and "nothing" are claims, and a missing field, a failed fetch or a stale cache must not produce one. The `visual-review-and-fix` skill walks these cases.
+
+## Display Modes
+
+The `DISPLAY_MODE` setting affects multiple behaviors:
+
+- **`normal`**: Balanced display with icons and key info, padded separators, spaces before status indicators
+- **`compact`**: Minimal display, no separator padding, no spaces before status indicators
+- **`verbose`**: Full display with all available information
+
+## Status Indicators
+
+Two systems for visual status:
+
+1. **3-level** (`get_status`): green/yellow/red based on warning/critical thresholds
+2. **4-level** (`get_status_4level`): green/yellow/orange/red for more granular rate limit display
+
+Both respect `DISPLAY_MODE` for spacing and `STATUS_STYLE` for appearance (emoji/ascii/dots).
+
+## Adding a New Module
+
+A module name is registered in six places, and they must change together in one pull request:
+
+1. Create `modules/mymodule.sh` following the pattern above
+2. Add to the module registry (`get_module_function`) in `cortado.sh`:
+   ```bash
+   case "$module_name" in
+       mymodule)     echo "module_mymodule" ;;
+   ```
+3. Add to `run_module()` case if it needs special arguments
+4. Add configuration defaults to `cortado.sh` and `cortado.conf`:
+   ```bash
+   MODULE_MYMODULE="false"  # Disabled by default
+   ```
+5. Add it to the `cortado config` catalog (`_CFG_*_MODULES` in `lib/config-tui.sh`) and to the installer's module lists in `install.sh`
+6. Add to `MODULE_ORDER` where you want it to appear, and to the README module tables
+
+## Coding Conventions
+
+- **Bash 3.2+ compatible** - No associative arrays, use `case` statements instead
+- **Use utility functions** - `safe_int()`, `json_get()`, etc. for safe operations
+- **Local variables** - Always declare with `local` in functions
+- **Quoting** - Always quote variables: `"$var"` not `$var`
+- **Configuration pattern**: `local value="${CONFIG_VAR:-default}"`
+- **Error handling** - Redirect stderr: `command 2>/dev/null`
+- **Comments** - Document configuration options at module top
+- **Global shell state** - A function that changes `IFS`, `set -f` or the working directory restores it before calling anything else, because modules run inside the caller's state
+
+## Testing
+
+Regression tests live in `tests/` (pure-bash assert harness, no framework). Each file runs standalone and sandboxes `CLAUDE_CONFIG_DIR` and `CACHE_DIR`, so the suite never touches the real `~/.claude`:
+```bash
+bash tests/test_utils.sh           # utils.sh helpers
+bash tests/test_rate_limits.sh     # rate-limit parsers/backoff
+bash tests/test_config_cli.sh      # cortado config CLI (set/toggle/project) and Barista migration
+bash tests/test_install_update.sh  # installer update flags, runtime copy, migration
+# also: test_cache, test_cost, test_git_cache, test_model, test_project,
+#       test_rate_limits_credentials, test_sandbox, test_ttl_validation, test_update, test_uptime
+```
+
+Lint with `shellcheck` - `.shellcheckrc` disables SC2155 and SC2034 project-wide (see upstream pstuart/Barista#21 for the policy).
+
+Test the statusline manually, in a sandbox config dir:
+```bash
+echo '{"workspace":{"current_dir":"'$PWD'"},"model":{"display_name":"Test"},"output_style":{"name":"default"},"context_window":{"context_window_size":200000,"current_usage":{"input_tokens":10000}}}' | CLAUDE_CONFIG_DIR="$(mktemp -d)" ./cortado.sh
+```
+
+Never run a worktree's `cortado.sh` against the real `~/.claude`: it writes `cortado-cache/`, and the Barista migration copies `barista.conf` to `cortado.conf` on first run.
+
+Enable debug mode:
+```bash
+DEBUG_MODE="true"  # In config
+# Logs to $CLAUDE_CONFIG_DIR/cortado.log
+```
+
+## Pre-PR Checks
+
+This repository has no CI (see `.github/NO_GITHUB_ACTIONS.md`), so these checks are the whole gate. Run all of them from the repository root before `gh pr create`, and paste what they printed into the pull request's `## Verification` section. This is the canonical list; other docs and skills link here instead of copying it.
+
+```bash
+# 1. Every regression suite, each standalone
+fail=0
+for t in tests/test_*.sh; do bash "$t" >/dev/null 2>&1 || { echo "FAIL: $t"; fail=1; }; done
+[ "$fail" -eq 0 ] && echo "tests: all green"
+
+# 2. Bash syntax on every shipped and test script
+for f in cortado.sh install.sh lib/*.sh modules/*.sh tests/*.sh; do bash -n "$f" || echo "SYNTAX: $f"; done
+
+# 3. ShellCheck: no more findings than the merge base had
+base=$(mktemp -d)
+git archive "$(git merge-base origin/main HEAD)" | tar -x -C "$base"
+sc() { (cd "$1" && shellcheck cortado.sh install.sh lib/*.sh modules/*.sh tests/*.sh 2>/dev/null | grep -c '^In '); }
+echo "shellcheck findings: base $(sc "$base"), head $(sc .)"
+rm -rf "$base"
+
+# 4. Render smoke in a sandbox config dir (never the real ~/.claude)
+sb=$(mktemp -d)
+echo '{"workspace":{"current_dir":"'"$PWD"'"},"model":{"display_name":"Test"},"context_window":{"context_window_size":200000,"current_usage":{"input_tokens":10000}}}' \
+  | CLAUDE_CONFIG_DIR="$sb" ./cortado.sh
+rm -rf "$sb"
+```
+
+A FAIL or SYNTAX line, or a head ShellCheck count above the base, blocks the pull request. A change to what the statusline prints also owes the `visual-review-and-fix` walk, and a change to docs owes `sync-docs`.
+
+## PR Workflow
+
+1. Branch from `origin/main` (never commit to `main`). Use a worktree under `.claude/worktrees/` for parallel work.
+2. Write the failing test first, then the change.
+3. Run the Pre-PR Checks above, then `sync-docs` for any doc the change made false.
+4. Title the pull request with the shipped behaviour in a plain sentence that could go straight into release notes ("Show a stale marker on cached rate limits"). Conventional-commit prefixes are fine; issue numbers belong in the body.
+5. The body carries `Closes #N` for each issue it finishes (`Part of #N` for a partial step), a short summary, and a `## Verification` section naming what ran and what it printed.
+6. Pull requests are squash-merged. Never edit `VERSION` outside a release.
+
+## Versioning and Releases
+
+`VERSION` is the single source of truth, and only a release changes it. The README version badge, the README footer, the "What's New" section and the version assertion in `tests/test_config_cli.sh` follow it in the same release commit. Releases are `vX.Y.Z` tags on `gcko/Cortado` with a GitHub Release; the `update` module and `./install.sh --check-update` read `releases/latest` from `UPDATE_REPO`. There is no release workflow: the `cortado-release` skill owns the whole procedure.
+
+The local clone may carry `v1.x` tags inherited from pstuart/Barista that do not exist on `gcko/Cortado` and are not ancestors of `main`. Read release tags from the remote (`git ls-remote --tags origin`), never from `git tag -l`.
+
+## Calibrating Effort
+
+Review depth follows risk, not size.
+
+| Tier | Applies to | Review |
+|---|---|---|
+| Self-verify | Docs, comments, tests only, or a display tweak that adds no input, config key or file write | The author's own read of the diff and the Pre-PR Checks |
+| Two lenses plus an arbiter | Everything else (the default) | Two independent reviewers, then an arbiter that reproduces each finding |
+| Full adversarial | Config loading and sourcing (`load_config`, `load_config_safe`, the config-tui writer and allowlists), credential handling (`.credentials.json`, the OAuth token), any network call (`curl` in rate-limits, weather, network, update, the installer's download), anything `install.sh` writes to `settings.json` or deletes, cache and history file permissions | Reviewers who try to break it, with mutation tests of every new guard |
+
+A layer that nothing calls yet is reviewed together with the layer that makes it reachable, at the higher of their tiers.
+
+## Parallel Work
+
+- Each builder works in its own worktree under `.claude/worktrees/`, never in the main checkout.
+- These files are contention surfaces; two in-flight branches must not both edit one: `cortado.sh`, `cortado.conf`, `lib/config-tui.sh`, `install.sh`, `modules/utils.sh`, `README.md`, `AGENTS.md`. Adding or renaming a module touches most of them (see "Adding a New Module"), so module work is one branch at a time.
+- Tests are sandboxed and safe to run concurrently. A manual render or a live session must use its own `CLAUDE_CONFIG_DIR`.
+- Stop what you start: tmux sessions, `claude` processes started for a live-session walk, delegated `codex`/`agy` runs. A process can take a second or two to exit after its tmux session is killed; check by name (`pgrep -fl <pattern>`) before calling it gone or orphaned.
+
+## Repository Skills
+
+Development skills live in `.claude/skills/` (canonical). Each `.agents/skills/<name>` is a relative symlink to `../../.claude/skills/<name>` so Codex and Claude Code read one body, and each skill carries `agents/openai.yaml` for Codex. They are not shipped by the installer.
+
+| Skill | Use it to |
+|---|---|
+| `burndown` | Plan, build, review and land a GitHub issue, issue list, parent tree or milestone |
+| `cortado-release` | Choose the next version from what changed, cut the release and confirm it landed |
+| `sync-docs` | Reconcile README, AGENTS.md and `cortado.conf` comments with the code before a pull request |
+| `sync-project` | Keep GitHub milestone descriptions and issue bodies lean and current |
+| `visual-review-and-fix` | Render the statusline as its reader sees it, with missing and stale data forced, before and after a change |
+
+## Dependencies
+
+- **Required**: `jq` (JSON processor), `bc` (calculator)
+- **Optional**: Various CLI tools for specific modules (docker, node, etc.)
+
+## Custom Config Directory
+
+Cortado respects the `CLAUDE_CONFIG_DIR` environment variable for users who have moved their Claude configuration from the default `~/.claude/`. This is resolved once in `cortado.sh` and inherited by all modules:
+
+```bash
+CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+```
+
+Files stored in this directory:
+- `cortado.conf` - User config overrides
+- `cortado-cache/` - Cache for expensive operations (weather, network, etc.)
+- `cortado.log` - Debug log (when `DEBUG_MODE="true"`)
+- `.usage_history` - Rate limit history for projections
+
+Modules also include their own `${CLAUDE_CONFIG_DIR:-$HOME/.claude}` fallback for robustness if sourced independently.
+
+## Rate Limits Module
+
+The rate limits module (`rate-limits.sh`) is the most complex:
+- Fetches usage from the Anthropic OAuth usage API with the token in `$CLAUDE_CONFIG_DIR/.credentials.json`, and only when that file is owner-only. It never reads the macOS Keychain, so a Claude Code login kept only in the Keychain leaves the module on its `5h:-- 7d:--` placeholder
+- Caches responses to avoid excessive API calls, and serves the last cached reading (up to 24 hours old) when a fetch fails
+- Backs off after 429 responses, honoring `Retry-After` headers
+- Maintains history file for projection calculations
+- Implements file size caps to prevent memory issues
+- Shows 4-level color indicators for usage thresholds, plus optional progress bars (`RATE_SHOW_PROGRESS_BAR`)
+
+## Installation
+
+The installer (`install.sh`) provides:
+- Interactive module selection with arrow key navigation
+- Live preview of statusline
+- Multiple presets (minimal, developer, etc.)
+- Auto-update checking from GitHub
+- Backup/restore of previous statusline
+- Copies `cortado.sh`, `VERSION`, `modules/`, and `lib/` (required for `cortado config`)
