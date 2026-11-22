@@ -58,10 +58,10 @@ assert_rc "version_lt 2.0.0 not < 1.9.9" 1 version_lt "2.0.0" "1.9.9"
 assert_rc "version_lt 1.0.9 < 1.0.10" 0 version_lt "1.0.9" "1.0.10"
 
 # --- brew prefix detection ---
-assert_rc "Cellar path is Homebrew" 0 _is_homebrew_prefix "/opt/homebrew/Cellar/barista/1.8.0/libexec"
-assert_rc "opt/barista is Homebrew" 0 _is_homebrew_prefix "/opt/homebrew/opt/barista"
-assert_rc "opt/barista/libexec is Homebrew" 0 _is_homebrew_prefix "/usr/local/opt/barista/libexec"
-assert_rc "git clone is not Homebrew" 1 _is_homebrew_prefix "/Users/me/src/Barista"
+assert_rc "Cellar path is Homebrew" 0 _is_homebrew_prefix "/opt/homebrew/Cellar/cortado/1.8.0/libexec"
+assert_rc "opt/cortado is Homebrew" 0 _is_homebrew_prefix "/opt/homebrew/opt/cortado"
+assert_rc "opt/cortado/libexec is Homebrew" 0 _is_homebrew_prefix "/usr/local/opt/cortado/libexec"
+assert_rc "git clone is not Homebrew" 1 _is_homebrew_prefix "/Users/me/src/Cortado"
 
 # --- do_update refuses Homebrew and does not re-exec ---
 REEXEC_LOG=""
@@ -71,7 +71,7 @@ _reexec_installer() {
 
 USE_COLOR="false"
 setup_colors
-SCRIPT_DIR="/opt/homebrew/opt/barista/libexec"
+SCRIPT_DIR="/opt/homebrew/opt/cortado/libexec"
 REMOTE_VERSION="1.9.0"
 assert_rc "do_update refuses Homebrew prefix" 1 do_update --update --no-emoji
 assert_eq "do_update brew path does not re-exec" "" "$REEXEC_LOG"
@@ -86,7 +86,7 @@ REEXEC_ARGS=""
 _reexec_installer() {
     REEXEC_ARGS=$(printf '%s\n' "$@")
 }
-_barista_git() {
+_cortado_git() {
     return 0
 }
 do_update --update --no-emoji --no-color
@@ -114,15 +114,31 @@ else
     echo "  FAIL: copy_runtime_files missing lib/config-tui.sh"
     FAIL=$((FAIL + 1))
 fi
-if [ -x "$COPY_DEST/barista.sh" ]; then
-    echo "  PASS: copy_runtime_files installs barista.sh"
+if [ -x "$COPY_DEST/cortado.sh" ]; then
+    echo "  PASS: copy_runtime_files installs cortado.sh"
     PASS=$((PASS + 1))
 else
-    echo "  FAIL: copy_runtime_files missing barista.sh"
+    echo "  FAIL: copy_runtime_files missing cortado.sh"
     FAIL=$((FAIL + 1))
 fi
-rm -f "$COPY_DEST/barista.sh" "$COPY_DEST/VERSION" "$COPY_DEST/lib/"*.sh "$COPY_DEST/modules/"*.sh
+rm -f "$COPY_DEST/cortado.sh" "$COPY_DEST/VERSION" "$COPY_DEST/lib/"*.sh "$COPY_DEST/modules/"*.sh
 rmdir "$COPY_DEST/lib" "$COPY_DEST/modules" "$COPY_DEST" 2>/dev/null
+
+# --- migrate_legacy_user_config (Barista -> Cortado) ---
+MIG_TMP=$(mktemp -d)
+printf '%s\n' 'COLOR_THEME="vibrant"' > "$MIG_TMP/barista.conf"
+chmod 600 "$MIG_TMP/barista.conf"
+assert_eq "migrate reports copied path" "$MIG_TMP/cortado.conf" \
+    "$(migrate_legacy_user_config "$MIG_TMP/barista.conf" "$MIG_TMP/cortado.conf")"
+assert_eq "migrate copies contents" 'COLOR_THEME="vibrant"' "$(cat "$MIG_TMP/cortado.conf" 2>/dev/null)"
+printf '%s\n' 'COLOR_THEME="minimal"' > "$MIG_TMP/cortado.conf"
+assert_eq "migrate is silent when cortado.conf exists" "" \
+    "$(migrate_legacy_user_config "$MIG_TMP/barista.conf" "$MIG_TMP/cortado.conf")"
+assert_eq "migrate never overwrites cortado.conf" 'COLOR_THEME="minimal"' "$(cat "$MIG_TMP/cortado.conf")"
+rm -f "$MIG_TMP/barista.conf" "$MIG_TMP/cortado.conf"
+assert_rc "migrate is a no-op without barista.conf" 0 migrate_legacy_user_config "$MIG_TMP/barista.conf" "$MIG_TMP/cortado.conf"
+[ -f "$MIG_TMP/cortado.conf" ] && { echo "  FAIL: migrate created cortado.conf from nothing"; FAIL=$((FAIL + 1)); }
+rmdir "$MIG_TMP" 2>/dev/null
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

@@ -2,7 +2,7 @@
 # ABOUTME: Synthetic credential parsing and outbound-call regressions.
 # ABOUTME: Run with: bash tests/test_rate_limits_credentials.sh
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/barista-credentials-test.XXXXXX")" || exit 1
+TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/cortado-credentials-test.XXXXXX")" || exit 1
 trap 'rm -rf "$TEST_ROOT"' EXIT
 umask 077
 export HOME="$TEST_ROOT/home"
@@ -31,7 +31,7 @@ assert_eq() {
 }
 # Never consult a real Keychain or run a real curl. Force generic curl on Git Bash.
 security() { printf 'unexpected call\n' >> "$KEYCHAIN_CALLS"; return 1; }
-uname() { printf '%s\n' BaristaCredentialTest; }
+uname() { printf '%s\n' CortadoCredentialTest; }
 curl() {
     local output="" headers="" config=""
     printf 'call\n' >> "$CURL_CALLS"

@@ -1,18 +1,18 @@
 # shellcheck shell=bash
 # =============================================================================
-# Update Module - Daily check for Barista updates
+# Update Module - Daily check for Cortado updates
 # =============================================================================
 # Checks GitHub once per day for a newer release. If found, shows a brief
 # notification on the statusline. Respects rate limits and caches aggressively.
 #
 # Configuration options:
 #   UPDATE_CHECK_INTERVAL   - Seconds between checks (default: 86400 = 24h)
-#   UPDATE_REPO             - GitHub repo to check (default: pstuart/Barista)
+#   UPDATE_REPO             - GitHub repo to check (default: gcko/Cortado)
 #   UPDATE_ICON             - Icon for update notification (default: arrow up)
 # =============================================================================
 
-_check_barista_update() {
-    local repo="${UPDATE_REPO:-pstuart/Barista}"
+_check_cortado_update() {
+    local repo="${UPDATE_REPO:-gcko/Cortado}"
     local cache_key="update_check"
     local check_interval="${UPDATE_CHECK_INTERVAL:-86400}"
 
@@ -117,7 +117,7 @@ _version_gt() {
 
 module_update() {
     local result
-    result=$(_check_barista_update)
+    result=$(_check_cortado_update)
 
     case "$result" in
         available:*)

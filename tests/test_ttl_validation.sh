@@ -1,6 +1,6 @@
 #!/bin/bash
 # ABOUTME: Tests that non-numeric cache-TTL config values (from an untrusted
-# ABOUTME: .barista.conf) are sanitized before arithmetic. Covers the guards in
+# ABOUTME: .cortado.conf) are sanitized before arithmetic. Covers the guards in
 # ABOUTME: modules/weather.sh (WEATHER_CACHE_TTL) and modules/rate-limits.sh
 # ABOUTME: (RATE_CACHE_TTL), plus the underlying cache_get behaviour when
 # ABOUTME: max_age is non-numeric.
@@ -10,7 +10,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PASS=0
 FAIL=0
 
-TEST_BASE="$(mktemp -d "${TMPDIR:-/tmp}/barista-ttl-test.XXXXXX")"
+TEST_BASE="$(mktemp -d "${TMPDIR:-/tmp}/cortado-ttl-test.XXXXXX")"
 trap 'rm -rf "$TEST_BASE"' EXIT
 export CLAUDE_CONFIG_DIR="$TEST_BASE/claude"
 mkdir -p "$CLAUDE_CONFIG_DIR"
@@ -33,7 +33,7 @@ assert_eq() {
 . "$SCRIPT_DIR/modules/utils.sh"
 
 # Sandbox CACHE_DIR
-CACHE_DIR="$CLAUDE_CONFIG_DIR/barista-cache"
+CACHE_DIR="$CLAUDE_CONFIG_DIR/cortado-cache"
 mkdir -p "$CACHE_DIR"
 
 # -----------------------------------------------------------------------------
@@ -79,7 +79,7 @@ echo "=== weather.sh WEATHER_CACHE_TTL validation ==="
 . "$SCRIPT_DIR/modules/weather.sh"
 
 # Create a fake cache file so we exercise the mtime comparison path
-WEATHER_CACHE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/barista-cache"
+WEATHER_CACHE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/cortado-cache"
 mkdir -p "$WEATHER_CACHE_DIR" 2>/dev/null
 printf '☀️+72°F' > "$WEATHER_CACHE_DIR/weather"
 

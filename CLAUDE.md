@@ -1,21 +1,23 @@
-# Barista - Claude Code Statusline
+# Cortado - Claude Code Statusline
 
 A modular, shell-based statusline for Claude Code CLI that displays real-time development information including context usage, rate limits, costs, git status, and more.
 
 ## Project Overview
 
-Barista is a **Bash shell script** project (Bash 3.2+ compatible for macOS). It generates a customizable status line that Claude Code displays at the bottom of the terminal. The architecture is modular - each piece of information (git, battery, CPU, etc.) is handled by a separate module in the `modules/` directory.
+Cortado began as a fork of [Barista](https://github.com/pstuart/Barista) (pstuart/Barista, MIT) and is now an independent project at `gcko/Cortado`, licensed Apache 2.0. The upstream MIT notice is kept in `NOTICE`, so don't remove it. Upstream issue references such as `#21`, `#24`, and `#28` in comments point to pstuart/Barista.
+
+Cortado is a **Bash shell script** project (Bash 3.2+ compatible for macOS). It generates a customizable status line that Claude Code displays at the bottom of the terminal. The architecture is modular - each piece of information (git, battery, CPU, etc.) is handled by a separate module in the `modules/` directory.
 
 ## Architecture
 
 ```
-Barista/
-├── barista.sh          # Main entry point - loads config, modules, orchestrates output
-├── barista.conf        # Default configuration file
+Cortado/
+├── cortado.sh          # Main entry point - loads config, modules, orchestrates output
+├── cortado.conf        # Default configuration file
 ├── install.sh          # Interactive installer with arrow key navigation
 ├── VERSION             # Version tracking (semver)
 ├── lib/
-│   └── config-tui.sh   # Runtime config TUI (`barista config`) — must ship with install
+│   └── config-tui.sh   # Runtime config TUI (`cortado config`) — must ship with install
 ├── modules/
 │   ├── utils.sh        # Shared utility functions (MUST load first)
 │   ├── directory.sh    # Current directory module
@@ -35,7 +37,7 @@ Barista/
 │   ├── docker.sh       # Docker container status
 │   ├── weather.sh      # Weather via wttr.in
 │   ├── sandbox.sh      # Lock icon when in a macOS app sandbox
-│   ├── version.sh      # Barista version, shown briefly after startup
+│   ├── version.sh      # Cortado version, shown briefly after startup
 │   ├── update.sh       # Daily GitHub check for new releases
 │   └── ...             # Additional modules
 ├── tests/              # Regression tests (bash tests/test_*.sh, standalone)
@@ -45,21 +47,23 @@ Barista/
 
 ## How It Works
 
-1. **Claude Code calls `barista.sh`** with JSON input containing workspace info, model, context window data, etc.
+1. **Claude Code calls `cortado.sh`** with JSON input containing workspace info, model, context window data, etc.
 2. **Configuration is loaded** in order of precedence:
-   - Built-in defaults in `barista.sh`
-   - `barista.conf` in script directory
-   - `$CLAUDE_CONFIG_DIR/barista.conf` (user overrides, defaults to `~/.claude/`)
-   - `.barista.conf` in current project directory (per-project overrides)
+   - Built-in defaults in `cortado.sh`
+   - `cortado.conf` in script directory
+   - `$CLAUDE_CONFIG_DIR/cortado.conf` (user overrides, defaults to `~/.claude/`)
+   - `.cortado.conf` in current project directory (per-project overrides)
 
-   Packaged `barista.conf` and the user override (`$CLAUDE_CONFIG_DIR/barista.conf`) are sourced as bash after a group/world-writable check. Per-directory `.barista.conf` is untrusted: `load_config_safe` (KEY=VALUE allowlist) never sources it. Config-derived numerics are validated before they reach `bc`/URL sinks. `barista config --project` uses the same safe parser.
+   Pre-rename fallbacks: if `cortado.conf` is missing, `cortado.sh` copies `$CLAUDE_CONFIG_DIR/barista.conf` to it once (with `cp -p`, falling back to reading the legacy file directly). A project's `.barista.conf` is read only when that project has no `.cortado.conf`. Keep these fallbacks until Barista users have had time to migrate.
+
+   Packaged `cortado.conf` and the user override (`$CLAUDE_CONFIG_DIR/cortado.conf`) are sourced as bash after a group/world-writable check. Per-directory `.cortado.conf` is untrusted: `load_config_safe` (KEY=VALUE allowlist) never sources it. Config-derived numerics are validated before they reach `bc`/URL sinks. `cortado config --project` uses the same safe parser.
 3. **Modules are loaded** from `modules/` directory (`utils.sh` first, then all others)
 4. **Modules are executed** in the order specified by `MODULE_ORDER` config
 5. **Output is concatenated** with the configured `SEPARATOR` and printed
 
 ## Key Files
 
-### `barista.sh` (Main Entry Point)
+### `cortado.sh` (Main Entry Point)
 - Resolves `CLAUDE_CONFIG_DIR` (env var or defaults to `$HOME/.claude`)
 - Defines default configuration values
 - Loads configuration files in precedence order
@@ -79,7 +83,7 @@ Barista/
 - **Display mode checks**: `is_compact()`
 - **Logging**: `log_debug()` for debug mode
 
-### `barista.conf` (Configuration)
+### `cortado.conf` (Configuration)
 All settings are documented with comments. Key settings:
 - `SEPARATOR` - Character(s) between modules (default: `" | "`)
 - `DISPLAY_MODE` - `"normal"`, `"compact"`, or `"verbose"`
@@ -91,7 +95,7 @@ All settings are documented with comments. Key settings:
 
 ## Color Themes
 
-COLOR_THEME fills status indicators and icons only when those variables are still unset; shipped barista.conf assigns the default emoji first, so minimal, vibrant, and nerd do not restyle them, while monochrome still forces STATUS_STYLE=ascii and USE_ICONS=false.
+COLOR_THEME fills status indicators and icons only when those variables are still unset; shipped cortado.conf assigns the default emoji first, so minimal, vibrant, and nerd do not restyle them, while monochrome still forces STATUS_STYLE=ascii and USE_ICONS=false.
 
 | Theme | Status Indicators | Icon Style | Use Case |
 |-------|-------------------|------------|----------|
@@ -156,13 +160,13 @@ Both respect `DISPLAY_MODE` for spacing and `STATUS_STYLE` for appearance (emoji
 ## Adding a New Module
 
 1. Create `modules/mymodule.sh` following the pattern above
-2. Add to module registry in `barista.sh`:
+2. Add to module registry in `cortado.sh`:
    ```bash
    case "$module_name" in
        mymodule)     echo "module_mymodule" ;;
    ```
 3. Add to `run_module()` case if it needs special arguments
-4. Add configuration defaults to `barista.sh` and `barista.conf`:
+4. Add configuration defaults to `cortado.sh` and `cortado.conf`:
    ```bash
    MODULE_MYMODULE="false"  # Disabled by default
    ```
@@ -184,22 +188,22 @@ Regression tests live in `tests/` (pure-bash assert harness, no framework). Each
 ```bash
 bash tests/test_utils.sh           # utils.sh helpers
 bash tests/test_rate_limits.sh     # rate-limit parsers/backoff
-bash tests/test_config_cli.sh      # barista config CLI (set/toggle/project)
+bash tests/test_config_cli.sh      # cortado config CLI (set/toggle/project)
 bash tests/test_install_update.sh  # installer update flags + runtime copy
 # also: test_cache, test_git_cache, test_project, test_sandbox, test_update, test_uptime
 ```
 
-Lint with `shellcheck` — `.shellcheckrc` disables SC2155 and SC2034 project-wide (see issue #21 for the policy).
+Lint with `shellcheck` — `.shellcheckrc` disables SC2155 and SC2034 project-wide (see upstream pstuart/Barista#21 for the policy).
 
 Test the statusline manually:
 ```bash
-echo '{"workspace":{"current_dir":"'$PWD'"},"model":{"display_name":"Test"},"output_style":{"name":"default"},"context_window":{"context_window_size":200000,"current_usage":{"input_tokens":10000}}}' | ./barista.sh
+echo '{"workspace":{"current_dir":"'$PWD'"},"model":{"display_name":"Test"},"output_style":{"name":"default"},"context_window":{"context_window_size":200000,"current_usage":{"input_tokens":10000}}}' | ./cortado.sh
 ```
 
 Enable debug mode:
 ```bash
 DEBUG_MODE="true"  # In config
-# Logs to $CLAUDE_CONFIG_DIR/barista.log
+# Logs to $CLAUDE_CONFIG_DIR/cortado.log
 ```
 
 ## Dependencies
@@ -210,16 +214,16 @@ DEBUG_MODE="true"  # In config
 
 ## Custom Config Directory
 
-Barista respects the `CLAUDE_CONFIG_DIR` environment variable for users who have moved their Claude configuration from the default `~/.claude/`. This is resolved once in `barista.sh` and inherited by all modules:
+Cortado respects the `CLAUDE_CONFIG_DIR` environment variable for users who have moved their Claude configuration from the default `~/.claude/`. This is resolved once in `cortado.sh` and inherited by all modules:
 
 ```bash
 CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 ```
 
 Files stored in this directory:
-- `barista.conf` - User config overrides
-- `barista-cache/` - Cache for expensive operations (weather, network, etc.)
-- `barista.log` - Debug log (when `DEBUG_MODE="true"`)
+- `cortado.conf` - User config overrides
+- `cortado-cache/` - Cache for expensive operations (weather, network, etc.)
+- `cortado.log` - Debug log (when `DEBUG_MODE="true"`)
 - `.usage_history` - Rate limit history for projections
 
 Modules also include their own `${CLAUDE_CONFIG_DIR:-$HOME/.claude}` fallback for robustness if sourced independently.
@@ -242,4 +246,4 @@ The installer (`install.sh`) provides:
 - Multiple presets (minimal, developer, etc.)
 - Auto-update checking from GitHub
 - Backup/restore of previous statusline
-- Copies `barista.sh`, `VERSION`, `modules/`, and `lib/` (required for `barista config`)
+- Copies `cortado.sh`, `VERSION`, `modules/`, and `lib/` (required for `cortado config`)

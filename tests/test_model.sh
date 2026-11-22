@@ -32,7 +32,7 @@ source "$PROJECT_ROOT/modules/utils.sh"
 # shellcheck source=/dev/null
 source "$PROJECT_ROOT/modules/model.sh"
 
-# Invoke module_model with the documented barista.sh defaults pinned in a
+# Invoke module_model with the documented cortado.sh defaults pinned in a
 # subshell; only the thinking flag and statusline JSON vary between calls.
 # $1 = MODEL_SHOW_THINKING value, or "unset" to leave the flag at its default.
 # $2 = statusline JSON payload.

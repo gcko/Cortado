@@ -1,4 +1,4 @@
-# Barista Demo
+# Cortado Demo
 # Run with: vhs demo.tape
 
 Output demo.gif
@@ -9,7 +9,7 @@ Set Width 1200
 Set Height 600
 Set Theme "Dracula"
 
-Type "# Barista - Statusline for Claude Code"
+Type "# Cortado - Statusline for Claude Code"
 Enter
 Sleep 500ms
 
@@ -17,7 +17,7 @@ Type "echo 'Testing statusline output...'"
 Enter
 Sleep 300ms
 
-Type@50ms 'echo '"'"'{"workspace":{"current_dir":"/Users/demo/myproject"},"model":{"display_name":"Claude Opus 4.5"},"output_style":{"name":"learning"},"context_window":{"context_window_size":200000,"current_usage":{"input_tokens":75000}},"cost":{"total_cost_usd":2.50,"total_duration_ms":3600000}}'"'"' | ./barista.sh'
+Type@50ms 'echo '"'"'{"workspace":{"current_dir":"/Users/demo/myproject"},"model":{"display_name":"Claude Opus 4.5"},"output_style":{"name":"learning"},"context_window":{"context_window_size":200000,"current_usage":{"input_tokens":75000}},"cost":{"total_cost_usd":2.50,"total_duration_ms":3600000}}'"'"' | ./cortado.sh'
 Enter
 Sleep 2s
 

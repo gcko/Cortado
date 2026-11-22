@@ -111,7 +111,7 @@ module_git() {
         if [ -n "$cached" ]; then
             # Format: first line = branch; remainder after sentinel = porcelain
             git_branch=$(printf '%s\n' "$cached" | head -n 1)
-            git_porcelain=$(printf '%s\n' "$cached" | sed '1,/^---BARISTA_GIT---$/d')
+            git_porcelain=$(printf '%s\n' "$cached" | sed '1,/^---CORTADO_GIT---$/d')
             # Empty branch line means corrupt entry — recompute
             if [ -n "$git_branch" ]; then
                 from_cache=true
@@ -143,7 +143,7 @@ module_git() {
         if [ "$use_cache" = "true" ]; then
             # Store branch + porcelain for next render within TTL
             cache_set "$cache_key" "${git_branch}
----BARISTA_GIT---
+---CORTADO_GIT---
 ${git_porcelain}"
         fi
     fi

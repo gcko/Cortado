@@ -1,22 +1,24 @@
-# Barista ☕
+# Cortado ☕
 
 **Serving up fresh stats for your Claude Code sessions.**
 
 A feature-rich, modular statusline for [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) that brews real-time development information including context usage, rate limits, costs, and more.
 
-![Barista](https://img.shields.io/badge/Barista-Claude_Code-D97757?style=for-the-badge&logo=anthropic&logoColor=white)
+> Cortado started as a fork of [Barista](https://github.com/pstuart/Barista) by Patrick D. Stuart, which is where the coffee name comes from. Coming from Barista? See [Migrating from Barista](#migrating-from-barista).
+
+![Cortado](https://img.shields.io/badge/Cortado-Claude_Code-D97757?style=for-the-badge&logo=anthropic&logoColor=white)
 ![Version](https://img.shields.io/badge/Version-1.8.0-green?style=for-the-badge)
 ![Shell Script](https://img.shields.io/badge/Shell_Script-Bash-4EAA25?style=for-the-badge&logo=gnu-bash&logoColor=white)
-![License](https://img.shields.io/badge/License-MIT-blue?style=for-the-badge)
+![License](https://img.shields.io/badge/License-Apache_2.0-blue?style=for-the-badge)
 
 <p align="center">
-  <img src="demo.gif" alt="Barista Demo" width="800">
+  <img src="demo.gif" alt="Cortado Demo" width="800">
 </p>
 
 ## What's New in v1.8.0 🆕
 
-- **`barista config` TUI** - Reconfigure modules, theme, and WAN privacy post-install without re-running the installer (`barista config`, `--show`, `--set`, `--toggle`)
-- **Homebrew install** - `brew tap pstuart/tap && brew install barista` (primary path; `git clone` still supported)
+- **`cortado config` TUI** - Reconfigure modules, theme, and WAN privacy post-install without re-running the installer (`cortado config`, `--show`, `--set`, `--toggle`)
+- **Homebrew install** - `brew tap pstuart/tap && brew install barista` (upstream Barista formula; Cortado does not have one yet)
 
 ### v1.7.0
 
@@ -35,7 +37,7 @@ A feature-rich, modular statusline for [Claude Code CLI](https://docs.anthropic.
 ### v1.6.0
 
 - **Rate Limit 429 Backoff** - Automatically backs off API calls after receiving 429 responses
-- **Version Display** - Shows current Barista version in installer and statusline
+- **Version Display** - Shows current Cortado version in installer and statusline
 - **Update Checker** - Enhanced update checking from GitHub releases
 
 ### v1.5.0
@@ -74,7 +76,7 @@ A feature-rich, modular statusline for [Claude Code CLI](https://docs.anthropic.
 - **Monorepo Performance** - Git module now limits output to prevent memory spikes in large repos
 
 ### v1.1.0
-- **Auto-Update Checking** - Barista checks GitHub for updates and can self-update
+- **Auto-Update Checking** - Cortado checks GitHub for updates and can self-update
 - **Interactive Installer** - Arrow key navigation with space to toggle selections
 - **Customizable Separators** - Choose from pipe, arrow, bullet, and more
 - **Color Themes** - Default, minimal, vibrant, or monochrome
@@ -98,8 +100,8 @@ A feature-rich, modular statusline for [Claude Code CLI](https://docs.anthropic.
 | **time** | Current date and time |
 | **battery** | Battery percentage (macOS) |
 | **sandbox** | Lock icon when running inside a macOS app sandbox |
-| **version** | Barista version, shown briefly after startup |
-| **update** | Daily check for new Barista releases with update notification |
+| **version** | Cortado version, shown briefly after startup |
+| **update** | Daily check for new Cortado releases with update notification |
 
 ### System Modules (The Espresso Shots)
 
@@ -169,47 +171,18 @@ brew install jq
 
 ## Installation
 
-### Homebrew (recommended)
-
-The tap formula does **not** ship `install.sh`. After `brew install barista`, configure Claude Code yourself and use `brew upgrade` for updates.
-
-```bash
-brew tap pstuart/tap
-brew install barista
-```
-
-Set `statusLine.command` in `~/.claude/settings.json` to the **opt** path (it follows upgrades):
-
-```json
-{
-  "statusLine": {
-    "type": "command",
-    "command": "$(brew --prefix)/opt/barista/libexec/barista.sh"
-  }
-}
-```
-
-Replace `$(brew --prefix)` with the output of that command (Homebrew does not expand it inside JSON). Typical values: `/opt/homebrew` (Apple Silicon) or `/usr/local` (Intel).
-
-Then:
-
-```bash
-barista config    # module/theme TUI
-brew upgrade barista
-```
-
-Formula: [pstuart/homebrew-tap](https://github.com/pstuart/homebrew-tap). Caveats match this README: `install.sh` is from-source only.
-
 ### From source
 
 ```bash
 # Clone the repo
-git clone https://github.com/pstuart/Barista.git
-cd Barista
+git clone https://github.com/gcko/Cortado.git
+cd Cortado
 
 # Run the installer
 ./install.sh
 ```
+
+Cortado doesn't have a Homebrew formula yet, so install from source for now.
 
 The interactive installer features:
 - **Arrow key navigation** - Use ↑/↓ to move, Space to toggle, Enter to confirm
@@ -244,19 +217,28 @@ The interactive installer features:
 
 ### Staying Up to Date
 
-**Homebrew:** `brew upgrade barista`. The formula pins a tagged tarball (`vX.Y.Z` + sha256). Do not run `./install.sh --update` against a Cellar/opt prefix — the installer refuses that path so a checksum-pinned brew install is not overwritten with a zip.
+**From source (git clone or a copied tree):** `./install.sh --check-update` and `./install.sh --update` use GitHub `releases/latest` on [gcko/Cortado](https://github.com/gcko/Cortado), the same tag source as the statusline `update` module. They do **not** track unpinned `main`. The installer refuses to `--update` a Homebrew Cellar/opt prefix.
 
-**From source (git clone or a copied tree):** `./install.sh --check-update` and `./install.sh --update` use GitHub `releases/latest`, the same tag source as the statusline `update` module and the Homebrew `livecheck`. They do **not** track unpinned `main`.
+Cortado also checks for a newer *release* when you run the from-source installer (skip with `--skip-update-check`).
 
-Barista also checks for a newer *release* when you run the from-source installer (skip with `--skip-update-check`).
+### Migrating from Barista
+
+Cortado reads your Barista settings, so nothing is lost when you switch:
+
+- **User config.** The first time Cortado runs, it copies `$CLAUDE_CONFIG_DIR/barista.conf` to `cortado.conf`, keeping the file's permissions. It does this only if `cortado.conf` doesn't exist yet, and it leaves the original in place. `./install.sh` does the same copy and tells you about it.
+- **Project config.** A project's `.barista.conf` is still read when there's no `.cortado.conf` next to it. `cortado config --project` copies it to `.cortado.conf` the first time you edit it.
+- **Install location.** The installer puts Cortado in `$CLAUDE_CONFIG_DIR/cortado/` and points `statusLine` in `settings.json` at `cortado/cortado.sh`. Your previous `statusLine` command is backed up, so `./install.sh --uninstall` can switch back to Barista.
+- **Cache and logs.** These move to `cortado-cache/` and `cortado.log` and are rebuilt automatically. `.usage_history` keeps its name.
+
+After you've confirmed Cortado works, you can remove the old files: `$CLAUDE_CONFIG_DIR/barista/`, `barista.conf`, `barista-cache/`, and `.barista-backup/`. If you installed Barista with Homebrew, run `brew uninstall barista` and `brew untap pstuart/tap`.
 
 ### Manual Brew
 
-1. **Copy barista to your Claude directory:**
+1. **Copy cortado to your Claude directory:**
    ```bash
    CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
-   cp -r . "$CLAUDE_DIR/barista"
-   chmod +x "$CLAUDE_DIR/barista/barista.sh"
+   cp -r . "$CLAUDE_DIR/cortado"
+   chmod +x "$CLAUDE_DIR/cortado/cortado.sh"
    ```
 
 2. **Configure Claude Code settings:**
@@ -266,7 +248,7 @@ Barista also checks for a newer *release* when you run the from-source installer
    {
      "statusLine": {
        "type": "command",
-       "command": "~/.claude/barista/barista.sh"
+       "command": "~/.claude/cortado/cortado.sh"
      }
    }
    ```
@@ -288,30 +270,30 @@ The installer lets you customize:
 | **Color Themes** | Default, Minimal, Vibrant, Monochrome, Nerd Font |
 | **Display Mode** | Normal, Compact, Verbose |
 
-### Runtime config (`barista config`)
+### Runtime config (`cortado config`)
 
 After install, reconfigure without re-running the installer:
 
 ```bash
-barista config                 # interactive TUI (modules, theme, WAN privacy)
-barista config --show          # print current settings
-barista config --toggle weather
-barista config --set COLOR_THEME=minimal
-barista config --project       # edit ./.barista.conf in the current directory
+cortado config                 # interactive TUI (modules, theme, WAN privacy)
+cortado config --show          # print current settings
+cortado config --toggle weather
+cortado config --set COLOR_THEME=minimal
+cortado config --project       # edit ./.cortado.conf in the current directory
 ```
 
-Saves to `$CLAUDE_CONFIG_DIR/barista.conf` (default `~/.claude/barista.conf`). Cancel leaves the file untouched.
+Saves to `$CLAUDE_CONFIG_DIR/cortado.conf` (default `~/.claude/cortado.conf`). Cancel leaves the file untouched.
 
 ### Configuration Files
 
-Edit `barista.conf` or create a user override config in your Claude config directory:
+Edit `cortado.conf` or create a user override config in your Claude config directory:
 
 ```bash
 # Default location
-~/.claude/barista.conf
+~/.claude/cortado.conf
 
 # Or if using a custom config directory
-$CLAUDE_CONFIG_DIR/barista.conf
+$CLAUDE_CONFIG_DIR/cortado.conf
 ```
 
 #### Custom Config Directory
@@ -322,20 +304,20 @@ If you've moved your Claude configuration from the default `~/.claude/`, set the
 export CLAUDE_CONFIG_DIR="/path/to/my/claude-config"
 ```
 
-Barista will automatically use that directory for:
-- User config overrides (`barista.conf`)
-- Cache files (`barista-cache/`)
-- Debug logs (`barista.log`)
+Cortado will automatically use that directory for:
+- User config overrides (`cortado.conf`)
+- Cache files (`cortado-cache/`)
+- Debug logs (`cortado.log`)
 - Rate limit history (`.usage_history`)
 
 No other configuration changes are needed.
 
 #### Per-Directory Overrides
 
-Create `.barista.conf` in any project directory to customize the statusline for that project. That file is **never sourced** — only allowlisted `KEY=VALUE` lines are applied (`load_config_safe`).
+Create `.cortado.conf` in any project directory to customize the statusline for that project. That file is **never sourced** — only allowlisted `KEY=VALUE` lines are applied (`load_config_safe`).
 
 ```bash
-# ~/myproject/.barista.conf
+# ~/myproject/.cortado.conf
 # Minimal statusline for this large monorepo
 DISPLAY_MODE="compact"
 MODULE_WEATHER="false"
@@ -344,9 +326,9 @@ MODULE_ORDER="directory,context,git,model"
 
 Configuration is loaded in order of precedence:
 1. Built-in defaults
-2. `barista.conf` (in script directory — sourced as bash after a writable check)
-3. `$CLAUDE_CONFIG_DIR/barista.conf` (user overrides, defaults to `~/.claude/` — also sourced)
-4. `.barista.conf` (per-directory KEY=VALUE allowlist; never sourced)
+2. `cortado.conf` (in script directory — sourced as bash after a writable check)
+3. `$CLAUDE_CONFIG_DIR/cortado.conf` (user overrides, defaults to `~/.claude/` — also sourced)
+4. `.cortado.conf` (per-directory KEY=VALUE allowlist; never sourced)
 
 ### Full Configuration Options
 
@@ -362,7 +344,7 @@ USE_ICONS="true"          # Enable emoji icons
 USE_STATUS_INDICATORS="true"  # Enable colored status dots/emoji
 STATUS_STYLE="emoji"      # "emoji", "ascii", "dots"
 
-# Custom status indicators (STATUS_STYLE="emoji"; COLOR_THEME fills indicator and icon variables only when they are still unset, and shipped barista.conf already sets the default emoji, so minimal, vibrant, and nerd do not replace them. monochrome still forces STATUS_STYLE=ascii and USE_ICONS=false).
+# Custom status indicators (STATUS_STYLE="emoji"; COLOR_THEME fills indicator and icon variables only when they are still unset, and shipped cortado.conf already sets the default emoji, so minimal, vibrant, and nerd do not replace them. monochrome still forces STATUS_STYLE=ascii and USE_ICONS=false).
 STATUS_GREEN="🟢"
 STATUS_YELLOW="🟡"
 STATUS_ORANGE="🟠"        # 4-level indicators (rate limits) use the orange band
@@ -435,10 +417,10 @@ RIGHT_SIDE_RESERVE=20        # Space reserved for Claude's right-side display
 # =============================================================================
 
 CACHE_MAX_AGE=60             # Default cache TTL (seconds) for cache_get() when no max_age is passed
-DEBUG_MODE="false"           # Debug logging to $CLAUDE_CONFIG_DIR/barista.log
+DEBUG_MODE="false"           # Debug logging to $CLAUDE_CONFIG_DIR/cortado.log
 ```
 
-Per-module settings (icons, thresholds, formats, and TTLs such as `GIT_CACHE_TTL`, `RATE_CACHE_TTL`, `WEATHER_CACHE_TTL`, `VERSION_SHOW_DURATION`, and `UPDATE_CHECK_INTERVAL`) are documented inline in the shipped `barista.conf`.
+Per-module settings (icons, thresholds, formats, and TTLs such as `GIT_CACHE_TTL`, `RATE_CACHE_TTL`, `WEATHER_CACHE_TTL`, `VERSION_SHOW_DURATION`, and `UPDATE_CHECK_INTERVAL`) are documented inline in the shipped `cortado.conf`.
 
 ### Preset Recipes
 
@@ -476,11 +458,11 @@ SEPARATOR=" • "
 ## The Menu (Architecture)
 
 ```
-~/.claude/barista/
-├── barista.sh          # Main entry point (+ config/version CLI)
+~/.claude/cortado/
+├── cortado.sh          # Main entry point (+ config/version CLI)
 ├── lib/
-│   └── config-tui.sh   # Runtime config TUI (`barista config`)
-├── barista.conf        # Configuration file
+│   └── config-tui.sh   # Runtime config TUI (`cortado config`)
+├── cortado.conf        # Configuration file
 ├── VERSION             # Version tracking
 └── modules/
     ├── utils.sh        # Shared utility functions
@@ -512,7 +494,7 @@ module_mycustom() {
 }
 ```
 
-Then add to `barista.conf`:
+Then add to `cortado.conf`:
 ```bash
 MODULE_MYCUSTOM="true"
 MODULE_ORDER="...,mycustom,..."
@@ -526,7 +508,7 @@ MODULE_ORDER="...,mycustom,..."
 - Verify you're logged in (`claude login`)
 
 ### Modules not loading
-- Check file permissions: `chmod +x barista.sh`
+- Check file permissions: `chmod +x cortado.sh`
 - Verify module files exist in `modules/` directory
 - Enable debug mode: `DEBUG_MODE="true"`
 
@@ -535,13 +517,13 @@ MODULE_ORDER="...,mycustom,..."
 - Try a different terminal emulator if issues persist
 
 ### Config file not loading
-- Packaged `barista.conf` and `$CLAUDE_CONFIG_DIR/barista.conf` are sourced as bash. Barista refuses to source either if they are group- or world-writable.
-- Fix the **user** file with `chmod 600 "$CLAUDE_CONFIG_DIR/barista.conf"` (or `644` if you want it world-readable but not writable).
-- Per-directory `.barista.conf` is never sourced. `chmod` on that file does not make it executable.
+- Packaged `cortado.conf` and `$CLAUDE_CONFIG_DIR/cortado.conf` are sourced as bash. Cortado refuses to source either if they are group- or world-writable.
+- Fix the **user** file with `chmod 600 "$CLAUDE_CONFIG_DIR/cortado.conf"` (or `644` if you want it world-readable but not writable).
+- Per-directory `.cortado.conf` is never sourced. `chmod` on that file does not make it executable.
 
 ### Testing manually
 ```bash
-echo '{"workspace":{"current_dir":"'$PWD'"},"model":{"display_name":"Test"},"output_style":{"name":"default"},"context_window":{"context_window_size":200000,"current_usage":{"input_tokens":10000}}}' | ~/.claude/barista/barista.sh
+echo '{"workspace":{"current_dir":"'$PWD'"},"model":{"display_name":"Test"},"output_style":{"name":"default"},"context_window":{"context_window_size":200000,"current_usage":{"input_tokens":10000}}}' | ~/.claude/cortado/cortado.sh
 ```
 
 ### Running the test suite
@@ -552,10 +534,6 @@ bash tests/test_utils.sh    # or any other tests/test_*.sh
 
 ## Uninstall
 
-**Homebrew:** `brew uninstall barista` (then remove `statusLine` from `settings.json` if you added it).
-
-**From source:**
-
 ```bash
 ./install.sh --uninstall
 ```
@@ -564,19 +542,20 @@ This will offer to restore your previous statusline if one was backed up.
 
 ## Credits
 
+- Forked from [Barista](https://github.com/pstuart/Barista) by [Patrick D. Stuart](https://github.com/pstuart), who built the original modular statusline
 - Inspired by [cc-statusline](https://github.com/chongdashu/cc-statusline) by [@chongdashu](https://github.com/chongdashu)
 - Built for use with [Claude Code](https://docs.anthropic.com/en/docs/claude-code) by Anthropic
 
 ## License
 
-MIT License - See [LICENSE](LICENSE) for details.
+Apache License 2.0. See [LICENSE](LICENSE) for the full text.
 
-## Author
+Cortado includes code from Barista, which is MIT-licensed. The upstream copyright and permission notice is kept in [NOTICE](NOTICE).
 
-**Patrick D. Stuart**
-- Website: [patrickstuart.com](https://patrickstuart.com)
-- GitHub: [@pstuart](https://github.com/pstuart)
-- Twitter: [@pstuart](https://twitter.com/pstuart)
+## Maintainer
+
+**Jared Scott**
+- GitHub: [@gcko](https://github.com/gcko)
 
 ---
 
@@ -584,6 +563,6 @@ MIT License - See [LICENSE](LICENSE) for details.
 
 **Enjoy your fresh brew!** ☕
 
-*Barista v1.8.0 - Because your Claude Code deserves a great statusline.*
+*Cortado v1.8.0 - Because your Claude Code deserves a great statusline.*
 
 </div>
