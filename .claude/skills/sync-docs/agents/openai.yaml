@@ -1,0 +1,4 @@
+interface:
+  display_name: "Sync Cortado Docs"
+  short_description: "Reconcile the README, AGENTS.md and config comments with the code"
+  default_prompt: "Use $sync-docs to reconcile Cortado's documentation before a pull request."

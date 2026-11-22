@@ -1,0 +1,4 @@
+interface:
+  display_name: "Sync Cortado Project"
+  short_description: "Keep Cortado's GitHub milestones and issues lean"
+  default_prompt: "Use $sync-project to reconcile Cortado's GitHub milestone, parent issue and issue descriptions."

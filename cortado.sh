@@ -322,17 +322,15 @@ validate_module_order() {
         return 0
     fi
 
-    local old_ifs="$IFS"
-    IFS=','
-    for module in $order; do
+    local modules module func_name
+    IFS=',' read -r -a modules <<< "$order"
+    for module in "${modules[@]}"; do
         module=$(echo "$module" | tr -d ' ')
-        local func_name
         func_name=$(get_module_function "$module")
         if [ -z "$func_name" ]; then
             log_debug "Warning: Unknown module in MODULE_ORDER: $module"
         fi
     done
-    IFS="$old_ifs"
 }
 
 # =============================================================================
@@ -475,10 +473,14 @@ main() {
     # Build status line sections
     local sections=""
 
-    # Process modules in specified order
-    local old_ifs="$IFS"
-    IFS=','
-    for module in $module_order; do
+    # Process modules in specified order. Split MODULE_ORDER with IFS scoped to
+    # the read alone: modules run inside this loop, and a comma IFS here broke
+    # every read-based split inside them (each status indicator printed all of
+    # its glyphs at once). The array also keeps a "*" in MODULE_ORDER from
+    # glob-expanding.
+    local modules module
+    IFS=',' read -r -a modules <<< "$module_order"
+    for module in "${modules[@]}"; do
         # Trim whitespace
         module=$(echo "$module" | tr -d ' ')
 
@@ -504,7 +506,6 @@ main() {
             fi
         fi
     done
-    IFS="$old_ifs"
 
     # =============================================================================
     # TERMINAL-WIDTH-AWARE OUTPUT

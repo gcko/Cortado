@@ -1,0 +1,4 @@
+interface:
+  display_name: "Visual Review and Fix"
+  short_description: "Render the statusline as its reader sees it"
+  default_prompt: "Use $visual-review-and-fix to render the statusline with missing and stale data forced, before and after building a change."
