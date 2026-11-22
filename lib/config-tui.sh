@@ -1,8 +1,8 @@
 #!/bin/bash
 # =============================================================================
-# Barista runtime config TUI (Refs #24)
+# Cortado runtime config TUI (Refs #24)
 # =============================================================================
-# Sourced by barista.sh when invoked as: barista.sh config [options]
+# Sourced by cortado.sh when invoked as: cortado.sh config [options]
 # Bash 3.2 compatible. No side effects on source beyond function definitions.
 # =============================================================================
 
@@ -23,7 +23,7 @@ _cfg_init_colors() {
 # Module catalog: name:default:category:description
 _CFG_CORE_MODULES=(
     "sandbox:true:core:Sandbox lock indicator"
-    "version:true:core:Barista version (brief)"
+    "version:true:core:Cortado version (brief)"
     "update:true:core:Update checker"
     "directory:true:core:Working directory"
     "context:true:core:Context usage bar"
@@ -61,7 +61,7 @@ _cfg_module_var() {
     echo "MODULE_$(echo "$1" | tr '[:lower:]-' '[:upper:]_')"
 }
 
-# --set / assign allowlist: same prefixes as barista.sh load_config_safe.
+# --set / assign allowlist: same prefixes as cortado.sh load_config_safe.
 _cfg_is_allowed_key() {
     local key="$1"
     case "$key" in
@@ -181,27 +181,27 @@ _cfg_resolve_path() {
     local scope="${1:-global}"
     case "$scope" in
         global|user)
-            echo "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/barista.conf"
+            echo "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/cortado.conf"
             ;;
         project|dir|local)
-            echo "${PWD}/.barista.conf"
+            echo "${PWD}/.cortado.conf"
             ;;
         *)
-            echo "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/barista.conf"
+            echo "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/cortado.conf"
             ;;
     esac
 }
 
 # Load defaults + existing conf into shell vars.
-# Project .barista.conf is never sourced (same rule as barista.sh main).
+# Project .cortado.conf is never sourced (same rule as cortado.sh main).
 _cfg_load_into_shell() {
     local path="$1"
     local scope="${2:-global}"
     # Ship defaults from packaged conf if present
-    if [ -n "${SCRIPT_DIR:-}" ] && [ -f "$SCRIPT_DIR/barista.conf" ]; then
-        if config_not_group_or_world_writable "$SCRIPT_DIR/barista.conf" 2>/dev/null; then
+    if [ -n "${SCRIPT_DIR:-}" ] && [ -f "$SCRIPT_DIR/cortado.conf" ]; then
+        if config_not_group_or_world_writable "$SCRIPT_DIR/cortado.conf" 2>/dev/null; then
             # shellcheck disable=SC1090
-            . "$SCRIPT_DIR/barista.conf"
+            . "$SCRIPT_DIR/cortado.conf"
         fi
     fi
     if [ -f "$path" ]; then
@@ -236,7 +236,7 @@ _cfg_load_into_shell() {
 }
 
 _cfg_load_safe_kv() {
-    # Prefer the shared parser in barista.sh (full prefix allowlist, printf -v).
+    # Prefer the shared parser in cortado.sh (full prefix allowlist, printf -v).
     if type load_config_safe >/dev/null 2>&1; then
         load_config_safe "$1"
         return $?
@@ -366,11 +366,11 @@ _cfg_write_conf() {
         done < "$path"
     fi
 
-    tmp=$(mktemp "${TMPDIR:-/tmp}/barista-conf.XXXXXX") || return 1
+    tmp=$(mktemp "${TMPDIR:-/tmp}/cortado-conf.XXXXXX") || return 1
 
     {
-        echo "# Barista configuration — written by barista config ($(date -u +%Y-%m-%dT%H:%MZ))"
-        echo "# Edit with: barista config   or hand-edit this file"
+        echo "# Cortado configuration — written by cortado config ($(date -u +%Y-%m-%dT%H:%MZ))"
+        echo "# Edit with: cortado config   or hand-edit this file"
         echo ""
         echo "# Display"
         echo "SEPARATOR=\"$(_cfg_shell_quote "${SEPARATOR}")\""
@@ -466,7 +466,7 @@ _cfg_preview_line() {
             node) label="22"; emoji="Node" ;;
             weather) label="72°"; emoji="☀️" ;;
             sandbox) label=""; emoji="🔒" ;;
-            version) label="v${BARISTA_VERSION:-?}" ;;
+            version) label="v${CORTADO_VERSION:-?}" ;;
             update) label="" ;;
             *) label="$name" ;;
         esac
@@ -641,7 +641,7 @@ _cfg_run_interactive() {
     _CFG_QUIT_REQUESTED=0
 
     echo ""
-    printf "%sBarista config%s  %s\n" "$CFG_BOLD" "$CFG_NC" "$path"
+    printf "%sCortado config%s  %s\n" "$CFG_BOLD" "$CFG_NC" "$path"
     echo "Arrow keys · Space toggle · s save · q cancel without write"
     echo ""
 
@@ -708,10 +708,10 @@ _cfg_run_interactive() {
 
 _cfg_usage() {
     cat <<'EOF'
-Usage: barista config [options]
-       barista.sh config [options]
+Usage: cortado config [options]
+       cortado.sh config [options]
 
-Post-install TUI and CLI for barista.conf (does not re-run the installer).
+Post-install TUI and CLI for cortado.conf (does not re-run the installer).
 
 Options:
   (none)              Interactive TUI (modules + theme + WAN privacy)
@@ -720,21 +720,21 @@ Options:
   --set KEY=VALUE     Set a single key (MODULE_*, COLOR_THEME, …) and save
   --toggle NAME       Toggle a module on/off by short name (e.g. git, cpu)
   --path              Print resolved config path and exit
-  --project           Edit ./.barista.conf instead of user global
-  --global            Edit $CLAUDE_CONFIG_DIR/barista.conf (default)
+  --project           Edit ./.cortado.conf instead of user global
+  --global            Edit $CLAUDE_CONFIG_DIR/cortado.conf (default)
   -h, --help          This help
 
 Examples:
-  barista config
-  barista config --show
-  barista config --toggle weather
-  barista config --set COLOR_THEME=minimal
-  barista config --project --set MODULE_CPU=true
+  cortado config
+  cortado config --show
+  cortado config --toggle weather
+  cortado config --set COLOR_THEME=minimal
+  cortado config --project --set MODULE_CPU=true
 EOF
 }
 
 # Entry point
-barista_config_main() {
+cortado_config_main() {
     _cfg_init_colors
     local scope="global"
     local action="interactive"
@@ -775,7 +775,19 @@ barista_config_main() {
         return 0
     fi
 
-    # config_not_group_or_world_writable comes from barista.sh
+    # Pre-rename fallback for project scope (the global barista.conf is carried over
+    # by cortado.sh at startup). --show reads ./.barista.conf as-is; an edit copies it
+    # to ./.cortado.conf first so its settings survive the rewrite. The copy is still
+    # only ever read with the safe parser.
+    if [ "$scope" = "project" ] && [ ! -f "$path" ] && [ -f "${PWD}/.barista.conf" ]; then
+        if [ "$action" = "show" ]; then
+            path="${PWD}/.barista.conf"
+        else
+            cp "${PWD}/.barista.conf" "$path" 2>/dev/null || true
+        fi
+    fi
+
+    # config_not_group_or_world_writable comes from cortado.sh
     _cfg_load_into_shell "$path" "$scope"
 
     case "$action" in

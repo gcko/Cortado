@@ -1,9 +1,9 @@
 #!/bin/bash
 
 # =============================================================================
-# Barista Installer
+# Cortado Installer
 # =============================================================================
-# Installs Barista - the modular statusline for Claude Code CLI
+# Installs Cortado - the modular statusline for Claude Code CLI
 #
 # Usage:
 #   ./install.sh                Install with interactive module selection
@@ -63,15 +63,20 @@ setup_colors() {
 # =============================================================================
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
-BARISTA_DIR="$CLAUDE_DIR/barista"
+CORTADO_DIR="$CLAUDE_DIR/cortado"
 SETTINGS_FILE="$CLAUDE_DIR/settings.json"
-BACKUP_DIR="$CLAUDE_DIR/.barista-backup"
+BACKUP_DIR="$CLAUDE_DIR/.cortado-backup"
 BACKUP_MANIFEST="$BACKUP_DIR/manifest.json"
+
+# Pre-rename paths. Cortado was forked from Barista (https://github.com/pstuart/Barista);
+# these are only read during migration and are never deleted by this installer.
+LEGACY_DIR="$CLAUDE_DIR/barista"
+LEGACY_USER_CONFIG="$CLAUDE_DIR/barista.conf"
 
 # =============================================================================
 # VERSION MANAGEMENT
 # =============================================================================
-GITHUB_REPO="pstuart/Barista"
+GITHUB_REPO="gcko/Cortado"
 LOCAL_VERSION=""
 REMOTE_VERSION=""
 
@@ -79,7 +84,7 @@ REMOTE_VERSION=""
 _is_homebrew_prefix() {
     local dir="${1:-$SCRIPT_DIR}"
     case "$dir" in
-        */Cellar/barista/*|*/opt/barista|*/opt/barista/*)
+        */Cellar/cortado/*|*/opt/cortado|*/opt/cortado/*)
             return 0
             ;;
     esac
@@ -90,8 +95,8 @@ _is_homebrew_prefix() {
 get_local_version() {
     if [ -f "$SCRIPT_DIR/VERSION" ]; then
         LOCAL_VERSION=$(cat "$SCRIPT_DIR/VERSION" | tr -d '[:space:]')
-    elif [ -f "$BARISTA_DIR/VERSION" ]; then
-        LOCAL_VERSION=$(cat "$BARISTA_DIR/VERSION" | tr -d '[:space:]')
+    elif [ -f "$CORTADO_DIR/VERSION" ]; then
+        LOCAL_VERSION=$(cat "$CORTADO_DIR/VERSION" | tr -d '[:space:]')
     else
         LOCAL_VERSION="0.0.0"
     fi
@@ -261,16 +266,16 @@ _reexec_installer() {
     exec "$SCRIPT_DIR/install.sh" "$@"
 }
 
-_barista_git() {
+_cortado_git() {
     git "$@"
 }
 
 # Perform the update from the latest GitHub *release* tag (not unpinned main).
 do_update() {
-    print_info "Updating Barista..."
+    print_info "Updating Cortado..."
 
     if _is_homebrew_prefix "$SCRIPT_DIR"; then
-        print_error "This install is Homebrew-managed. Use: brew upgrade barista"
+        print_error "This install is Homebrew-managed. Use: brew upgrade cortado"
         return 1
     fi
 
@@ -288,9 +293,9 @@ do_update() {
         print_info "Checking out release $tag..."
         cd "$SCRIPT_DIR" || { print_error "Could not cd to $SCRIPT_DIR"; return 1; }
 
-        _barista_git stash -q 2>/dev/null
-        if _barista_git fetch origin --tags --force 2>/dev/null \
-            && _barista_git checkout -q "$tag" 2>/dev/null; then
+        _cortado_git stash -q 2>/dev/null
+        if _cortado_git fetch origin --tags --force 2>/dev/null \
+            && _cortado_git checkout -q "$tag" 2>/dev/null; then
             print_success "Updated to version $REMOTE_VERSION"
             echo ""
             print_info "Restarting installer with new version..."
@@ -306,7 +311,7 @@ do_update() {
         local tmp_dir
         tmp_dir=$(mktemp -d)
         local zip_url="https://github.com/$GITHUB_REPO/archive/refs/tags/${tag}.zip"
-        local extract_dir="Barista-${REMOTE_VERSION}"
+        local extract_dir="Cortado-${REMOTE_VERSION}"
 
         case "$zip_url" in
             https://github.com/*)
@@ -318,23 +323,23 @@ do_update() {
                 ;;
         esac
 
-        if curl -sL --max-redirs 3 --proto =https "$zip_url" -o "$tmp_dir/barista.zip" 2>/dev/null; then
-            if ! unzip -tq "$tmp_dir/barista.zip" >/dev/null 2>&1; then
+        if curl -sL --max-redirs 3 --proto =https "$zip_url" -o "$tmp_dir/cortado.zip" 2>/dev/null; then
+            if ! unzip -tq "$tmp_dir/cortado.zip" >/dev/null 2>&1; then
                 print_error "Downloaded file is not a valid ZIP archive. Aborting update."
                 rm -rf "$tmp_dir"
                 return 1
             fi
 
             cd "$tmp_dir" || { print_error "Could not cd to temp dir"; rm -rf "$tmp_dir"; return 1; }
-            unzip -q barista.zip 2>/dev/null
+            unzip -q cortado.zip 2>/dev/null
 
-            # GitHub source zips use "Barista-<tag without v>/"
-            if [ ! -d "$extract_dir" ] && [ -d "Barista-${tag}" ]; then
-                extract_dir="Barista-${tag}"
+            # GitHub source zips use "Cortado-<tag without v>/"
+            if [ ! -d "$extract_dir" ] && [ -d "Cortado-${tag}" ]; then
+                extract_dir="Cortado-${tag}"
             fi
 
             if [ -d "$extract_dir" ]; then
-                if [ ! -f "$extract_dir/barista.sh" ] || [ ! -f "$extract_dir/VERSION" ]; then
+                if [ ! -f "$extract_dir/cortado.sh" ] || [ ! -f "$extract_dir/VERSION" ]; then
                     print_error "Downloaded archive is missing essential files. Aborting update."
                     rm -rf "$tmp_dir"
                     return 1
@@ -464,7 +469,7 @@ get_module_description() {
     case "$module" in
         # Core modules
         sandbox)      icon="$(emoji '🔒' '[S]')"; text="Lock icon when in macOS app sandbox" ;;
-        version)      icon="$(emoji '☕' '[V]')"; text="Barista version (shown briefly on startup)" ;;
+        version)      icon="$(emoji '☕' '[V]')"; text="Cortado version (shown briefly on startup)" ;;
         update)       icon="$(emoji '⬆️ ' '[U]')"; text="Update checker (daily GitHub check)" ;;
         directory)    icon="$(emoji '📁' '[D]')"; text="Current directory name" ;;
         context)      icon="$(emoji '📊' '[C]')"; text="Context window usage with progress bar" ;;
@@ -1372,11 +1377,11 @@ generate_config() {
 
     cat > "$config_file" << 'HEADER'
 # =============================================================================
-# Barista Configuration
+# Cortado Configuration
 # =============================================================================
 # Generated by install.sh
 # Enable/disable modules by setting to "true" or "false"
-# For full configuration options, see barista.conf in the repo
+# For full configuration options, see cortado.conf in the repo
 # =============================================================================
 
 HEADER
@@ -1451,8 +1456,8 @@ PROGRESS_BAR_WIDTH=8
 # seconds and ignore this. Weather does not call cache_get.
 CACHE_MAX_AGE=60
 
-# Cache files live under CLAUDE_CONFIG_DIR (default: ~/.claude/barista-cache).
-# Set CLAUDE_CONFIG_DIR before running Barista to move them.
+# Cache files live under CLAUDE_CONFIG_DIR (default: ~/.claude/cortado-cache).
+# Set CLAUDE_CONFIG_DIR before running Cortado to move them.
 
 # Enable debug logging
 DEBUG_MODE="false"
@@ -1460,8 +1465,8 @@ DEBUG_MODE="false"
 # =============================================================================
 # Per-Directory Overrides
 # =============================================================================
-# Barista supports per-directory configuration overrides.
-# Create a .barista.conf file in any project directory to override settings
+# Cortado supports per-directory configuration overrides.
+# Create a .cortado.conf file in any project directory to override settings
 # for that project only. This is useful for:
 #   - Minimal statusline in large monorepos
 #   - Different modules for different project types
@@ -1525,6 +1530,22 @@ validate_config() {
 }
 
 # =============================================================================
+# MIGRATION FROM BARISTA
+# =============================================================================
+# Copy the user's Barista override (barista.conf) to cortado.conf so their settings
+# carry over. Never overwrites an existing cortado.conf and leaves the original in
+# place. cp -p keeps the 600 mode that cortado.sh's writable-config check expects.
+# Prints the path it migrated, or nothing when there was nothing to do.
+migrate_legacy_user_config() {
+    local legacy="${1:-$LEGACY_USER_CONFIG}"
+    local target="${2:-$CLAUDE_DIR/cortado.conf}"
+    [ -f "$legacy" ] || return 0
+    [ -f "$target" ] && return 0
+    cp -p "$legacy" "$target" || return 1
+    echo "$target"
+}
+
+# =============================================================================
 # BACKUP/RESTORE
 # =============================================================================
 detect_existing_statusline() {
@@ -1535,14 +1556,14 @@ detect_existing_statusline() {
         existing_command=$(jq -r '.statusLine.command // empty' "$SETTINGS_FILE" 2>/dev/null)
     fi
 
-    if [ -d "$BARISTA_DIR" ]; then
-        existing_files="$BARISTA_DIR (modular)"
+    if [ -d "$CORTADO_DIR" ]; then
+        existing_files="$CORTADO_DIR (modular)"
     fi
-    if [ -f "$CLAUDE_DIR/barista.sh" ]; then
+    if [ -f "$CLAUDE_DIR/cortado.sh" ]; then
         if [ -n "$existing_files" ]; then
-            existing_files="$existing_files, $CLAUDE_DIR/barista.sh (single file)"
+            existing_files="$existing_files, $CLAUDE_DIR/cortado.sh (single file)"
         else
-            existing_files="$CLAUDE_DIR/barista.sh (single file)"
+            existing_files="$CLAUDE_DIR/cortado.sh (single file)"
         fi
     fi
 
@@ -1573,21 +1594,21 @@ backup_existing_statusline() {
         fi
     fi
 
-    if [ -d "$BARISTA_DIR" ]; then
-        local backup_modular="$BACKUP_DIR/barista-modular-$timestamp"
-        cp -r "$BARISTA_DIR" "$backup_modular" && {
-            manifest=$(echo "$manifest" | jq --arg path "$backup_modular" --arg orig "$BARISTA_DIR" \
+    if [ -d "$CORTADO_DIR" ]; then
+        local backup_modular="$BACKUP_DIR/cortado-modular-$timestamp"
+        cp -r "$CORTADO_DIR" "$backup_modular" && {
+            manifest=$(echo "$manifest" | jq --arg path "$backup_modular" --arg orig "$CORTADO_DIR" \
                 '.files += [{"original": $orig, "backup": $path, "type": "directory"}]' 2>/dev/null)
-            print_success "Backed up Barista directory"
+            print_success "Backed up Cortado directory"
         }
     fi
 
-    if [ -f "$CLAUDE_DIR/barista.sh" ]; then
-        local backup_single="$BACKUP_DIR/barista.sh.$timestamp"
-        cp "$CLAUDE_DIR/barista.sh" "$backup_single" && {
-            manifest=$(echo "$manifest" | jq --arg path "$backup_single" --arg orig "$CLAUDE_DIR/barista.sh" \
+    if [ -f "$CLAUDE_DIR/cortado.sh" ]; then
+        local backup_single="$BACKUP_DIR/cortado.sh.$timestamp"
+        cp "$CLAUDE_DIR/cortado.sh" "$backup_single" && {
+            manifest=$(echo "$manifest" | jq --arg path "$backup_single" --arg orig "$CLAUDE_DIR/cortado.sh" \
                 '.files += [{"original": $orig, "backup": $path, "type": "file"}]' 2>/dev/null)
-            print_success "Backed up single-file barista.sh"
+            print_success "Backed up single-file cortado.sh"
         }
     fi
 
@@ -1670,7 +1691,7 @@ restore_from_backup() {
 # =============================================================================
 do_uninstall() {
     show_banner
-    print_header "Uninstalling Barista..."
+    print_header "Uninstalling Cortado..."
     echo ""
 
     if [ -f "$BACKUP_MANIFEST" ]; then
@@ -1685,8 +1706,8 @@ do_uninstall() {
 
         case $choice in
             1)
-                [ -d "$BARISTA_DIR" ] && rm -rf "$BARISTA_DIR" && print_success "Removed Barista directory"
-                [ -f "$CLAUDE_DIR/barista.sh" ] && rm "$CLAUDE_DIR/barista.sh" && print_success "Removed barista.sh"
+                [ -d "$CORTADO_DIR" ] && rm -rf "$CORTADO_DIR" && print_success "Removed Cortado directory"
+                [ -f "$CLAUDE_DIR/cortado.sh" ] && rm "$CLAUDE_DIR/cortado.sh" && print_success "Removed cortado.sh"
 
                 restore_from_backup
 
@@ -1697,8 +1718,8 @@ do_uninstall() {
                 fi
                 ;;
             2)
-                [ -d "$BARISTA_DIR" ] && rm -rf "$BARISTA_DIR" && print_success "Removed Barista directory"
-                [ -f "$CLAUDE_DIR/barista.sh" ] && rm "$CLAUDE_DIR/barista.sh" && print_success "Removed barista.sh"
+                [ -d "$CORTADO_DIR" ] && rm -rf "$CORTADO_DIR" && print_success "Removed Cortado directory"
+                [ -f "$CLAUDE_DIR/cortado.sh" ] && rm "$CLAUDE_DIR/cortado.sh" && print_success "Removed cortado.sh"
 
                 if [ -f "$SETTINGS_FILE" ]; then
                     local tmp_file=$(mktemp)
@@ -1716,8 +1737,8 @@ do_uninstall() {
                 ;;
         esac
     else
-        [ -d "$BARISTA_DIR" ] && rm -rf "$BARISTA_DIR" && print_success "Removed Barista directory"
-        [ -f "$CLAUDE_DIR/barista.sh" ] && rm "$CLAUDE_DIR/barista.sh" && print_success "Removed barista.sh"
+        [ -d "$CORTADO_DIR" ] && rm -rf "$CORTADO_DIR" && print_success "Removed Cortado directory"
+        [ -f "$CLAUDE_DIR/cortado.sh" ] && rm "$CLAUDE_DIR/cortado.sh" && print_success "Removed cortado.sh"
 
         if [ -f "$SETTINGS_FILE" ]; then
             local tmp_file=$(mktemp)
@@ -1742,13 +1763,13 @@ copy_runtime_files() {
     local dest="$2"
 
     [ -n "$dest" ] || return 1
-    [ -f "$src/barista.sh" ] || return 1
+    [ -f "$src/cortado.sh" ] || return 1
     [ -d "$src/modules" ] || return 1
     [ -d "$src/lib" ] || return 1
 
     mkdir -p "$dest/modules" "$dest/lib" || return 1
-    cp "$src/barista.sh" "$dest/" || return 1
-    chmod +x "$dest/barista.sh"
+    cp "$src/cortado.sh" "$dest/" || return 1
+    chmod +x "$dest/cortado.sh"
     if [ -f "$src/VERSION" ]; then
         cp "$src/VERSION" "$dest/" || return 1
     fi
@@ -1789,8 +1810,8 @@ do_install() {
         print_success "bc is installed"
     fi
 
-    if [ ! -f "$SCRIPT_DIR/barista.sh" ]; then
-        print_error "Source file not found: $SCRIPT_DIR/barista.sh"
+    if [ ! -f "$SCRIPT_DIR/cortado.sh" ]; then
+        print_error "Source file not found: $SCRIPT_DIR/cortado.sh"
         exit 1
     fi
     print_success "Source files found"
@@ -1913,37 +1934,45 @@ do_install() {
     }
 
     # Remove existing installation
-    [ -d "$BARISTA_DIR" ] && rm -rf "$BARISTA_DIR"
-    [ -f "$CLAUDE_DIR/barista.sh" ] && rm "$CLAUDE_DIR/barista.sh"
+    [ -d "$CORTADO_DIR" ] && rm -rf "$CORTADO_DIR"
+    [ -f "$CLAUDE_DIR/cortado.sh" ] && rm "$CLAUDE_DIR/cortado.sh"
 
     # Install files
-    print_info "Installing Barista..."
+    print_info "Installing Cortado..."
 
-    mkdir -p "$BARISTA_DIR" || {
-        print_error "Could not create $BARISTA_DIR"
+    mkdir -p "$CORTADO_DIR" || {
+        print_error "Could not create $CORTADO_DIR"
         exit 1
     }
 
-    if ! copy_runtime_files "$SCRIPT_DIR" "$BARISTA_DIR"; then
-        print_error "Could not copy Barista runtime files (need barista.sh, modules/, lib/config-tui.sh)"
+    if ! copy_runtime_files "$SCRIPT_DIR" "$CORTADO_DIR"; then
+        print_error "Could not copy Cortado runtime files (need cortado.sh, modules/, lib/config-tui.sh)"
         exit 1
     fi
 
     # Validate module files
-    local module_count=$(ls -1 "$BARISTA_DIR/modules/"*.sh 2>/dev/null | wc -l | tr -d ' ')
+    local module_count=$(ls -1 "$CORTADO_DIR/modules/"*.sh 2>/dev/null | wc -l | tr -d ' ')
     if [ "$module_count" -eq 0 ]; then
         print_warning "No module files found - statusline may not work correctly"
     else
         print_success "Installed $module_count module files"
     fi
 
+    # Carry over the user's Barista settings before the test run below
+    local migrated
+    if migrated=$(migrate_legacy_user_config); then
+        [ -n "$migrated" ] && print_success "Migrated $LEGACY_USER_CONFIG -> $migrated"
+    else
+        print_warning "Could not copy $LEGACY_USER_CONFIG to $CLAUDE_DIR/cortado.conf (Cortado will read the old file)"
+    fi
+
     # Generate config
-    generate_config "$BARISTA_DIR/barista.conf"
+    generate_config "$CORTADO_DIR/cortado.conf"
 
     # Validate generated config
-    validate_config "$BARISTA_DIR/barista.conf"
+    validate_config "$CORTADO_DIR/cortado.conf"
 
-    print_success "Installed statusline to $BARISTA_DIR"
+    print_success "Installed statusline to $CORTADO_DIR"
 
     # Test installation BEFORE applying to settings.json
     echo ""
@@ -1954,7 +1983,7 @@ do_install() {
     local test_errors
 
     # Capture both stdout and stderr
-    test_output=$("$BARISTA_DIR/barista.sh" <<< "$test_json" 2>&1)
+    test_output=$("$CORTADO_DIR/cortado.sh" <<< "$test_json" 2>&1)
     local test_exit_code=$?
 
     # Check for bash errors in output
@@ -1973,7 +2002,7 @@ do_install() {
         print_error "Statusline test FAILED - no output produced"
         echo ""
         print_error "Installation aborted. Settings not modified."
-        print_info "Try running manually: echo '$test_json' | $BARISTA_DIR/barista.sh"
+        print_info "Try running manually: echo '$test_json' | $CORTADO_DIR/cortado.sh"
         exit 1
     fi
 
@@ -1988,7 +2017,7 @@ do_install() {
 
     if [ -f "$SETTINGS_FILE" ]; then
         local tmp_file=$(mktemp)
-        if jq --arg cmd "$BARISTA_DIR/barista.sh" '.statusLine = {"type": "command", "command": $cmd}' "$SETTINGS_FILE" > "$tmp_file" 2>/dev/null; then
+        if jq --arg cmd "$CORTADO_DIR/cortado.sh" '.statusLine = {"type": "command", "command": $cmd}' "$SETTINGS_FILE" > "$tmp_file" 2>/dev/null; then
             mv "$tmp_file" "$SETTINGS_FILE"
             print_success "Updated settings.json"
         else
@@ -1997,7 +2026,7 @@ do_install() {
         fi
     else
         local tmp_file=$(mktemp)
-        if jq -n --arg cmd "$BARISTA_DIR/barista.sh" '{statusLine: {type: "command", command: $cmd}}' > "$tmp_file" 2>/dev/null; then
+        if jq -n --arg cmd "$CORTADO_DIR/cortado.sh" '{statusLine: {type: "command", command: $cmd}}' > "$tmp_file" 2>/dev/null; then
             mv "$tmp_file" "$SETTINGS_FILE"
             print_success "Created settings.json"
         else
@@ -2015,13 +2044,22 @@ do_install() {
     print_success "Restart Claude Code to see your new statusline"
     echo ""
     echo "Configuration:"
-    echo "  Edit:     $BARISTA_DIR/barista.conf"
-    echo "  Or run:   $BARISTA_DIR/barista.sh config"
-    echo "  Modules:  $BARISTA_DIR/modules/"
+    echo "  Edit:     $CORTADO_DIR/cortado.conf"
+    echo "  Or run:   $CORTADO_DIR/cortado.sh config"
+    echo "  Modules:  $CORTADO_DIR/modules/"
     echo ""
     echo "Per-directory overrides:"
-    echo "  Create .barista.conf in any project directory"
+    echo "  Create .cortado.conf in any project directory (.barista.conf is still read)"
     echo ""
+
+    if [ -d "$LEGACY_DIR" ] || [ -f "$LEGACY_USER_CONFIG" ] || [ -d "$CLAUDE_DIR/barista-cache" ]; then
+        echo "Old Barista files were left in place so --uninstall can restore them:"
+        [ -d "$LEGACY_DIR" ] && echo "  $LEGACY_DIR"
+        [ -f "$LEGACY_USER_CONFIG" ] && echo "  $LEGACY_USER_CONFIG"
+        [ -d "$CLAUDE_DIR/barista-cache" ] && echo "  $CLAUDE_DIR/barista-cache"
+        echo "  Remove them once you're happy with Cortado. A Homebrew install: brew uninstall barista"
+        echo ""
+    fi
 
     if [ -f "$BACKUP_MANIFEST" ]; then
         echo -e "${GREEN}Your previous statusline was backed up.${NC}"
@@ -2036,7 +2074,7 @@ do_install() {
 show_help() {
     show_banner
     local ver=$(get_local_version)
-    echo "Barista v$ver"
+    echo "Cortado v$ver"
     echo ""
     echo "Usage: $0 [OPTIONS]"
     echo ""
@@ -2167,7 +2205,7 @@ main() {
     # Handle version display
     if [ "$INSTALL_MODE" = "version" ]; then
         local ver=$(get_local_version)
-        echo "Barista v$ver"
+        echo "Cortado v$ver"
         exit 0
     fi
 

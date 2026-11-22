@@ -53,7 +53,7 @@ assert_eq "unparseable input falls back to 0"          "0"          "$(_parse_re
 # real macOS Keychain while this test runs.
 # -----------------------------------------------------------------------------
 echo "=== Credential Permission Tests ==="
-TOKEN_CONFIG_DIR="$(mktemp -d "${TMPDIR:-/tmp}/barista-token-test.XXXXXX")"
+TOKEN_CONFIG_DIR="$(mktemp -d "${TMPDIR:-/tmp}/cortado-token-test.XXXXXX")"
 TOKEN_BIN="$TOKEN_CONFIG_DIR/bin"
 mkdir -p "$TOKEN_BIN"
 cat > "$TOKEN_BIN/security" <<'STUB'
@@ -102,8 +102,8 @@ rm -f "$TOKEN_CONFIG_DIR/.credentials.json" "$KEYCHAIN_SENTINEL"
 rm -f "$TOKEN_BIN/security"
 rmdir "$TOKEN_BIN" "$TOKEN_CONFIG_DIR" 2>/dev/null
 
-# Sandbox CACHE_DIR so the suite never touches the real ~/.claude/barista-cache.
-TEST_BASE="$(mktemp -d "${TMPDIR:-/tmp}/barista-backoff-test.XXXXXX")"
+# Sandbox CACHE_DIR so the suite never touches the real ~/.claude/cortado-cache.
+TEST_BASE="$(mktemp -d "${TMPDIR:-/tmp}/cortado-backoff-test.XXXXXX")"
 CACHE_DIR="$TEST_BASE/cache"
 mkdir -p "$CACHE_DIR"
 BACKOFF_FILE="$CACHE_DIR/rate_limits_backoff"

@@ -19,8 +19,8 @@ logs/
 .vscode/
 *.sublime-*
 
-# Local config overrides (keep barista.conf as the default)
-barista.local.conf
+# Local config overrides (keep cortado.conf as the default)
+cortado.local.conf
 
 # Claude Code local settings (not shared)
 .claude/settings.local.json

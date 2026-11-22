@@ -1,5 +1,5 @@
 # Suppress noise-floor warnings that account for 207/234 of the project baseline.
-# See https://github.com/pstuart/Barista/issues/21 for the policy decision.
+# See https://github.com/pstuart/Barista/issues/21 (upstream) for the policy decision.
 #
 # SC2155: "Declare and assign separately to avoid masking return values."
 #   This project uses the `local foo=$(simple-getter)` idiom universally across

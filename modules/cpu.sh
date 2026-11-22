@@ -24,7 +24,7 @@ module_cpu() {
         cpu_usage=$(top -l 1 -n 0 2>/dev/null | grep "CPU usage" | awk '{u=$3; s=$5; sub(/%/,"",u); sub(/%/,"",s); print u+s}')
     else
         # Linux: single-shot /proc/stat is lifetime average since boot — not
-        # "current" CPU%. Diff against a previous sample cached under barista-cache
+        # "current" CPU%. Diff against a previous sample cached under cortado-cache
         # (statusline re-renders often → second+ ticks are accurate; first tick
         # seeds the cache and returns empty so we don't show a bogus % forever).
         local cur prev puser pnice psystem pidle cuser cnice csystem cidle

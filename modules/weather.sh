@@ -23,7 +23,7 @@ module_weather() {
     local show_cond="${WEATHER_SHOW_COND:-true}"
     local compact="${WEATHER_COMPACT:-false}"
     local cache_ttl="${WEATHER_CACHE_TTL:-1800}"
-    # Reject non-numeric TTL so an untrusted .barista.conf can't break arithmetic
+    # Reject non-numeric TTL so an untrusted .cortado.conf can't break arithmetic
     case "$cache_ttl" in
         ''|*[!0-9]*) cache_ttl=1800 ;;
     esac
@@ -31,7 +31,7 @@ module_weather() {
     local weather_data=""
 
     # Use private cache directory instead of world-readable /tmp
-    local weather_cache_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/barista-cache"
+    local weather_cache_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/cortado-cache"
     mkdir -p "$weather_cache_dir" 2>/dev/null
     chmod 700 "$weather_cache_dir" 2>/dev/null
     local cache_file="$weather_cache_dir/weather"
@@ -47,7 +47,7 @@ module_weather() {
     # Fetch fresh data if needed
     if [ -z "$weather_data" ]; then
         # Sanitize location: reject shell metacharacters AND URL query hijacks.
-        # Untrusted project .barista.conf can set WEATHER_LOCATION; a value like
+        # Untrusted project .cortado.conf can set WEATHER_LOCATION; a value like
         # "x?format=@v" or "x#frag" would rewrite the wttr.in query string.
         # Also reject whitespace / control chars (path segment must stay simple).
         case "$location" in

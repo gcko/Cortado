@@ -37,7 +37,7 @@ assert_match() {
 # shellcheck source=/dev/null
 . "$SCRIPT_DIR/modules/git.sh"
 
-TEST_BASE="$(mktemp -d "${TMPDIR:-/tmp}/barista-git-cache-test.XXXXXX")"
+TEST_BASE="$(mktemp -d "${TMPDIR:-/tmp}/cortado-git-cache-test.XXXXXX")"
 CACHE_DIR="$TEST_BASE/cache"
 init_cache
 
@@ -52,13 +52,13 @@ assert_eq "different paths get different keys" "1" "$([ "$k1" != "$k3" ] && echo
 
 # Round-trip branch+porcelain payload through cache_get/set (same format as module_git)
 payload="main
----BARISTA_GIT---
+---CORTADO_GIT---
  M modules/git.sh
 ?? untracked.txt"
 cache_set "$k1" "$payload"
 got=$(cache_get "$k1" 60)
 branch=$(printf '%s\n' "$got" | head -n 1)
-porcelain=$(printf '%s\n' "$got" | sed '1,/^---BARISTA_GIT---$/d')
+porcelain=$(printf '%s\n' "$got" | sed '1,/^---CORTADO_GIT---$/d')
 assert_eq "cached branch round-trips" "main" "$branch"
 assert_match "cached porcelain includes modified line" ' M modules/git.sh' "$porcelain"
 assert_match "cached porcelain includes untracked line" '\?\? untracked.txt' "$porcelain"

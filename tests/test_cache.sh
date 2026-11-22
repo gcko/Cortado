@@ -22,8 +22,8 @@ assert_eq() {
 # shellcheck source=/dev/null
 . "$SCRIPT_DIR/modules/utils.sh"
 
-# Sandbox: override CACHE_DIR so the suite never touches the real ~/.claude/barista-cache.
-TEST_BASE="$(mktemp -d "${TMPDIR:-/tmp}/barista-cache-test.XXXXXX")"
+# Sandbox: override CACHE_DIR so the suite never touches the real ~/.claude/cortado-cache.
+TEST_BASE="$(mktemp -d "${TMPDIR:-/tmp}/cortado-cache-test.XXXXXX")"
 CACHE_DIR="$TEST_BASE/cache"
 
 # init_cache creates an owner-only directory -- cache keys (weather, wan_ip, update_check…)

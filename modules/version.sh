@@ -1,6 +1,6 @@
 # shellcheck shell=bash
 # =============================================================================
-# Version Module - Shows Barista version briefly on startup
+# Version Module - Shows Cortado version briefly on startup
 # =============================================================================
 # Displays the current version for the first 2 minutes after Claude Code starts,
 # then automatically hides. Uses a session start marker file.
@@ -12,7 +12,7 @@
 
 module_version() {
     local show_duration="${VERSION_SHOW_DURATION:-120}"
-    local session_file="$CACHE_DIR/barista_session_start"
+    local session_file="$CACHE_DIR/cortado_session_start"
     local now
     now=$(date +%s)
 
@@ -44,6 +44,6 @@ module_version() {
     fi
 
     local icon
-    icon=$(get_icon "${VERSION_ICON:-☕}" "Barista")
+    icon=$(get_icon "${VERSION_ICON:-☕}" "Cortado")
     echo "${icon} v${version}"
 }

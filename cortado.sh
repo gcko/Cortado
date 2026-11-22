@@ -1,23 +1,24 @@
 #!/bin/bash
 
 # =============================================================================
-# Barista - Serving up fresh stats for Claude Code
+# Cortado - Serving up fresh stats for Claude Code
 # =============================================================================
 # A feature-rich, modular statusline for Claude Code CLI
 #
-# Configuration: Edit barista.conf to enable/disable modules
+# Configuration: Edit cortado.conf to enable/disable modules
 # Modules: Add/remove files in the modules/ directory
-# Per-directory: Create .barista.conf in any project for overrides
+# Per-directory: Create .cortado.conf in any project for overrides
 #
-# Author: Patrick D. Stuart (https://github.com/pstuart)
-# License: MIT
+# Copyright 2026 Jared Scott. Licensed under the Apache License, Version 2.0.
+# Originally brewed as Barista by Patrick D. Stuart (https://github.com/pstuart/Barista);
+# see NOTICE for the upstream MIT notice.
 # Requires: jq
 # =============================================================================
 
 # Determine script directory (handles symlinks)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 MODULES_DIR="$SCRIPT_DIR/modules"
-CONFIG_FILE="$SCRIPT_DIR/barista.conf"
+CONFIG_FILE="$SCRIPT_DIR/cortado.conf"
 
 # Determine Claude config directory (respects CLAUDE_CONFIG_DIR env var)
 CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
@@ -25,12 +26,12 @@ CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 # =============================================================================
 # DEFAULT CONFIGURATION
 # =============================================================================
-# barista.conf (shipped with Barista, sourced below by load_config) supplies the
+# cortado.conf (shipped with Cortado, sourced below by load_config) supplies the
 # SEPARATOR, DISPLAY_MODE, USE_ICONS, USE_STATUS_INDICATORS, STATUS_STYLE,
 # PROGRESS_BAR_*, MODULE_*, CACHE_MAX_AGE, DEBUG_MODE, LAYOUT_MODE,
 # TERMINAL_WIDTH and RIGHT_SIDE_RESERVE defaults. Do not restate them here;
 # every consumer below reads them with a ${VAR:-fallback} guard so a missing or
-# rejected config still renders. Only the two module flags that barista.conf
+# rejected config still renders. Only the two module flags that cortado.conf
 # does not define are kept here.
 
 MODULE_VERSION="true"
@@ -40,7 +41,7 @@ MODULE_UPDATE="true"
 # CONFIGURATION LOADING
 # =============================================================================
 
-# Succeeds unless $1 is group- or world-writable. A barista.conf is sourced as full
+# Succeeds unless $1 is group- or world-writable. A cortado.conf is sourced as full
 # bash, so a writable one is a persistent code-exec vector (Refs #28 part 3). Mirrors
 # the Darwin/Linux stat fork used in utils.sh; fails open if the mode can't be read so
 # an unusual environment never breaks the statusline.
@@ -70,7 +71,7 @@ load_config() {
         # weak umask or shared install dir can't turn it into a code-exec path (#28).
         if ! config_not_group_or_world_writable "$config_path"; then
             [ "${DEBUG_MODE:-false}" = "true" ] && \
-                echo "barista: refusing to source group/world-writable config: $config_path" >&2
+                echo "cortado: refusing to source group/world-writable config: $config_path" >&2
             return 1
         fi
         # shellcheck source=/dev/null
@@ -80,7 +81,7 @@ load_config() {
     return 1
 }
 
-# Load an untrusted config file safely (project-level .barista.conf)
+# Load an untrusted config file safely (project-level .cortado.conf)
 # Only allows KEY=VALUE assignments for known configuration variable names.
 # Ignores comments, blank lines, and any line that doesn't match the pattern.
 load_config_safe() {
@@ -142,14 +143,23 @@ load_config_safe() {
 }
 
 # Load configuration in order of precedence:
-# 1. Built-in defaults (barista.conf below; plus MODULE_VERSION/MODULE_UPDATE above)
-# 2. Script directory config (barista.conf) — trusted, shipped with Barista
-# 3. User config ($CLAUDE_CONFIG_DIR/barista.conf) — trusted, user-owned
-# 4. Per-directory config (.barista.conf in current_dir) — UNTRUSTED, uses safe parser
+# 1. Built-in defaults (cortado.conf below; plus MODULE_VERSION/MODULE_UPDATE above)
+# 2. Script directory config (cortado.conf) — trusted, shipped with Cortado
+# 3. User config ($CLAUDE_CONFIG_DIR/cortado.conf) — trusted, user-owned
+# 4. Per-directory config (.cortado.conf in current_dir) — UNTRUSTED, uses safe parser
 
 load_config "$CONFIG_FILE"
 
-USER_CONFIG="$CLAUDE_CONFIG_DIR/barista.conf"
+USER_CONFIG="$CLAUDE_CONFIG_DIR/cortado.conf"
+# One-time carry-over from Barista (the project Cortado was forked from): if the user
+# still has $CLAUDE_CONFIG_DIR/barista.conf and no cortado.conf yet, copy it across with
+# its permissions intact (cp -p keeps 600, and load_config still runs its writable
+# check). The original is left in place. If the copy can't be written, read the legacy
+# file directly so the user's settings still apply.
+LEGACY_USER_CONFIG="$CLAUDE_CONFIG_DIR/barista.conf"
+if [ ! -f "$USER_CONFIG" ] && [ -f "$LEGACY_USER_CONFIG" ]; then
+    cp -p "$LEGACY_USER_CONFIG" "$USER_CONFIG" 2>/dev/null || USER_CONFIG="$LEGACY_USER_CONFIG"
+fi
 load_config "$USER_CONFIG"
 
 # =============================================================================
@@ -418,7 +428,9 @@ main() {
     # This allows project-specific statusline customization
     # Uses safe parser — project configs are untrusted and must not be sourced
     if [ -n "$current_dir" ] && [ -d "$current_dir" ]; then
-        local dir_config="$current_dir/.barista.conf"
+        local dir_config="$current_dir/.cortado.conf"
+        # Pre-rename name: honor a project's .barista.conf until it gains a .cortado.conf
+        [ -f "$dir_config" ] || dir_config="$current_dir/.barista.conf"
         if [ -f "$dir_config" ]; then
             log_debug "Loading per-directory config (safe parser): $dir_config"
             load_config_safe "$dir_config"
@@ -432,7 +444,7 @@ main() {
 
     # Sanitize the untrusted-config width numerics before the layout arithmetic below.
     # TERMINAL_WIDTH / RIGHT_SIDE_RESERVE are allowlisted from the untrusted project
-    # .barista.conf (loaded just above via the safe parser); a non-positive-integer or
+    # .cortado.conf (loaded just above via the safe parser); a non-positive-integer or
     # leading-zero ("octal") value would break the wrap math — e.g. TERMINAL_WIDTH="0"
     # is a modulo-by-zero in the wrap layout, and "08" is a bash arithmetic error. Clamp
     # once, after all configs load (mirrors the cost/battery config-sink validation).
@@ -606,18 +618,18 @@ main() {
 # =============================================================================
 # Claude Code invokes this script with no args and JSON on stdin. Subcommands
 # are only taken when $1 is present so statusline rendering stays unchanged.
-barista_cli_dispatch() {
+cortado_cli_dispatch() {
     case "${1:-}" in
         config|--config)
             shift
             if [ ! -f "$SCRIPT_DIR/lib/config-tui.sh" ]; then
-                echo "barista: missing lib/config-tui.sh (incomplete install)." >&2
-                echo "Homebrew: brew reinstall barista. From source: re-run ./install.sh." >&2
+                echo "cortado: missing lib/config-tui.sh (incomplete install)." >&2
+                echo "Re-run ./install.sh from your Cortado checkout." >&2
                 exit 1
             fi
             # shellcheck disable=SC1091
             . "$SCRIPT_DIR/lib/config-tui.sh"
-            barista_config_main "$@"
+            cortado_config_main "$@"
             exit $?
             ;;
         version|--version|-v)
@@ -631,16 +643,16 @@ barista_cli_dispatch() {
             ;;
         help|--help|-h)
             cat <<EOF
-Barista — modular Claude Code statusline
+Cortado — modular Claude Code statusline
 
 Usage:
-  barista.sh                 # statusline (JSON on stdin; Claude Code default)
-  barista.sh config […]      # post-install config TUI / CLI (see --help)
-  barista.sh version         # print VERSION
-  barista.sh help            # this message
+  cortado.sh                 # statusline (JSON on stdin; Claude Code default)
+  cortado.sh config […]      # post-install config TUI / CLI (see --help)
+  cortado.sh version         # print VERSION
+  cortado.sh help            # this message
 
 Install / update: ./install.sh --help
-Homebrew: brew tap pstuart/tap && brew install barista
+Source: https://github.com/gcko/Cortado (a fork of pstuart/Barista)
 EOF
             exit 0
             ;;
@@ -648,7 +660,7 @@ EOF
 }
 
 if [ "$#" -gt 0 ]; then
-    barista_cli_dispatch "$@"
+    cortado_cli_dispatch "$@"
 fi
 
 # Run main function

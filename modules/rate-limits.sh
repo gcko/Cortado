@@ -267,7 +267,7 @@ module_rate_limits() {
 
     local cache_key="rate_limits_usage"
     local cache_ttl="${RATE_CACHE_TTL:-120}"
-    # Reject non-numeric TTL so an untrusted .barista.conf can't break cache_get
+    # Reject non-numeric TTL so an untrusted .cortado.conf can't break cache_get
     case "$cache_ttl" in
         ''|*[!0-9]*) cache_ttl=120 ;;
     esac

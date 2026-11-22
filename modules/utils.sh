@@ -36,7 +36,7 @@ _file_mtime() {
 # =============================================================================
 # Simple file-based caching for expensive operations (weather, network, etc.)
 
-CACHE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/barista-cache"
+CACHE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/cortado-cache"
 
 # Initialize cache directory
 init_cache() {
@@ -44,7 +44,7 @@ init_cache() {
         mkdir -p "$CACHE_DIR" 2>/dev/null
     fi
     # Always re-assert owner-only mode. #34 chmod'd only on create, so a
-    # pre-existing world-readable ~/.claude/barista-cache (older install or
+    # pre-existing world-readable ~/.claude/cortado-cache (older install or
     # permissive umask) was never repaired. Cache key names (weather, wan_ip,
     # rate_limits_curlcfg, update_check…) must not leak to other local users.
     # Matches network.sh / weather.sh which re-chmod every call.
@@ -85,7 +85,7 @@ cache_get() {
     current_time=$(date +%s)
     local age=$((current_time - file_time))
 
-    # A non-numeric max_age (from an untrusted .barista.conf setting
+    # A non-numeric max_age (from an untrusted .cortado.conf setting
     # CACHE_MAX_AGE, or a direct bad arg) would otherwise make the
     # comparison below silently fail and treat any cache — no matter how
     # old — as fresh. Treat a non-numeric max_age as a miss.
@@ -678,7 +678,7 @@ format_number() {
 # Debug logging
 log_debug() {
     if [ "${DEBUG_MODE:-false}" = "true" ]; then
-        local log_file="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/barista.log"
+        local log_file="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/cortado.log"
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$log_file" 2>/dev/null
     fi
 }

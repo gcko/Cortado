@@ -14,7 +14,7 @@
 #
 # Privacy note: When NETWORK_SHOW_WAN is enabled, this module contacts
 # external services (ifconfig.me / icanhazip.com) to determine your
-# public IP address. Results are cached for 5 minutes in barista-cache/wan_ip.
+# public IP address. Results are cached for 5 minutes in cortado-cache/wan_ip.
 # =============================================================================
 
 module_network() {
@@ -86,7 +86,7 @@ module_network() {
     # public IP to third-party lookup services without explicit consent.
     if [ "$show_wan" = "true" ] && ! is_compact "$compact"; then
         # Cache in user-private directory instead of world-readable /tmp
-        local wan_cache_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/barista-cache"
+        local wan_cache_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/cortado-cache"
         mkdir -p "$wan_cache_dir" 2>/dev/null
         chmod 700 "$wan_cache_dir" 2>/dev/null
         local wan_cache="$wan_cache_dir/wan_ip"
