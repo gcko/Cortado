@@ -162,7 +162,7 @@ DIR: myproject | CTX: ####---- 50%[OK] | GIT: main      # ASCII mode
 - **Bash 3.2+** - Works with macOS default bash
 - **jq** - JSON processor (required)
 - **bc** - Basic calculator (usually pre-installed)
-- **macOS** - For battery and OAuth keychain access; rate-limit tracking also works on Linux and Windows (Git Bash)
+- **macOS** - For the battery module; rate-limit tracking works on macOS, Linux and Windows (Git Bash)
 
 ```bash
 # Install dependencies on macOS
@@ -503,8 +503,9 @@ MODULE_ORDER="...,mycustom,..."
 ## Troubleshooting
 
 ### Rate limits show "--"
-- Ensure you're using Claude Code with a Pro/Team subscription
-- Configure Claude Code to expose an owner-only `.credentials.json` in `CLAUDE_CONFIG_DIR` (default `~/.claude`), then sign in again if needed. Keychain-only credentials are not read or migrated.
+- Send a message. Claude Code includes your 5-hour and 7-day usage in the statusline data only after a session's first reply (seen in Claude Code 2.1.330), so a new session shows `5h:-- 7d:--` until then. No credential setup is needed for this.
+- Ensure you're using Claude Code with a Pro/Team subscription.
+- If it still shows `--` after a reply, your Claude Code version may not send usage. Cortado then falls back to asking the usage API itself, which needs an owner-only `.credentials.json` in `CLAUDE_CONFIG_DIR` (default `~/.claude`). A login kept only in the macOS Keychain is not read.
 - Verify you're logged in (`claude login`)
 
 ### Modules not loading

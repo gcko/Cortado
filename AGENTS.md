@@ -143,7 +143,7 @@ module_name() {
 
 ### Module Types
 
-1. **Input-dependent modules** (context, model, cost): Receive JSON input as `$1`
+1. **Input-dependent modules** (context, model, cost, rate-limits): Receive JSON input as `$1`
 2. **Directory-dependent modules** (git, project): Receive current directory as `$1`
 3. **Standalone modules** (time, battery, cpu): Take no arguments
 
@@ -206,8 +206,8 @@ bash tests/test_rate_limits.sh     # rate-limit parsers/backoff
 bash tests/test_config_cli.sh      # cortado config CLI (set/toggle/project) and Barista migration
 bash tests/test_install_update.sh  # installer update flags, runtime copy, migration
 # also: test_cache, test_cost, test_git_cache, test_model, test_project,
-#       test_rate_limits_credentials, test_sandbox, test_status_render, test_ttl_validation,
-#       test_update, test_uptime
+#       test_rate_limits_credentials, test_rate_limits_payload, test_sandbox, test_status_render,
+#       test_ttl_validation, test_update, test_uptime
 ```
 
 Lint with `shellcheck` - `.shellcheckrc` disables SC2155 and SC2034 project-wide (see upstream pstuart/Barista#21 for the policy).
@@ -324,8 +324,9 @@ Modules also include their own `${CLAUDE_CONFIG_DIR:-$HOME/.claude}` fallback fo
 ## Rate Limits Module
 
 The rate limits module (`rate-limits.sh`) is the most complex:
-- Fetches usage from the Anthropic OAuth usage API with the token in `$CLAUDE_CONFIG_DIR/.credentials.json`, and only when that file is owner-only. It never reads the macOS Keychain, so a Claude Code login kept only in the Keychain leaves the module on its `5h:-- 7d:--` placeholder
-- Caches responses to avoid excessive API calls, and serves the last cached reading (up to 24 hours old) when a fetch fails
+- Reads usage from the statusline payload first: Claude Code sends `rate_limits.five_hour` and `rate_limits.seven_day` (`used_percentage`, `resets_at` in Unix seconds) after a session's first turn (seen in 2.1.330). `_usage_from_payload` reshapes them into the usage API's shape, so one renderer serves both sources. This needs no credential and makes no request, on any platform
+- Until the first turn, or when the payload lacks either window, shows its `5h:-- 7d:--` placeholder or falls back to the Anthropic OAuth usage API with the token in `$CLAUDE_CONFIG_DIR/.credentials.json`, and only when that file is owner-only. It never reads the macOS Keychain
+- A payload reading is never written to the shared usage cache, and records a history point at most once per `RATE_CACHE_TTL`. The API path caches responses and serves the last cached reading (up to 24 hours old) when a fetch fails
 - Backs off after 429 responses, honoring `Retry-After` headers
 - Maintains history file for projection calculations
 - Implements file size caps to prevent memory issues
