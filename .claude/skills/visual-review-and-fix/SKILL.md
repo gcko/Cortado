@@ -12,11 +12,13 @@ This skill rests on one measured claim. **Cortado's defect class is the confiden
 an absence.** On 2026-11-22, with `main` at `7503194`, all 14 test suites green and ShellCheck at
 its baseline, one afternoon of rendering found:
 
-- Every status indicator printing all of its glyphs at once: `25% 🟢 🟡 🔴` for context and
-  `42% 🟢 🟡 🟠 🔴` for rate limits, in a live Claude Code session as well as from a fixture.
-  `cortado.sh` runs the modules with `IFS=','`, and the status helpers split their glyphs with
-  `read`, so the split never happens. `get_status` is correct when called on its own, which is how
-  its tests call it.
+- Every status indicator broken in both directions: a healthy reading printed all of its glyphs
+  at once (`25% 🟢 🟡 🔴` for context, `42% 🟢 🟡 🟠 🔴` for rate limits), and a warning or critical
+  reading printed none (`65%  (30k→⚡)`), so the line went quiet exactly when it should have
+  warned. Seen in a live Claude Code session as well as from a fixture. `cortado.sh` ran the
+  modules with `IFS=','`, and the status helpers split their glyphs with `read`, so the first
+  variable took every glyph and the others were empty. `get_status` is correct when called on its
+  own, which is how its tests called it.
 - A payload with no `context_window_size` rendering context as `50000000%`, because the missing
   field defaults to `1` rather than to the 200k fallback.
 - A quota reading cached six hours earlier, with the fetch failing, rendered exactly as a fresh one:
@@ -230,8 +232,21 @@ cd - >/dev/null
 
 Run it from the worktree root, because the wrapper renders `$PWD/cortado.sh`. `--settings` adds
 the statusline for this session only and leaves your own settings alone. Claude Code asks whether to
-trust the new scratch folder: answer it with `tmux send-keys -t cortado-walk Down Enter`, only for a
-scratch folder you created. Then read the line and the payload:
+trust the new scratch folder. Answer it only for a scratch folder you created, and only once the
+menu is live: keys sent as soon as the word "trust" appears are dropped, and a lone Enter then
+selects "No, exit" and ends the session.
+
+```bash
+until tmux capture-pane -p -t cortado-walk 2>/dev/null | grep -q 'Enter to confirm'; do sleep 0.5; done
+sleep 1.5
+for i in 1 2 3 4 5; do
+  tmux capture-pane -p -t cortado-walk | grep -q '❯ Yes, I trust' && break
+  tmux send-keys -t cortado-walk Down; sleep 0.7
+done
+tmux capture-pane -p -t cortado-walk | grep -q '❯ Yes, I trust' && tmux send-keys -t cortado-walk Enter
+```
+
+Then read the line and the payload:
 
 ```bash
 tmux capture-pane -p -t cortado-walk | grep -v '^\s*$' | tail -4
@@ -247,9 +262,9 @@ pgrep -fl "$WALK/statusline.sh" || echo "no leftovers"
 rm -rf "$WALK"
 ```
 
-`claude` can take a second or two to exit after its tmux session is killed, so a `pgrep` straight
-after the kill can name a process that is already on its way out. Check again before treating it as
-an orphan.
+`claude` can take a few seconds to exit after its tmux session is killed (about three, measured
+twice on 2026-11-22), so a `pgrep` straight after the kill can name a process that is already on its
+way out. Check again before treating it as an orphan.
 
 ## Behavioural testing first
 

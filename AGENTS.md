@@ -206,7 +206,8 @@ bash tests/test_rate_limits.sh     # rate-limit parsers/backoff
 bash tests/test_config_cli.sh      # cortado config CLI (set/toggle/project) and Barista migration
 bash tests/test_install_update.sh  # installer update flags, runtime copy, migration
 # also: test_cache, test_cost, test_git_cache, test_model, test_project,
-#       test_rate_limits_credentials, test_sandbox, test_ttl_validation, test_update, test_uptime
+#       test_rate_limits_credentials, test_sandbox, test_status_render, test_ttl_validation,
+#       test_update, test_uptime
 ```
 
 Lint with `shellcheck` - `.shellcheckrc` disables SC2155 and SC2034 project-wide (see upstream pstuart/Barista#21 for the policy).
@@ -285,7 +286,7 @@ A layer that nothing calls yet is reviewed together with the layer that makes it
 - Each builder works in its own worktree under `.claude/worktrees/`, never in the main checkout.
 - These files are contention surfaces; two in-flight branches must not both edit one: `cortado.sh`, `cortado.conf`, `lib/config-tui.sh`, `install.sh`, `modules/utils.sh`, `README.md`, `AGENTS.md`. Adding or renaming a module touches most of them (see "Adding a New Module"), so module work is one branch at a time.
 - Tests are sandboxed and safe to run concurrently. A manual render or a live session must use its own `CLAUDE_CONFIG_DIR`.
-- Stop what you start: tmux sessions, `claude` processes started for a live-session walk, delegated `codex`/`agy` runs. A process can take a second or two to exit after its tmux session is killed; check by name (`pgrep -fl <pattern>`) before calling it gone or orphaned.
+- Stop what you start: tmux sessions, `claude` processes started for a live-session walk, delegated `codex`/`agy` runs. A `claude` process can take a few seconds to exit after its tmux session is killed; check by name (`pgrep -fl <pattern>`) before calling it gone or orphaned.
 
 ## Repository Skills
 

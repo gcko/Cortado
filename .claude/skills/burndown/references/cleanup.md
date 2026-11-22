@@ -34,7 +34,7 @@ already owns this, scoped to the ledger. Keep a stack's worktrees until the whol
 
 - **Sessions and processes first.** `tmux kill-session -t <name>` for each ledger session. Stop each
   ledger pid with `kill -TERM`, then confirm with `kill -0` that it is gone. A `claude` process can
-  take a second or two to exit after its tmux session is killed, so check again by name
+  take a few seconds to exit after its tmux session is killed, so check again by name
   (`pgrep -fl <pattern>`) before treating it as a survivor. Stop a monitor with its task stop.
 - **Worktrees, then branches.** Remove each ledger worktree whose tracked tree is clean
   (`git worktree remove <path>`). Then delete its branch only when `gh pr view <branch> --json
