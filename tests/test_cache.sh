@@ -3,6 +3,7 @@
 # ABOUTME: Run with: bash tests/test_cache.sh
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=tests/lib/assert.sh
 . "$SCRIPT_DIR/tests/lib/assert.sh" indented
 
 TEST_BASE="$(mktemp -d "${TMPDIR:-/tmp}/cortado-cache-test.XXXXXX")" || exit 1

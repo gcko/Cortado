@@ -6,6 +6,7 @@
 # ABOUTME: Run with: bash tests/test_uptime.sh
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=tests/lib/assert.sh
 . "$SCRIPT_DIR/tests/lib/assert.sh" indented
 
 # Load the module under test. format_uptime is pure (integer arithmetic + echo, no I/O).

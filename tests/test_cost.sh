@@ -1,3 +1,4 @@
+#!/bin/bash
 # =============================================================================
 # Cost Module Regression Tests
 # =============================================================================
@@ -10,6 +11,7 @@ set -u
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+# shellcheck source=tests/lib/assert.sh
 . "$PROJECT_ROOT/tests/lib/assert.sh" plain-dash
 
 # Load only the shared helpers and the module under test.

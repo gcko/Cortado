@@ -4,6 +4,7 @@
 # ABOUTME: Run with: bash tests/test_utils.sh
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=tests/lib/assert.sh
 . "$SCRIPT_DIR/tests/lib/assert.sh" indented
 
 # Load utils (the functions under test)

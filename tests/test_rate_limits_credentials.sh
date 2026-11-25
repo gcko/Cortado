@@ -10,6 +10,7 @@ export CLAUDE_CONFIG_DIR="$HOME/.claude"
 export TMPDIR="$TEST_ROOT/tmp"
 mkdir -p "$CLAUDE_CONFIG_DIR" "$TMPDIR"
 DEBUG_MODE=false
+# shellcheck source=tests/lib/assert.sh
 . "$SCRIPT_DIR/tests/lib/assert.sh" indented
 CURL_CALLS="$TEST_ROOT/curl-called"
 KEYCHAIN_CALLS="$TEST_ROOT/keychain-called"
@@ -108,9 +109,11 @@ rm -f "$CREDS_FILE"
 assert_rejected_file "missing file"
 # Check jq status independently of its filter.
 write_credentials '{"claudeAiOauth":{"accessToken":"test-token-REDACTED"}}'
+# shellcheck disable=SC2329 # The sourced rate-limit module calls this mock.
 jq() { printf '%s\n' test-token-REDACTED-partial; return 1; }
 assert_rejected_file "jq failure after producing output"
 unset -f jq
+# shellcheck disable=SC2329 # The sourced rate-limit module calls this mock.
 jq() { return 127; }
 assert_rejected_file "jq unavailable"
 unset -f jq

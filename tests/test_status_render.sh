@@ -15,6 +15,7 @@ set -u
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+# shellcheck source=tests/lib/assert.sh
 . "$PROJECT_ROOT/tests/lib/assert.sh" plain
 
 TEST_BASE="$(mktemp -d "${TMPDIR:-/tmp}/cortado-render-test.XXXXXX")"

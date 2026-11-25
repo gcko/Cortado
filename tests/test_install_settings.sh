@@ -9,6 +9,7 @@ export HOME="$TEST_BASE/home"
 export CORTADO_PATH_TEST="expanded"
 mkdir -p "$HOME"
 
+# shellcheck source=tests/lib/assert.sh
 . "$REPO_ROOT/tests/lib/assert.sh" indented-unquoted
 run_installer() {
     local config_dir="$1"

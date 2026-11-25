@@ -7,6 +7,7 @@
 # ABOUTME: Run with: bash tests/test_project.sh
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=tests/lib/assert.sh
 . "$SCRIPT_DIR/tests/lib/assert.sh" indented
 
 # Load the module under test. _get_project_icon and _format_project are pure (case + echo, no I/O).

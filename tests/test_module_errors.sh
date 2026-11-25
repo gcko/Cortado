@@ -8,6 +8,7 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 TEST_BASE="$(mktemp -d)"
 trap 'rm -rf "$TEST_BASE"' EXIT
 
+# shellcheck source=tests/lib/assert.sh
 . "$PROJECT_ROOT/tests/lib/assert.sh" plain-comma
 # A controlled PATH keeps the system tools available and omits the selected one.
 without_tool() {

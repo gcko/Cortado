@@ -2,6 +2,7 @@
 set -u
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=tests/lib/assert.sh
 . "$PROJECT_ROOT/tests/lib/assert.sh" plain-comma
 
 out=$(/bin/bash "$PROJECT_ROOT/tests/render_timing.sh" 3 2>&1)

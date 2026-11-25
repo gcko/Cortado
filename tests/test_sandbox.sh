@@ -3,6 +3,7 @@
 # ABOUTME: Run with: bash tests/test_sandbox.sh
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=tests/lib/assert.sh
 . "$SCRIPT_DIR/tests/lib/assert.sh" indented
 
 # Load utils and sandbox module

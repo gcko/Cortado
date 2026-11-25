@@ -3,6 +3,7 @@
 # ABOUTME: Run with: bash tests/test_config_cli.sh
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=tests/lib/assert.sh
 . "$SCRIPT_DIR/tests/lib/assert.sh" indented
 
 TMPHOME=$(mktemp -d "${TMPDIR:-/tmp}/cortado-cfg-test.XXXXXX")
@@ -144,6 +145,7 @@ assert_file_contains "toggle still preserves RATE_*" 'RATE_SHOW_PROGRESS_BAR="tr
 
 # Project .cortado.conf must not be sourced (644 is typical for a cloned repo)
 PROJ_PWN="$PROJ"
+# shellcheck disable=SC2016 # Keep the variable literal in the project config fixture.
 printf '%s\n' 'touch "$CLAUDE_CONFIG_DIR/pwned"' 'MODULE_DIRECTORY="false"' > "$PROJ_PWN/.cortado.conf"
 chmod 644 "$PROJ_PWN/.cortado.conf"
 (
@@ -163,6 +165,7 @@ assert_contains "project --show still works" "Modules:" "$show_proj"
 assert_contains "project --show honors MODULE_DIRECTORY=false" "[off] directory" "$show_proj"
 
 # --project --set must not copy extras that are not allowlisted / not safe
+# shellcheck disable=SC2016 # Keep the variable literal in the project config fixture.
 printf '%s\n' \
     'touch "$CLAUDE_CONFIG_DIR/pwned2"' \
     'PATH=/tmp/evil' \

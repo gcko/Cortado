@@ -15,6 +15,7 @@ mkdir -p "$TEST_BASE/project"
 touch "$TEST_BASE/project/AAA" "$TEST_BASE/project/BBB"
 PAYLOAD=$(jq -cn --arg dir "$TEST_BASE/project" '{workspace:{current_dir:$dir}}')
 
+# shellcheck source=tests/lib/assert.sh
 . "$PROJECT_ROOT/tests/lib/assert.sh" plain-comma
 
 render() (

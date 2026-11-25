@@ -16,6 +16,7 @@ export CLAUDE_CONFIG_DIR="$TEST_BASE/claude"
 export CACHE_DIR="$CLAUDE_CONFIG_DIR/cortado-cache"
 mkdir -p "$PROJECT" "$CACHE_DIR" "$TEST_BASE/bin"
 PROJECT_FILE="$PROJECT/.cortado.conf"
+# shellcheck source=tests/lib/assert.sh
 . "$SCRIPT_DIR/tests/lib/assert.sh" indented
 
 render() {
@@ -218,16 +219,17 @@ echo "=== first and empty project saves ==="
 rm -f "$PROJECT_FILE" "$PROJECT/.barista.conf"
 cat > "$TEST_BASE/menu.conf" <<'EOF'
 if [ "${CORTADO_TEST_MENU:-}" = true ]; then
-    run_project_menu() {
+    # Run menu functions outside the active EXIT trap so their statuses are
+    # independent of the status from --path.
+    run_project_menu() (
         local path="$PWD/.cortado.conf"
         _cfg_load_into_shell "$path" project
         if [ "${CORTADO_TEST_FAIL_THEME:-}" = true ]; then
             project_config_assign() { return 1; }
         fi
         _cfg_run_interactive "$path" project
-        exit $?
-    }
-    trap run_project_menu EXIT
+    )
+    trap 'run_project_menu; exit $?' EXIT
 fi
 EOF
 cp "$TEST_BASE/menu.conf" "$CLAUDE_CONFIG_DIR/cortado.conf"
@@ -294,6 +296,8 @@ assert_eq "the menu omits the protected theme choice and reports no save" "" \
     "$(sed -n '/Select$/p; /Saved /p' "$TEST_BASE/result")"
 assert_eq "a protected theme alone does not create a project file" "absent" \
     "$(if [ ! -e "$PROJECT_FILE" ]; then echo absent; fi)"
+assert_eq "the final project preview includes the enabled model sample" "Claude" \
+    "$(sed -n 's/^Preview: .*\(Claude\).*/\1/p' "$TEST_BASE/result")"
 assert_eq "the project preview omits the disabled CPU sample" "" \
     "$(sed -n '/Preview:.*12%/p' "$TEST_BASE/result")"
 assert_eq "the project menu shows CPU unchecked" "] cpu" \

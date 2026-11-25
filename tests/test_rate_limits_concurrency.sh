@@ -8,6 +8,7 @@ export TMPDIR="$TEST_BASE/tmp"
 export STUB_STATE="$TEST_BASE/state"
 mkdir -p "$TMPDIR" "$STUB_STATE" "$TEST_BASE/bin"
 export PATH="$TEST_BASE/bin:$PATH"
+# shellcheck source=tests/lib/assert.sh
 . "$PROJECT_ROOT/tests/lib/assert.sh" plain-comma
 
 sandbox() {

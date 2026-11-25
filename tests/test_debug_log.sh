@@ -8,6 +8,7 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 TEST_BASE="$(mktemp -d)"
 trap 'rm -rf "$TEST_BASE"' EXIT
 
+# shellcheck source=tests/lib/assert.sh
 . "$PROJECT_ROOT/tests/lib/assert.sh" plain
 assert_log_size() {
     local desc="$1" file="$2" lower="$3" upper="$4"
