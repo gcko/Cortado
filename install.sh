@@ -2015,9 +2015,13 @@ do_install() {
     # Update settings.json only after successful test
     print_info "Applying configuration to settings.json..."
 
+    # Claude Code passes the command to a shell, so quote the path before JSON encoding it.
+    # shellcheck disable=SC2016 # $path is a jq variable.
+    local statusline_filter='.statusLine = {"type": "command", "command": ($path | @sh)}'
+
     if [ -f "$SETTINGS_FILE" ]; then
         local tmp_file=$(mktemp)
-        if jq --arg cmd "$CORTADO_DIR/cortado.sh" '.statusLine = {"type": "command", "command": $cmd}' "$SETTINGS_FILE" > "$tmp_file" 2>/dev/null; then
+        if jq --arg path "$CORTADO_DIR/cortado.sh" "$statusline_filter" "$SETTINGS_FILE" > "$tmp_file" 2>/dev/null; then
             mv "$tmp_file" "$SETTINGS_FILE"
             print_success "Updated settings.json"
         else
@@ -2026,7 +2030,7 @@ do_install() {
         fi
     else
         local tmp_file=$(mktemp)
-        if jq -n --arg cmd "$CORTADO_DIR/cortado.sh" '{statusLine: {type: "command", command: $cmd}}' > "$tmp_file" 2>/dev/null; then
+        if jq -n --arg path "$CORTADO_DIR/cortado.sh" "$statusline_filter" > "$tmp_file" 2>/dev/null; then
             mv "$tmp_file" "$SETTINGS_FILE"
             print_success "Created settings.json"
         else
