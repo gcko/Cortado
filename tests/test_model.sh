@@ -11,20 +11,7 @@ set -u
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-PASS=0
-FAIL=0
-
-pass() { PASS=$((PASS + 1)); printf 'PASS: %s\n' "$1"; }
-fail() { FAIL=$((FAIL + 1)); printf 'FAIL: %s\n' "$1"; }
-
-assert_eq() {
-    local desc="$1" expected="$2" actual="$3"
-    if [ "$expected" = "$actual" ]; then
-        pass "$desc"
-    else
-        fail "$desc — expected [$expected] got [$actual]"
-    fi
-}
+. "$PROJECT_ROOT/tests/lib/assert.sh" plain-dash
 
 # Load only the shared helpers and the module under test.
 # shellcheck source=/dev/null

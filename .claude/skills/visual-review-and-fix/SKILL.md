@@ -81,9 +81,9 @@ render() {
 }
 ```
 
-`/bin/bash` is deliberate: on macOS it is Bash 3.2, the floor Cortado supports, and the test suite
-runs under whatever `bash` is first on PATH. `SEED_CACHE` (a JSON file) and `SEED_AGE` (a BSD `date
--v` offset such as `6H`) plant a rate-limit reading. `date -v` is macOS-only; on Linux use
+`/bin/bash` exercises the same Bash 3.2 floor as the macOS Pre-PR Checks and CI job. `SEED_CACHE`
+(a JSON file) and `SEED_AGE` (a BSD `date -v` offset such as `6H`) plant a rate-limit reading.
+`date -v` is macOS-only. On Linux use
 `touch -d '6 hours ago'`.
 
 Pin the modules you are reviewing, so the line holds only what you are reading:

@@ -40,9 +40,9 @@ worktree.
 
 ## 5. Stack, submit and land
 
-**Re-run the gate yourself.** Cortado has no CI, so a builder's "checks passed" is a claim. Before
-submitting and again before merging, the orchestrator runs the Pre-PR Checks on the exact head it
-will push or merge, and pastes that output into the pull request's `## Verification`.
+**Re-run the local gate yourself.** GitHub Actions checks each pull request. Before submitting and
+again before merging, the orchestrator runs the Pre-PR Checks on the commit it will push or merge
+and pastes that output into the pull request's `## Verification`.
 
 **Title and body.** The title follows **AGENTS.md, "PR Workflow"**: the shipped behaviour in a plain
 sentence, ready for release notes. The body carries the adapter's issue links (closing keywords only

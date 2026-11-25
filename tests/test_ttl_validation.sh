@@ -7,26 +7,12 @@
 # ABOUTME: Run with: bash tests/test_ttl_validation.sh
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PASS=0
-FAIL=0
+. "$SCRIPT_DIR/tests/lib/assert.sh" indented
 
 TEST_BASE="$(mktemp -d "${TMPDIR:-/tmp}/cortado-ttl-test.XXXXXX")"
 trap 'rm -rf "$TEST_BASE"' EXIT
 export CLAUDE_CONFIG_DIR="$TEST_BASE/claude"
 mkdir -p "$CLAUDE_CONFIG_DIR"
-
-assert_eq() {
-    local desc="$1" expected="$2" actual="$3"
-    if [ "$expected" = "$actual" ]; then
-        echo "  PASS: $desc"
-        PASS=$((PASS + 1))
-    else
-        echo "  FAIL: $desc"
-        echo "    expected: '$expected'"
-        echo "    actual:   '$actual'"
-        FAIL=$((FAIL + 1))
-    fi
-}
 
 # Load utils only after establishing the isolated config root so its cache
 # location can never resolve to the user's real ~/.claude directory.

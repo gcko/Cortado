@@ -6,21 +6,7 @@
 # ABOUTME: Run with: bash tests/test_rate_limits.sh
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PASS=0
-FAIL=0
-
-assert_eq() {
-    local desc="$1" expected="$2" actual="$3"
-    if [ "$expected" = "$actual" ]; then
-        echo "  PASS: $desc"
-        PASS=$((PASS + 1))
-    else
-        echo "  FAIL: $desc"
-        echo "    expected: '$expected'"
-        echo "    actual:   '$actual'"
-        FAIL=$((FAIL + 1))
-    fi
-}
+. "$SCRIPT_DIR/tests/lib/assert.sh" indented
 
 # Load the module under test (_parse_reset_epoch only uses `date`, no other deps).
 . "$SCRIPT_DIR/modules/rate-limits.sh"

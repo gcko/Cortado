@@ -8,19 +8,7 @@ export TMPDIR="$TEST_BASE/tmp"
 export STUB_STATE="$TEST_BASE/state"
 mkdir -p "$TMPDIR" "$STUB_STATE" "$TEST_BASE/bin"
 export PATH="$TEST_BASE/bin:$PATH"
-PASS=0
-FAIL=0
-
-assert_eq() {
-    local desc="$1" expected="$2" actual="$3"
-    if [ "$expected" = "$actual" ]; then
-        echo "PASS: $desc"
-        PASS=$((PASS + 1))
-    else
-        echo "FAIL: $desc (expected [$expected], got [$actual])"
-        FAIL=$((FAIL + 1))
-    fi
-}
+. "$PROJECT_ROOT/tests/lib/assert.sh" plain-comma
 
 sandbox() {
     local sb

@@ -1,0 +1,155 @@
+name: Cortado checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    continue-on-error: ${{ matrix.experimental }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS (Bash 3.2)
+            runner: macos-26
+            experimental: false
+          - name: Ubuntu
+            runner: ubuntu-24.04
+            experimental: false
+          - name: Windows Git Bash (experimental)
+            runner: windows-2025
+            experimental: true
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install macOS dependencies
+        if: runner.os == 'macOS'
+        run: |
+          if [ ! -x "$(brew --prefix jq)/bin/jq" ]; then brew install jq; fi
+          if ! command -v bc >/dev/null; then brew install bc; fi
+          if ! command -v shellcheck >/dev/null; then brew install shellcheck; fi
+          test -x /usr/bin/jq
+          printf '%s\n' "$(brew --prefix jq)/bin" >> "$GITHUB_PATH"
+
+      - name: Install Ubuntu dependencies
+        if: runner.os == 'Linux'
+        run: |
+          missing=()
+          for tool in jq bc shellcheck; do
+            if ! command -v "$tool" >/dev/null; then missing+=("$tool"); fi
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            sudo apt-get update
+            sudo apt-get install -y "${missing[@]}"
+          fi
+
+      - name: Install Windows dependencies
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (-not (Get-Command jq -CommandType Application -ErrorAction SilentlyContinue)) {
+            choco install jq -y
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          if (-not (Get-Command bc -CommandType Application -ErrorAction SilentlyContinue)) {
+            # Install native bc from the runner's MSYS2 without adding its shell to PATH.
+            & 'C:\msys64\usr\bin\bash.exe' -lc 'pacman -Sy --needed --noconfirm mingw-w64-ucrt-x86_64-bc'
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            'C:\msys64\ucrt64\bin' | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          }
+
+      - name: Identify tools
+        id: tools
+        run: |
+          /bin/bash --version
+          jq --version
+          command -v bc
+          if [ "$RUNNER_OS" = macOS ]; then
+            /bin/bash -c '[[ $BASH_VERSION == 3.2.* ]]'
+            /usr/bin/jq --version
+          fi
+
+      - name: Check shell syntax
+        run: |
+          failed=0
+          for script in cortado.sh install.sh lib/*.sh modules/*.sh tests/*.sh tests/lib/*.sh; do
+            /bin/bash -n "$script" || { printf 'SYNTAX: %s\n' "$script"; failed=1; }
+          done
+          exit "$failed"
+
+      - name: Compare ShellCheck findings with the merge base
+        if: ${{ !cancelled() && steps.tools.outcome == 'success' }}
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [ "$RUNNER_OS" = Windows ] && ! command -v shellcheck >/dev/null; then
+            echo "Skipping ShellCheck on Windows because the runner has no ShellCheck binary."
+            exit 0
+          fi
+          if [[ "$BASE_SHA" =~ ^0+$ ]]; then BASE_SHA=HEAD^; fi
+          merge_base=$(git merge-base HEAD "$BASE_SHA")
+          scratch=$(mktemp -d)
+          trap 'rm -rf "$scratch"' EXIT
+          mkdir "$scratch/base"
+          git archive "$merge_base" | tar -x -C "$scratch/base"
+          sc() (
+            cd "$1" || exit 1
+            shopt -s nullglob
+            local_status=0
+            shellcheck --color=never cortado.sh install.sh lib/*.sh modules/*.sh tests/*.sh tests/lib/*.sh > "$2" || local_status=$?
+            if [ "$local_status" -gt 1 ]; then
+              cat "$2" >&2
+              exit "$local_status"
+            fi
+            awk '/^In / { count++ } END { print count + 0 }' "$2"
+          )
+          base_count=$(sc "$scratch/base" "$scratch/base.txt")
+          head_count=$(sc . "$scratch/head.txt")
+          printf 'shellcheck findings: base %s, head %s\n' "$base_count" "$head_count"
+          if [ "$head_count" -gt "$base_count" ]; then
+            cat "$scratch/head.txt"
+            exit 1
+          fi
+
+      - name: Run all suites with macOS system Bash and both jq variants
+        if: ${{ !cancelled() && steps.tools.outcome == 'success' && runner.os == 'macOS' }}
+        run: /bin/bash tests/run-jq-variants.sh
+
+      - name: Run all suites
+        if: ${{ !cancelled() && steps.tools.outcome == 'success' && runner.os != 'macOS' }}
+        run: |
+          log=$(mktemp)
+          trap 'rm -f "$log"' EXIT
+          failed=0
+          for suite in tests/test_*.sh; do
+            if /bin/bash "$suite" > "$log" 2>&1; then
+              printf 'PASS: %s\n' "${suite##*/}"
+            else
+              printf 'FAIL: %s\n' "${suite##*/}"
+              cat "$log"
+              failed=1
+            fi
+          done
+          exit "$failed"
+
+      - name: Record default render p50 and p95
+        if: ${{ !cancelled() && steps.tools.outcome == 'success' }}
+        continue-on-error: true
+        run: /bin/bash tests/render_timing.sh

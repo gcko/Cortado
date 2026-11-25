@@ -9,21 +9,7 @@ export HOME="$TEST_BASE/home"
 export CORTADO_PATH_TEST="expanded"
 mkdir -p "$HOME"
 
-PASS=0
-FAIL=0
-pass() { PASS=$((PASS + 1)); printf '  PASS: %s\n' "$1"; }
-fail() { FAIL=$((FAIL + 1)); printf '  FAIL: %s\n' "$1"; }
-
-assert_eq() {
-    local desc="$1" expected="$2" actual="$3"
-    if [ "$expected" = "$actual" ]; then
-        pass "$desc"
-    else
-        fail "$desc"
-        printf '    expected: %s\n    actual:   %s\n' "$expected" "$actual"
-    fi
-}
-
+. "$REPO_ROOT/tests/lib/assert.sh" indented-unquoted
 run_installer() {
     local config_dir="$1"
     shift

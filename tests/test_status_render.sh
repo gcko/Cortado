@@ -15,27 +15,7 @@ set -u
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-PASS=0
-FAIL=0
-
-pass() { PASS=$((PASS + 1)); printf 'PASS: %s\n' "$1"; }
-fail() { FAIL=$((FAIL + 1)); printf 'FAIL: %s\n' "$1"; }
-
-assert_contains() {
-    local desc="$1" needle="$2" haystack="$3"
-    case "$haystack" in
-        *"$needle"*) pass "$desc" ;;
-        *) fail "$desc (missing [$needle] in [$haystack])" ;;
-    esac
-}
-
-assert_not_contains() {
-    local desc="$1" needle="$2" haystack="$3"
-    case "$haystack" in
-        *"$needle"*) fail "$desc (unexpected [$needle] in [$haystack])" ;;
-        *) pass "$desc" ;;
-    esac
-}
+. "$PROJECT_ROOT/tests/lib/assert.sh" plain
 
 TEST_BASE="$(mktemp -d "${TMPDIR:-/tmp}/cortado-render-test.XXXXXX")"
 trap 'rm -rf "$TEST_BASE"' EXIT

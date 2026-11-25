@@ -15,20 +15,7 @@ mkdir -p "$TEST_BASE/project"
 touch "$TEST_BASE/project/AAA" "$TEST_BASE/project/BBB"
 PAYLOAD=$(jq -cn --arg dir "$TEST_BASE/project" '{workspace:{current_dir:$dir}}')
 
-PASS=0
-FAIL=0
-
-pass() { PASS=$((PASS + 1)); printf 'PASS: %s\n' "$1"; }
-fail() { FAIL=$((FAIL + 1)); printf 'FAIL: %s\n' "$1"; }
-
-assert_eq() {
-    local desc="$1" expected="$2" actual="$3"
-    if [ "$actual" = "$expected" ]; then
-        pass "$desc"
-    else
-        fail "$desc (expected [$expected], got [$actual])"
-    fi
-}
+. "$PROJECT_ROOT/tests/lib/assert.sh" plain-comma
 
 render() (
     local sb

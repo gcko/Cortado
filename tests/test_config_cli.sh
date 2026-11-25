@@ -3,40 +3,7 @@
 # ABOUTME: Run with: bash tests/test_config_cli.sh
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PASS=0
-FAIL=0
-
-assert_eq() {
-    local desc="$1" expected="$2" actual="$3"
-    if [ "$expected" = "$actual" ]; then
-        echo "  PASS: $desc"
-        PASS=$((PASS + 1))
-    else
-        echo "  FAIL: $desc"
-        echo "    expected: '$expected'"
-        echo "    actual:   '$actual'"
-        FAIL=$((FAIL + 1))
-    fi
-}
-
-assert_contains() {
-    local desc="$1" needle="$2" haystack="$3"
-    case "$haystack" in
-        *"$needle"*) echo "  PASS: $desc"; PASS=$((PASS + 1)) ;;
-        *) echo "  FAIL: $desc (missing '$needle')"; echo "    in: $haystack"; FAIL=$((FAIL + 1)) ;;
-    esac
-}
-
-assert_file_contains() {
-    local desc="$1" needle="$2" file="$3"
-    if grep -qF "$needle" "$file" 2>/dev/null; then
-        echo "  PASS: $desc"
-        PASS=$((PASS + 1))
-    else
-        echo "  FAIL: $desc (missing '$needle' in $file)"
-        FAIL=$((FAIL + 1))
-    fi
-}
+. "$SCRIPT_DIR/tests/lib/assert.sh" indented
 
 TMPHOME=$(mktemp -d "${TMPDIR:-/tmp}/cortado-cfg-test.XXXXXX")
 export CLAUDE_CONFIG_DIR="$TMPHOME/claude"

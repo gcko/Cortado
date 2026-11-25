@@ -10,32 +10,11 @@ CLAUDE_CONFIG_DIR=$(mktemp -d)
 export CLAUDE_CONFIG_DIR
 export CACHE_DIR="$CLAUDE_CONFIG_DIR/cortado-cache"
 trap 'rm -rf "$CLAUDE_CONFIG_DIR"' EXIT
-PASS=0
-FAIL=0
-
-assert_eq() {
-    local desc="$1" expected="$2" actual="$3"
-    if [ "$expected" = "$actual" ]; then
-        echo "  PASS: $desc"
-        PASS=$((PASS + 1))
-    else
-        echo "  FAIL: $desc"
-        echo "    expected: '$expected'"
-        echo "    actual:   '$actual'"
-        FAIL=$((FAIL + 1))
-    fi
-}
+. "$REPO_ROOT/tests/lib/assert.sh" indented
 
 # Load installer functions without running main.
 # shellcheck source=../install.sh
 . "$INSTALL"
-
-assert_rc() {
-    local desc="$1" expected="$2"
-    shift 2
-    "$@"
-    assert_eq "$desc" "$expected" "$?"
-}
 
 # --- parse_args ---
 USE_EMOJI="true"

@@ -12,10 +12,9 @@ Invoke `cortado-release` with no argument to analyse and propose a version. Pass
 (`2.1.0`) to propose that one instead; the analysis still runs, so a disagreement is visible rather
 than silent. Pass `--dry-run` to analyse, print the proposal and stop.
 
-Cortado has no release workflow and no CI (`.github/NO_GITHUB_ACTIONS.md`). This skill is the whole
-procedure: it edits the version in a release pull request, publishes the tag and the GitHub
-Release itself, and checks the result. `AGENTS.md`, "Versioning and Releases", is the contract it
-follows.
+GitHub Actions checks release pull requests and pushes to `main`. This skill edits the version in
+a release pull request, publishes the tag and GitHub Release, and checks the result. Follow the
+"Versioning and Releases" contract in `AGENTS.md`.
 
 ## Prerequisites
 
@@ -65,9 +64,8 @@ zero commits, empty diffs, exit 0, exactly like a release with nothing in it.
   ```
 
   Any 0 is drift; fix it in the release pull request and say so in the proposal.
-- **`main` passes the Pre-PR Checks.** With no CI, nothing else has checked the tip. Run the block
-  in `AGENTS.md`, "Pre-PR Checks", on `origin/main` in a clean worktree, and keep its output for the
-  proposal.
+- **`main` passes the Pre-PR Checks.** Run the local checks from `AGENTS.md` on `origin/main` in a
+  clean worktree and keep their output for the proposal.
 
 ## 2. Gather the evidence
 

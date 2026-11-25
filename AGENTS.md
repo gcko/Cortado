@@ -45,7 +45,7 @@ Cortado/
 │   ├── version.sh      # Cortado version, shown briefly at the start of each session
 │   ├── update.sh       # GitHub release check with a shorter retry interval on failure
 │   └── ...             # Additional modules
-├── tests/              # Regression tests (bash tests/test_*.sh, standalone)
+├── tests/              # Standalone regression tests and shared assertions
 ├── .claude/skills/     # Repository development skills (canonical; see "Repository skills")
 ├── .agents/skills/     # Relative symlinks to .claude/skills/* so Codex reads the same skills
 ├── .shellcheckrc       # ShellCheck policy (see Testing)
@@ -189,19 +189,14 @@ A module name is registered in six places, and they must change together in one 
 
 ## Testing
 
-Regression tests live in `tests/` (pure-bash assert harness, no framework). Each file runs standalone and sandboxes `CLAUDE_CONFIG_DIR` and `CACHE_DIR`, so the suite never touches the real `~/.claude`:
+Regression tests live in `tests/` and share the Bash assertions in `tests/lib/assert.sh`. Each suite runs standalone and sandboxes `CLAUDE_CONFIG_DIR` and `CACHE_DIR`. Use `/bin/bash` to exercise Bash 3.2 on macOS.
 ```bash
-bash tests/test_utils.sh           # utils.sh helpers
-bash tests/test_rate_limits.sh     # rate-limit parsers/backoff
-bash tests/test_config_cli.sh      # cortado config CLI (set/toggle/project) and Barista migration
-bash tests/test_install_update.sh  # installer update flags, runtime copy, migration
-# also: test_cache, test_cost, test_git_cache, test_install_settings, test_model,
-#       test_context, test_processes, test_project, test_project_config,
-#       test_rate_limits_concurrency,
-#       test_rate_limits_credentials, test_rate_limits_payload, test_sandbox,
-#       test_status_render, test_timezone, test_ttl_validation, test_update, test_uptime,
-#       test_version, test_debug_log, test_module_errors
-# tests/run-jq-variants.sh runs every suite under each jq it finds (Homebrew and /usr/bin/jq)
+/bin/bash tests/test_utils.sh           # utils.sh helpers
+/bin/bash tests/test_rate_limits.sh     # rate-limit parsers/backoff
+/bin/bash tests/test_config_cli.sh      # cortado config CLI and Barista migration
+/bin/bash tests/test_install_update.sh  # installer update flags, runtime copy, migration
+/bin/bash tests/run-jq-variants.sh      # all suites with Homebrew and Apple jq on macOS
+/bin/bash tests/render_timing.sh        # p50 and p95 for default renders with fresh caches
 ```
 
 Lint with `shellcheck`. `.shellcheckrc` disables SC2155, SC2034, SC2059, SC2001, SC2012, SC1090, SC2129, SC2086, and SC2002 project-wide. See upstream pstuart/Barista#21 for the original policy.
@@ -222,28 +217,35 @@ DEBUG_MODE="true"  # In config
 
 ## Pre-PR Checks
 
-This repository has no CI (see `.github/NO_GITHUB_ACTIONS.md`), so these checks are the whole gate. Run all of them from the repository root before `gh pr create`, and paste what they printed into the pull request's `## Verification` section. This is the canonical list; other docs and skills link here instead of copying it.
+[Cortado's GitHub Actions workflow](.github/workflows/ci.yml) runs on every pull request and on pushes to `main`. It checks macOS system Bash 3.2 with Homebrew and Apple jq, Ubuntu, and experimental Windows Git Bash. The Windows result and render timing are informational. Releases follow the `cortado-release` skill.
+
+Run the local checks below from the repository root before opening a pull request and again before merging. Paste their output into the pull request's `## Verification` section. This is the canonical local gate.
 
 ```bash
 # 1. Every regression suite, each standalone
 fail=0
-for t in tests/test_*.sh; do bash "$t" >/dev/null 2>&1 || { echo "FAIL: $t"; fail=1; }; done
+for t in tests/test_*.sh; do /bin/bash "$t" >/dev/null 2>&1 || { echo "FAIL: $t"; fail=1; }; done
 [ "$fail" -eq 0 ] && echo "tests: all green"
 
 # 2. Bash syntax on every shipped and test script
-for f in cortado.sh install.sh lib/*.sh modules/*.sh tests/*.sh; do bash -n "$f" || echo "SYNTAX: $f"; done
+for f in cortado.sh install.sh lib/*.sh modules/*.sh tests/*.sh tests/lib/*.sh; do /bin/bash -n "$f" || echo "SYNTAX: $f"; done
 
 # 3. ShellCheck: no more findings than the merge base had
 base=$(mktemp -d)
 git archive "$(git merge-base origin/main HEAD)" | tar -x -C "$base"
-sc() { (cd "$1" && shellcheck cortado.sh install.sh lib/*.sh modules/*.sh tests/*.sh 2>/dev/null | grep -c '^In '); }
+sc() (
+    cd "$1" || exit 1
+    shopt -s nullglob
+    shellcheck --color=never cortado.sh install.sh lib/*.sh modules/*.sh tests/*.sh tests/lib/*.sh \
+        | awk '/^In / { count++ } END { print count + 0 }'
+)
 echo "shellcheck findings: base $(sc "$base"), head $(sc .)"
 rm -rf "$base"
 
 # 4. Render smoke in a sandbox config dir (never the real ~/.claude)
 sb=$(mktemp -d)
 echo '{"workspace":{"current_dir":"'"$PWD"'"},"model":{"display_name":"Test"},"context_window":{"context_window_size":200000,"current_usage":{"input_tokens":10000}}}' \
-  | CLAUDE_CONFIG_DIR="$sb" ./cortado.sh
+  | CLAUDE_CONFIG_DIR="$sb" /bin/bash ./cortado.sh
 rm -rf "$sb"
 ```
 

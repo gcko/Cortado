@@ -16,21 +16,7 @@ export CLAUDE_CONFIG_DIR="$TEST_BASE/claude"
 export CACHE_DIR="$CLAUDE_CONFIG_DIR/cortado-cache"
 mkdir -p "$PROJECT" "$CACHE_DIR" "$TEST_BASE/bin"
 PROJECT_FILE="$PROJECT/.cortado.conf"
-PASS=0
-FAIL=0
-
-assert_eq() {
-    local desc="$1" expected="$2" actual="$3"
-    if [ "$expected" = "$actual" ]; then
-        echo "  PASS: $desc"
-        PASS=$((PASS + 1))
-    else
-        echo "  FAIL: $desc"
-        echo "    expected: '$expected'"
-        echo "    actual:   '$actual'"
-        FAIL=$((FAIL + 1))
-    fi
-}
+. "$SCRIPT_DIR/tests/lib/assert.sh" indented
 
 render() {
     printf '%s' '{"workspace":{"current_dir":"'"$PROJECT"'"},"model":{"display_name":"Test"}}' \

@@ -10,25 +10,12 @@ export CLAUDE_CONFIG_DIR="$HOME/.claude"
 export TMPDIR="$TEST_ROOT/tmp"
 mkdir -p "$CLAUDE_CONFIG_DIR" "$TMPDIR"
 DEBUG_MODE=false
-PASS=0
-FAIL=0
+. "$SCRIPT_DIR/tests/lib/assert.sh" indented
 CURL_CALLS="$TEST_ROOT/curl-called"
 KEYCHAIN_CALLS="$TEST_ROOT/keychain-called"
 CURL_AUTH_OK="$TEST_ROOT/curl-auth-ok"
 : > "$CURL_CALLS"
 : > "$KEYCHAIN_CALLS"
-assert_eq() {
-    local desc="$1" expected="$2" actual="$3"
-    if [ "$expected" = "$actual" ]; then
-        echo "  PASS: $desc"
-        PASS=$((PASS + 1))
-    else
-        echo "  FAIL: $desc"
-        echo "    expected: '$expected'"
-        echo "    actual:   '$actual'"
-        FAIL=$((FAIL + 1))
-    fi
-}
 # Never consult a real Keychain or run a real curl. Force generic curl on Git Bash.
 security() { printf 'unexpected call\n' >> "$KEYCHAIN_CALLS"; return 1; }
 uname() { printf '%s\n' CortadoCredentialTest; }
