@@ -83,6 +83,7 @@ LEGACY_USER_CONFIG="$CLAUDE_DIR/barista.conf"
 GITHUB_REPO="gcko/Cortado"
 LOCAL_VERSION=""
 REMOTE_VERSION=""
+REMOTE_TAG=""
 
 # Homebrew formula pins tagged tarballs; never overwrite Cellar/opt via --update.
 _is_homebrew_prefix() {
@@ -109,24 +110,17 @@ get_local_version() {
 
 # Latest published GitHub release (same source as modules/update.sh and brew livecheck).
 check_remote_version() {
+    REMOTE_TAG=""
+    REMOTE_VERSION=""
     if ! command -v curl &> /dev/null; then
         return 1
     fi
 
-    local explicit_lookup="false"
-    case "$INSTALL_MODE" in
-        check-update|update) explicit_lookup="true" ;;
-    esac
-
-    local response http_code body tag curl_status
-    response=$(curl -s --connect-timeout 5 --max-time 8 --max-redirs 3 --proto =https \
+    local response http_code body
+    response=$(curl -q -s --connect-timeout 5 --max-time 8 --max-redirs 3 --proto =https \
         -w "\n%{http_code}" \
         -H "Accept: application/vnd.github+json" \
-        "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" 2>/dev/null)
-    curl_status=$?
-    if [ "$explicit_lookup" = "true" ] && [ "$curl_status" -ne 0 ]; then
-        return 1
-    fi
+        "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" 2>/dev/null) || return 1
 
     http_code=$(printf '%s\n' "$response" | tail -1)
     body=$(printf '%s\n' "$response" | sed '$d')
@@ -135,25 +129,13 @@ check_remote_version() {
         return 1
     fi
 
-    if [ "$explicit_lookup" = "true" ]; then
-        local release_pattern='\Av?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?([+][0-9A-Za-z.-]+)?\z'
-        tag=$(printf '%s\n' "$body" | jq -ers --arg pattern "$release_pattern" \
-            'select(length == 1) | .[0] | objects | .tag_name | strings | select(test($pattern))' 2>/dev/null) || return 1
-    elif command -v jq &>/dev/null; then
-        tag=$(echo "$body" | jq -r '.tag_name // empty' 2>/dev/null)
-    else
-        tag=$(echo "$body" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
-    fi
-    tag="${tag#v}"
-    tag=$(echo "$tag" | tr -d '[:space:]')
+    local release_pattern='\Av?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?([+][0-9A-Za-z.-]+)?\z'
+    REMOTE_TAG=$(printf '%s\n' "$body" | jq -ers --arg pattern "$release_pattern" \
+        'select(length == 1) | .[0] | objects | .tag_name | strings | select(test($pattern))' 2>/dev/null) || return 1
 
-    if [ -z "$tag" ] || [[ ! "$tag" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]; then
-        return 1
-    fi
-
-    # Strip prerelease/build from the displayed pin; comparator sanitizes too.
-    REMOTE_VERSION="${tag%%[-+]*}"
-    echo "$REMOTE_VERSION"
+    # Compare and display the numeric version, but fetch the exact published tag.
+    REMOTE_VERSION="${REMOTE_TAG#v}"
+    REMOTE_VERSION="${REMOTE_VERSION%%[-+]*}"
 }
 
 # Leading digits of one semver component (safe for bash arithmetic).
@@ -191,18 +173,12 @@ version_lt() {
 # Check for updates: 0 = newer, 1 = no newer release, 2 = could not check.
 check_for_updates() {
     local local_ver=$(get_local_version)
-    local remote_ver=$(check_remote_version)
 
-    if [ -z "$remote_ver" ]; then
+    if ! check_remote_version; then
         return 2
     fi
 
-    if version_lt "$local_ver" "$remote_ver"; then
-        REMOTE_VERSION="$remote_ver"
-        return 0
-    fi
-
-    return 1
+    version_lt "$local_ver" "$REMOTE_VERSION"
 }
 
 # Prompt user to update
@@ -225,7 +201,7 @@ prompt_update() {
         return $?
     fi
 
-    return 1
+    return 0
 }
 
 # Interactive startup update check - prompts user before checking
@@ -237,26 +213,22 @@ interactive_update_check() {
 
     if [ "$check_choice" = "n" ] || [ "$check_choice" = "N" ]; then
         echo ""
-        return 1
+        return 0
     fi
 
     echo ""
     print_info "Checking for updates..."
 
-    local remote_ver=$(check_remote_version)
-
-    if [ -z "$remote_ver" ]; then
-        print_warning "Could not check for updates (no network?)"
+    if ! check_remote_version; then
+        print_warning "Could not check for updates"
         echo ""
-        return 1
+        return 0
     fi
 
-    if version_lt "$local_ver" "$remote_ver"; then
-        REMOTE_VERSION="$remote_ver"
-
+    if version_lt "$local_ver" "$REMOTE_VERSION"; then
         echo ""
         echo -e "  ${YELLOW}Installed:${NC} v${local_ver}"
-        echo -e "  ${GREEN}Available:${NC} v${remote_ver} $(emoji '🆕' '[NEW]')"
+        echo -e "  ${GREEN}Available:${NC} ${REMOTE_TAG} $(emoji '🆕' '[NEW]')"
         echo ""
         echo "  View changes: https://github.com/$GITHUB_REPO/releases"
         echo ""
@@ -270,7 +242,7 @@ interactive_update_check() {
     else
         echo ""
         echo -e "  ${GREEN}Installed:${NC} v${local_ver}"
-        echo -e "  ${DIM}Latest:${NC}    v${remote_ver}"
+        echo -e "  ${DIM}Latest:${NC}    ${REMOTE_TAG}"
         print_success "You have the latest version!"
         echo ""
     fi
@@ -287,6 +259,74 @@ _cortado_git() {
     git "$@"
 }
 
+_download_release_asset() {
+    local tag="$1" asset="$2" dest="$3" status
+    curl -q -fsL --connect-timeout 5 --max-time 60 --max-redirs 3 \
+        --proto =https --proto-redir =https \
+        "https://github.com/$GITHUB_REPO/releases/download/$tag/$asset" -o "$dest" 2>/dev/null
+    status=$?
+    case "$status" in
+        0) return 0 ;;
+        28) print_error "Download timed out for $asset." ;;
+        *) print_error "Could not download $asset. A verified update requires both release assets." ;;
+    esac
+    return 1
+}
+
+_release_archive_digest() {
+    if command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 < "$1"
+    else
+        sha256sum < "$1"
+    fi
+}
+
+_stage_release_archive() {
+    local tag="$1" dir="$2" extract_dir="$3"
+    local archive_name="Cortado-source.zip" expected actual archive_ver
+
+    _download_release_asset "$tag" SHA256SUMS "$dir/SHA256SUMS" || return 1
+    if ! expected=$(awk -v archive="$archive_name" '
+        $2 == archive || $2 == "*" archive {
+            count++
+            if (NF == 2 && length($1) == 64 && $1 !~ /[^0-9A-Fa-f]/)
+                digest = tolower($1)
+        }
+        END {
+            if (count != 1 || digest == "") exit 1
+            print digest
+        }
+    ' "$dir/SHA256SUMS" 2>/dev/null); then
+        print_error "SHA256SUMS must contain one valid checksum for $archive_name."
+        return 1
+    fi
+
+    _download_release_asset "$tag" "$archive_name" "$dir/$archive_name" || return 1
+    if ! actual=$(_release_archive_digest "$dir/$archive_name" 2>/dev/null); then
+        print_error "Could not compute SHA-256 for $archive_name. Check that shasum or sha256sum is available."
+        return 1
+    fi
+    if [ "${actual%% *}" != "$expected" ]; then
+        print_error "Checksum mismatch for $archive_name. Aborting update."
+        return 1
+    fi
+
+    if ! unzip -q "$dir/$archive_name" -d "$dir" >/dev/null 2>&1; then
+        print_error "Downloaded file is not a valid ZIP archive or could not be extracted. Aborting update."
+        return 1
+    fi
+    if [ ! -f "$extract_dir/cortado.sh" ] || [ ! -f "$extract_dir/VERSION" ]; then
+        print_error "Downloaded archive is missing essential files. Aborting update."
+        return 1
+    fi
+
+    archive_ver=$(tr -d '[:space:]' < "$extract_dir/VERSION")
+    if [ "$archive_ver" != "$REMOTE_VERSION" ]; then
+        print_error "Archive VERSION ($archive_ver) does not match release $REMOTE_VERSION."
+        return 1
+    fi
+}
+
 # Perform the update from the latest GitHub *release* tag (not unpinned main).
 do_update() {
     print_info "Updating Cortado..."
@@ -296,14 +336,14 @@ do_update() {
         return 1
     fi
 
-    if [ -z "$REMOTE_VERSION" ]; then
-        if ! check_remote_version >/dev/null; then
+    if [ -z "$REMOTE_TAG" ]; then
+        if ! check_remote_version; then
             print_error "Could not resolve the latest GitHub release."
             return 1
         fi
     fi
 
-    local tag="v${REMOTE_VERSION}"
+    local tag="$REMOTE_TAG"
 
     # Check if we're in a git repo
     if [ -d "$SCRIPT_DIR/.git" ]; then
@@ -326,67 +366,27 @@ do_update() {
         print_info "Downloading release $tag..."
 
         local tmp_dir
-        tmp_dir=$(mktemp -d)
-        local zip_url="https://github.com/$GITHUB_REPO/archive/refs/tags/${tag}.zip"
-        local extract_dir="Cortado-${REMOTE_VERSION}"
-
-        case "$zip_url" in
-            https://github.com/*)
-                ;;
-            *)
-                print_error "Refusing to download from unexpected URL: $zip_url"
-                rm -rf "$tmp_dir"
-                return 1
-                ;;
-        esac
-
-        if curl -sL --max-redirs 3 --proto =https "$zip_url" -o "$tmp_dir/cortado.zip" 2>/dev/null; then
-            if ! unzip -tq "$tmp_dir/cortado.zip" >/dev/null 2>&1; then
-                print_error "Downloaded file is not a valid ZIP archive. Aborting update."
-                rm -rf "$tmp_dir"
-                return 1
-            fi
-
-            cd "$tmp_dir" || { print_error "Could not cd to temp dir"; rm -rf "$tmp_dir"; return 1; }
-            unzip -q cortado.zip 2>/dev/null
-
-            # GitHub source zips use "Cortado-<tag without v>/"
-            if [ ! -d "$extract_dir" ] && [ -d "Cortado-${tag}" ]; then
-                extract_dir="Cortado-${tag}"
-            fi
-
-            if [ -d "$extract_dir" ]; then
-                if [ ! -f "$extract_dir/cortado.sh" ] || [ ! -f "$extract_dir/VERSION" ]; then
-                    print_error "Downloaded archive is missing essential files. Aborting update."
-                    rm -rf "$tmp_dir"
-                    return 1
-                fi
-
-                local archive_ver
-                archive_ver=$(tr -d '[:space:]' < "$extract_dir/VERSION")
-                if [ "$archive_ver" != "$REMOTE_VERSION" ]; then
-                    print_error "Archive VERSION ($archive_ver) does not match release $REMOTE_VERSION."
-                    rm -rf "$tmp_dir"
-                    return 1
-                fi
-
-                cp -r "$SCRIPT_DIR" "$SCRIPT_DIR.backup.$$"
-                cp -r "$extract_dir"/* "$SCRIPT_DIR/"
-                rm -rf "$SCRIPT_DIR.backup.$$"
-
-                print_success "Updated to version $REMOTE_VERSION"
-                echo ""
-                print_info "Restarting installer with new version..."
-                echo ""
-
-                rm -rf "$tmp_dir"
-                _reexec_installer "$@"
-            fi
+        if ! tmp_dir=$(mktemp -d); then
+            print_error "Could not create a temporary directory for the update."
+            return 1
+        fi
+        local extract_dir="$tmp_dir/Cortado-${REMOTE_VERSION}"
+        if ! _stage_release_archive "$tag" "$tmp_dir" "$extract_dir"; then
+            rm -rf "$tmp_dir"
+            return 1
         fi
 
+        cp -r "$SCRIPT_DIR" "$SCRIPT_DIR.backup.$$"
+        cp -r "$extract_dir"/* "$SCRIPT_DIR/"
+        rm -rf "$SCRIPT_DIR.backup.$$"
+
+        print_success "Updated to version $REMOTE_VERSION"
+        echo ""
+        print_info "Restarting installer with new version..."
+        echo ""
+
         rm -rf "$tmp_dir"
-        print_error "Update failed. Please update manually from a GitHub release."
-        return 1
+        _reexec_installer "$@"
     fi
 }
 
@@ -2337,6 +2337,7 @@ main() {
             else
                 prompt_update "$@"
             fi
+            exit $?
         elif [ "$?" -eq 2 ]; then
             print_warning "Could not determine the latest version"
             exit 1
@@ -2356,12 +2357,12 @@ main() {
         # In interactive mode, show banner first and ask user if they want to check
         if [ "$INSTALL_MODE" = "interactive" ]; then
             show_banner
-            interactive_update_check "$@"
+            interactive_update_check "$@" || exit $?
         else
             # Non-interactive modes: silent check, only prompt if update available
             if check_for_updates; then
                 setup_colors  # Ensure colors are set before prompt
-                prompt_update "$@"
+                prompt_update "$@" || exit $?
             fi
         fi
     fi

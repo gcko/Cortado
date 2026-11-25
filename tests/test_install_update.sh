@@ -177,6 +177,7 @@ FAKE_ROOT=$(mktemp -d)
 mkdir -p "$FAKE_ROOT/.git"
 SCRIPT_DIR="$FAKE_ROOT"
 REMOTE_VERSION="9.9.9"
+REMOTE_TAG="v$REMOTE_VERSION"
 REEXEC_ARGS=""
 _reexec_installer() {
     REEXEC_ARGS=$(printf '%s\n' "$@")
