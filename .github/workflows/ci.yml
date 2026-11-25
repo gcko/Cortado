@@ -16,6 +16,7 @@ jobs:
   checks:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -118,8 +119,14 @@ jobs:
           trap 'rm -f "$log"' EXIT
           failed=0
           for suite in tests/test_*.sh; do
-            if /bin/bash "$suite" > "$log" 2>&1; then
+            status=0
+            perl -e 'alarm shift; exec @ARGV' 300 /bin/bash "$suite" > "$log" 2>&1 || status=$?
+            if [ "$status" -eq 0 ]; then
               printf 'PASS: %s\n' "${suite##*/}"
+            elif [ "$status" -eq 142 ]; then
+              printf 'TIMEOUT: %s (over 300s)\n' "${suite##*/}"
+              cat "$log"
+              failed=1
             else
               printf 'FAIL: %s\n' "${suite##*/}"
               cat "$log"
