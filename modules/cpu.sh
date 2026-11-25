@@ -23,61 +23,55 @@
 #   CPU_SHOW_STATUS     - Show status indicator (default: true)
 # =============================================================================
 
+_cpu_probe() {
+    local LC_ALL=C
+    export LC_ALL
+    if [ "$1" = Darwin ]; then
+        local samples
+        # iostat samples aggregate CPU counters without enumerating processes.
+        # Its first reading is since boot, so take the following interval.
+        samples=$(iostat -d -C -n 0 -c 2 -w 1) || return 1
+        awk '
+            { for (i = 1; i <= NF - 2; i++)
+                if ($i == "us" && $(i+1) == "sy" && $(i+2) == "id") cpu = i
+            }
+            cpu && $cpu ~ /^[0-9]+$/ && $(cpu+1) ~ /^[0-9]+$/ && $(cpu+2) ~ /^[0-9]+$/ {
+                if (++samples == 2 && $cpu + $(cpu+1) <= 100) print $cpu + $(cpu+1)
+            }
+        ' <<< "$samples"
+        return
+    fi
+
+    local prev cur label puser pnice psystem pidle cuser cnice csystem cidle remainder
+    local duser dnice dsystem didle dtotal
+    local sample_pattern='^cpu([[:blank:]]+[0-9]{1,15}){4}([[:blank:]]|$)'
+    prev=$(grep '^cpu ' /proc/stat) && [[ "$prev" =~ $sample_pattern ]] || return 1
+    sleep 1 || return 1
+    cur=$(grep '^cpu ' /proc/stat) && [[ "$cur" =~ $sample_pattern ]] || return 1
+    IFS=$' \t' read -r label puser pnice psystem pidle remainder <<< "$prev"
+    IFS=$' \t' read -r label cuser cnice csystem cidle remainder <<< "$cur"
+    duser=$((10#$cuser - 10#$puser))
+    dnice=$((10#$cnice - 10#$pnice))
+    dsystem=$((10#$csystem - 10#$psystem))
+    didle=$((10#$cidle - 10#$pidle))
+    dtotal=$((duser + dnice + dsystem + didle))
+    (( duser >= 0 && dnice >= 0 && dsystem >= 0 && didle >= 0 && dtotal > 0 )) || return 1
+    printf '%d\n' "$(( (duser + dnice + dsystem) * 100 / dtotal ))"
+}
+
 module_cpu() {
-    local icon=$(get_icon "${CPU_ICON:-💻}" "CPU:")
+    get_icon_reply "${CPU_ICON:-💻}" "CPU:"
+    local icon="$REPLY"
     local show_pct="${CPU_SHOW_PERCENTAGE:-true}"
     local warn_thresh="${CPU_WARNING_THRESHOLD:-60}"
     local crit_thresh="${CPU_CRITICAL_THRESHOLD:-80}"
     local show_status="${CPU_SHOW_STATUS:-true}"
 
-    # Get CPU usage
-    local cpu_usage
-    if [ "${render_os-$(uname)}" = Darwin ]; then
-        # macOS: count user and system usage from a successful top sample.
-        local sample
-        if sample=$(LC_ALL=C top -l 1 -n 0 2>/dev/null); then
-            cpu_usage=$(printf '%s\n' "$sample" | LC_ALL=C awk '
-                /^CPU usage:/ {
-                    if ($3 ~ /^[0-9]+([.][0-9]+)?%$/ && $5 ~ /^[0-9]+([.][0-9]+)?%$/)
-                        print $3 + $5
-                    exit
-                }')
-        fi
-    else
-        # Linux: single-shot /proc/stat is lifetime average since boot — not
-        # "current" CPU%. Diff against a previous sample cached under cortado-cache
-        # (statusline re-renders often → second+ ticks are accurate; first tick
-        # seeds the cache and renders --).
-        local cur prev puser pnice psystem pidle cuser cnice csystem cidle
-        local label remainder
-        local duser dnice dsystem didle dtotal
-        local sample_pattern='^cpu([[:blank:]]+[0-9]+){4}([[:blank:]]|$)'
-        if cur=$(grep '^cpu ' /proc/stat 2>/dev/null) && [[ "$cur" =~ $sample_pattern ]]; then
-            init_cache
-            local stat_file="${CACHE_DIR}/cpu_stat"
-            if [ -f "$stat_file" ] && prev=$(cat "$stat_file" 2>/dev/null) && [[ "$prev" =~ $sample_pattern ]]; then
-                IFS=$' \t' read -r label puser pnice psystem pidle remainder <<< "$prev"
-                IFS=$' \t' read -r label cuser cnice csystem cidle remainder <<< "$cur"
-                duser=$((10#$cuser - 10#$puser))
-                dnice=$((10#$cnice - 10#$pnice))
-                dsystem=$((10#$csystem - 10#$psystem))
-                didle=$((10#$cidle - 10#$pidle))
-                dtotal=$((duser + dnice + dsystem + didle))
-                if [ "$dtotal" -gt 0 ]; then
-                    cpu_usage=$(( (duser + dnice + dsystem) * 100 / dtotal ))
-                fi
-            fi
-            printf '%s\n' "$cur" > "$stat_file" 2>/dev/null
-            chmod 600 "$stat_file" 2>/dev/null
-        fi
-    fi
-
-    local cpu_int
-    if [ -z "$cpu_usage" ] || ! cpu_int=$(
-        LC_ALL=C
-        printf "%.0f" "$cpu_usage" 2>/dev/null
-    ); then
-        echo "$icon --"
+    local os="${render_os-$(uname)}"
+    cached_probe cpu 5 5 "${BASH_SOURCE[0]}" _cpu_probe "$os"
+    local cpu_int="$REPLY"
+    if ! [[ "$cpu_int" =~ ^[0-9]{1,3}$ ]]; then
+        printf '%s --\n' "$icon"
         return
     fi
 
@@ -88,8 +82,8 @@ module_cpu() {
     fi
 
     if [ "$show_status" = "true" ]; then
-        local status_ind=$(get_status "$cpu_int" "$warn_thresh" "$crit_thresh")
-        result="$result${status_ind}"
+        get_status_reply "$cpu_int" "$warn_thresh" "$crit_thresh"
+        result="$result$REPLY"
     fi
 
     echo "$result"

@@ -21,69 +21,78 @@
 #   BRIGHTNESS_BAR_WIDTH    - Width of progress bar (default: 5)
 # =============================================================================
 
-# macOS: prefer IODisplayParameters via ioreg (works without third-party tools).
-# Optional accelerator: brew install brightness. Legacy appearance-preferences
-# AppleScript and fixed 0–1024 AppleBacklightDisplay scale are dead on modern macOS.
+_brightness_probe() (
+    set -o pipefail
+    local LC_ALL=C reading brightness
+    export LC_ALL
+    if [ "$1" = Darwin ]; then
+        if reading=$(brightness -l); then
+            brightness=$(awk '
+                /brightness [0-9.]+$/ {
+                    if ($NF ~ /^([0-9]+([.][0-9]+)?|[.][0-9]+)$/ && $NF <= 1) {
+                        printf "%.0f\n", $NF * 100
+                        exit
+                    }
+                }
+            ' <<< "$reading")
+            if [ -n "$brightness" ]; then
+                printf '%s\n' "$brightness"
+                return
+            fi
+        fi
+
+        # Match just display entries and avoid walking their descendants.
+        ioreg -r -d 1 -k IODisplayParameters | awk '
+            function percentage(key, fields, dict) {
+                if (!match($0, "\"" key "\"=\\{\"min\"=[0-9]+,\"max\"=[0-9]+,\"value\"=[0-9]+\\}"))
+                    return ""
+                dict = substr($0, RSTART, RLENGTH - 1)
+                split(dict, fields, "=")
+                if (fields[4] + 0 > 0 && fields[5] + 0 <= fields[4] + 0)
+                    return int(100 * fields[5] / fields[4])
+                return ""
+            }
+            /"IODisplayParameters"/ {
+                if (normal == "") normal = percentage("brightness")
+                if (raw == "") raw = percentage("rawBrightness")
+            }
+            END {
+                if (normal != "") print normal
+                else if (raw != "") print raw
+            }
+        '
+    else
+        local path curr max
+        for path in /sys/class/backlight/*/brightness; do
+            [ -f "$path" ] || continue
+            if IFS= read -r curr < "$path" &&
+               IFS= read -r max < "${path%/*}/max_brightness" &&
+               [[ "$curr" =~ ^[0-9]{1,15}$ && "$max" =~ ^[0-9]{1,15}$ ]] &&
+               (( 10#$max > 0 && 10#$curr <= 10#$max )); then
+                printf '%d\n' "$((10#$curr * 100 / 10#$max))"
+                return
+            fi
+        done
+        if reading=$(xbacklight -get) &&
+           [[ "$reading" =~ ^[0-9]{1,3}([.][0-9]+)?$ ]] &&
+           [ "${reading%%.*}" -le 100 ]; then
+            printf '%s\n' "${reading%%.*}"
+        fi
+    fi
+)
 
 module_brightness() {
-    local icon
-    icon=$(get_icon "${BRIGHTNESS_ICON:-☀️}" "BRT:")
+    get_icon_reply "${BRIGHTNESS_ICON:-☀️}" "BRT:"
+    local icon="$REPLY"
     local show_pct="${BRIGHTNESS_SHOW_PERCENT:-true}"
     local show_bar="${BRIGHTNESS_SHOW_BAR:-false}"
     local bar_width="${BRIGHTNESS_BAR_WIDTH:-5}"
 
-    local brightness="" reading
-
-    if [ "${render_os-$(uname)}" = Darwin ]; then
-        # Prefer brew brightness CLI when present (fast, direct)
-        if reading=$(brightness -l 2>/dev/null); then
-            local fraction
-            fraction=$(printf '%s\n' "$reading" | grep -o 'brightness [0-9.]*' | awk 'NR == 1 {print $2}')
-            if [[ "$fraction" =~ ^([0-9]+([.][0-9]+)?|[.][0-9]+)$ ]]; then
-                brightness=$(echo "scale=0; $fraction * 100" | bc -l 2>/dev/null) || brightness=""
-            fi
-        fi
-
-        if [ -z "$brightness" ] && reading=$(ioreg -l 2>/dev/null); then
-            local key dict max val
-            # Prefer the IODisplayParameters brightness dict. Fall back to
-            # rawBrightness, which has its own scale.
-            for key in brightness rawBrightness; do
-                dict=$(printf '%s\n' "$reading" | grep -oE "\"$key\"=\{\"min\"=[0-9]+,\"max\"=[0-9]+,\"value\"=[0-9]+\}" | head -1)
-                [ -n "$dict" ] || continue
-                max=$(echo "$dict" | grep -o '"max"=[0-9]*' | cut -d= -f2)
-                val=$(echo "$dict" | grep -o '"value"=[0-9]*' | cut -d= -f2)
-                if [ "$max" -gt 0 ]; then
-                    brightness=$((10#$val * 100 / 10#$max))
-                    break
-                fi
-            done
-        fi
-    else
-        # Linux: try various methods
-        local path curr max
-        for path in /sys/class/backlight/*/brightness; do
-            [ -f "$path" ] || continue
-            if curr=$(cat "$path" 2>/dev/null) &&
-               max=$(cat "${path%/*}/max_brightness" 2>/dev/null) &&
-               [[ "$curr" =~ ^[0-9]+$ && "$max" =~ ^[0-9]+$ ]] && [ "$max" -gt 0 ]; then
-                brightness=$((10#$curr * 100 / 10#$max))
-                break
-            fi
-        done
-        # Try xbacklight
-        if [ -z "$brightness" ] && reading=$(xbacklight -get 2>/dev/null) &&
-           [[ "$reading" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
-            brightness="${reading%%.*}"
-        fi
-    fi
-
-    local brightness_int
-    if [ -z "$brightness" ] || ! brightness_int=$(
-        export LC_ALL=C
-        printf "%.0f" "$brightness" 2>/dev/null
-    ); then
-        echo "$icon --"
+    local os="${render_os-$(uname)}"
+    cached_probe brightness 10 5 "${BASH_SOURCE[0]}" _brightness_probe "$os"
+    local brightness_int="$REPLY"
+    if ! [[ "$brightness_int" =~ ^[0-9]{1,3}$ ]]; then
+        printf '%s --\n' "$icon"
         return
     fi
 
@@ -94,9 +103,8 @@ module_brightness() {
     fi
 
     if [ "$show_bar" = "true" ]; then
-        local bar
-        bar=$(progress_bar "$brightness_int" "$bar_width")
-        result="$result $bar"
+        progress_bar_reply "$brightness_int" "$bar_width"
+        result="$result $REPLY"
     fi
 
     echo "$result"

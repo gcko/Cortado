@@ -24,7 +24,7 @@
 _file_stat() {
     local fmt_bsd="$1" fmt_gnu="$2" f="$3"
     [ -e "$f" ] || { echo 0; return; }
-    if [[ "$OSTYPE" == "darwin"* ]]; then
+    if [[ "${BASH_VERSINFO[5]}" == *-darwin* ]]; then
         /usr/bin/stat -f "$fmt_bsd" "$f" 2>/dev/null || echo 0
     else
         stat -c "$fmt_gnu" "$f" 2>/dev/null || echo 0
@@ -51,7 +51,6 @@ init_cache() {
     # pre-existing world-readable ~/.claude/cortado-cache (older install or
     # permissive umask) was never repaired. Cache key names (weather, wan_ip,
     # rate_limits_usage, update_check…) must not leak to other local users.
-    # Matches network.sh / weather.sh which re-chmod every call.
     if [ -d "$CACHE_DIR" ]; then
         chmod 700 "$CACHE_DIR" 2>/dev/null
     fi
@@ -146,6 +145,176 @@ cache_set() {
     cache_dirname=$(dirname "$cache_file")
     mkdir -p "$cache_dirname" 2>/dev/null
     _atomic_write_file "$cache_file" printf '%s\n' "$value"
+}
+
+# Render from a fresh reading, or return with an empty REPLY and start a
+# refresh. A failed probe has its own short TTL and leaves no reading behind.
+# cached_probe <key> <ttl> <failure-ttl> <module-file> <probe> [args...]
+_probe_entry_exists() {
+    [ -f "$1" ] && [ ! -L "$1" ] && [ -s "$1" ]
+}
+
+# Modules run in separate subshells. Take one timestamp snapshot before they
+# fork so a warm set does not need a date and a stat for each reading.
+_snapshot_probe_cache() {
+    local file before found=false restore_failglob=false restore_noglob=false
+    local entries=()
+    if shopt -q failglob; then restore_failglob=true; shopt -u failglob; fi
+    case "$-" in *f*) restore_noglob=true; set +f ;; esac
+    entries=("$CACHE_DIR"/*)
+    if [ "$restore_failglob" = true ]; then shopt -s failglob; fi
+    if [ "$restore_noglob" = true ]; then set -f; fi
+    for file in "${entries[@]+"${entries[@]}"}"; do
+        case "${file##*/}" in
+            brightness|brightness-failed|cpu|cpu-failed|docker-*|load|load-failed|network-local-*|network_wan|network_wan-failed|node-*|npm-*|processes-*|weather|weather-*)
+                if _probe_entry_exists "$file"; then found=true; break; fi ;;
+        esac
+    done
+    [ "$found" = true ] || return 0
+
+    before=$SECONDS
+    _probe_clock=$(date +%s) || _probe_clock=
+    _probe_clock_seconds=$SECONDS
+    # Fall back to exact reads if the sample straddled a seconds boundary.
+    if [ "$before" -ne "$_probe_clock_seconds" ] || ! [[ "$_probe_clock" =~ ^[1-9][0-9]{0,10}$ ]]; then
+        _probe_clock=
+        return 0
+    fi
+    _probe_mtimes=$'\n'$(perl -MFcntl=:mode -e '
+        my ($path) = @ARGV;
+        opendir(my $dir, $path) or exit 1;
+        for (my $i=0; $i < 128 && defined(my $name = readdir($dir)); $i++) {
+            next unless $name =~ /\A[a-zA-Z0-9_-]+\z/;
+            my @entry = lstat("$path/$name");
+            print "$name $entry[9]\n" if @entry && S_ISREG($entry[2]) && $entry[7];
+        }
+    ' "$CACHE_DIR" 2>/dev/null)$'\n' || _probe_mtimes=
+}
+
+_probe_clock='' _probe_clock_seconds='' _probe_mtimes=''
+# Standalone helpers and detached workers use direct cache reads.
+if [ "${FUNCNAME[1]:-}" = load_modules ] && [ -d "$CACHE_DIR" ] && [ ! -L "$CACHE_DIR" ]; then
+    _snapshot_probe_cache
+fi
+
+_probe_entry_fresh() {
+    local file="$1" now="$2" ttl="$3" stamp marker=$'\n'"${1##*/} "
+    _probe_entry_exists "$file" || return 1
+    # Entries published since the snapshot and standalone callers can read
+    # the mtime directly.
+    if [[ "$_probe_mtimes" == *"$marker"* ]]; then
+        stamp=${_probe_mtimes#*"$marker"}
+        stamp=${stamp%%$'\n'*}
+    elif [[ "${BASH_VERSINFO[5]}" == *-darwin* ]]; then
+        stamp=$(/usr/bin/stat -f %m "$file" 2>/dev/null) || return 1
+    else
+        stamp=$(stat -c %Y "$file" 2>/dev/null) || return 1
+    fi
+    [[ "$stamp" =~ ^[1-9][0-9]{0,10}$ && "$now" =~ ^[1-9][0-9]{0,10}$ ]] &&
+        [ "$now" -ge "$stamp" ] && [ "$((now - stamp))" -lt "$ttl" ]
+}
+
+cached_probe() {
+    local key="$1" ttl="$2" failure_ttl="$3" module_file="$4"
+    shift 4
+    REPLY=
+    case "$key" in ''|*[!a-zA-Z0-9_-]*) return ;; esac
+    [ ! -L "$CACHE_DIR" ] || return 0
+
+    local file="$CACHE_DIR/$key" now
+    if _probe_entry_exists "$file" || _probe_entry_exists "$file-failed"; then
+        if [ -n "$_probe_clock" ]; then
+            now=$((_probe_clock + SECONDS - _probe_clock_seconds))
+        else
+            now=$(date +%s) || now=
+        fi
+        if _probe_entry_fresh "$file" "$now" "$ttl"; then
+            # Older caches may have no trailing newline.
+            IFS= read -r REPLY < "$file" || :
+            [ -z "$REPLY" ] || return 0
+        fi
+        _probe_entry_fresh "$file-failed" "$now" "$failure_ttl" && return 0
+    fi
+
+    # Only probe arguments cross the exec boundary. Rendering config stays
+    # in the caller, and the worker uses the shared atomic cache writer.
+    # shellcheck disable=SC2016
+    local write='
+        . "$1" && . "$2" || exit 1
+        CACHE_DIR=$3 key=$4
+        shift 4
+        value=$("$@") && [ -n "$value" ] || exit 1
+        cache_set "$key" "$value"
+    '
+    # Perl is already used for portable descriptor locks. If detachment or
+    # locking is unavailable, leave the reading absent.
+    (
+        umask 077
+        [ ! -L "$CACHE_DIR" ] && init_cache && [ -d "$CACHE_DIR" ] || exit 1
+        exec perl -MFcntl=:DEFAULT,:flock,:mode -MPOSIX=setsid,setpgid,_exit -e '
+            use strict;
+            use warnings;
+            my ($dir, $key, $ttl, $failure_ttl, $write, $utils, $module, @probe) = @ARGV;
+            defined(setsid()) or exit 1;
+            sysopen(my $lock, "$dir/$key-lock", O_WRONLY|O_CREAT|O_NOFOLLOW|O_NONBLOCK, 0600)
+                or exit 1;
+            my @lock_stat = stat($lock);
+            @lock_stat && S_ISREG($lock_stat[2]) && $lock_stat[3] == 1 &&
+                -O $lock && chmod(0600, $lock) or exit 1;
+            flock($lock, LOCK_EX|LOCK_NB) or exit 0;
+
+            # Another render may have finished between our read and the lock.
+            sub fresh {
+                my ($path, $ttl) = @_;
+                my @stat = lstat($path);
+                return 0 unless @stat && S_ISREG($stat[2]) && $stat[7];
+                my $age = time - $stat[9];
+                return $age >= 0 && $age < $ttl;
+            }
+            exit 0 if fresh("$dir/$key", $ttl) || fresh("$dir/$key-failed", $failure_ttl);
+
+            # Keep the descriptor through exec. If this supervisor is killed,
+            # the probe and its watchdog still own the lock.
+            fcntl($lock, F_SETFD, 0) or exit 1;
+            sub bounded {
+                my ($seconds, @command) = @_;
+                pipe(my $stop, my $notify) or return 1;
+                my $worker = fork();
+                defined($worker) or return 1;
+                if (!$worker) {
+                    close $notify;
+                    defined(setpgid(0, 0)) or _exit(1);
+                    my $group = $$;
+                    my $watchdog = fork();
+                    defined($watchdog) or _exit(1);
+                    if (!$watchdog) {
+                        my $terminate = sub { kill "KILL", -$group; _exit(1) };
+                        $SIG{ALRM} = $terminate;
+                        alarm $seconds;
+                        # A completion byte stops leftover children immediately.
+                        # EOF means the supervisor died. The alarm still applies.
+                        sleep($seconds + 1) unless sysread($stop, my $byte, 1);
+                        $terminate->();
+                    }
+                    close $stop;
+                    exec @command;
+                    _exit(1);
+                }
+                close $stop;
+                my $status = waitpid($worker, 0) == $worker ? $? : 1;
+                # Only the watchdog signals its own group, even after the
+                # worker is reaped, so a reused PID never targets another job.
+                local $SIG{PIPE} = "IGNORE";
+                syswrite($notify, ".");
+                return $status;
+            }
+            my @write = ("/bin/bash", "-c", $write, "probe", $utils, $module, $dir);
+            if (bounded(5, @write, $key, @probe)) {
+                bounded(1, @write, "$key-failed", printf => "%s", "--");
+            }
+        ' "$CACHE_DIR" "$key" "$ttl" "$failure_ttl" "$write" "${BASH_SOURCE[0]}" "$module_file" "$@"
+    ) </dev/null >/dev/null 2>&1 &
+    return 0
 }
 
 # Clear specific cache key or all cache

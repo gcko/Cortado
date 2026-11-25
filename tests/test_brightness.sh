@@ -18,25 +18,43 @@ STUB
 chmod +x "$TEST_BASE/bin/brightness"
 cat > "$TEST_BASE/bin/ioreg" <<'STUB'
 #!/bin/bash
-[ "$*" = "-l" ] || exit 2
+[ "$*" = "-r -d 1 -k IODisplayParameters" ] || exit 2
 case "$TEST_SAMPLE" in
     normal) value=32768 ;;
+    raw) printf '%s\n' '"IODisplayParameters"={"rawBrightness"={"min"=0,"max"=4,"value"=1}}'; exit 0 ;;
     zero) value=0 ;;
     *) exit 1 ;;
 esac
-printf '    "brightness"={"min"=0,"max"=65536,"value"=%s}\n' "$value"
+printf '    "IODisplayParameters"={"brightness"={"min"=0,"max"=65536,"value"=%s}}\n' "$value"
 STUB
 chmod +x "$TEST_BASE/bin/ioreg"
 
-check_render 'brightness shows the measured percentage' 'BRT: 50%' normal
-check_render 'brightness preserves a measured zero' 'BRT: 0%' zero
-check_render 'brightness shows absence when both probes fail' 'BRT: --' failed
-check_render 'brightness ignores output from a failed probe' 'BRT: --' partial
-check_render 'brightness rounds a fractional CLI reading' 'BRT: 50%' fraction
+# A cold render schedules the probe. Observe its result in the same cache.
+check_probe() {
+    local desc="$1" expected="$2" sample="$3" sb i entry
+    shift 3
+    sb=$(mktemp -d "$TEST_BASE/probe.XXXXXX") || exit 1
+    render "$sample" '' "CLAUDE_CONFIG_DIR='$sb'" "$@" >/dev/null || { fail "$desc (cold render failed)"; return; }
+    for ((i=0; i<60; i++)); do
+        for entry in "$sb"/cortado-cache/brightness*; do
+            [ ! -s "$entry" ] || break 2
+        done
+        sleep 0.05
+    done
+    [ "$i" -lt 60 ] || { fail "$desc (refresh did not publish)"; return; }
+    check_render "$desc" "$expected" "$sample" '' "CLAUDE_CONFIG_DIR='$sb'" "$@"
+}
+
+check_probe 'brightness shows the measured percentage' 'BRT: 50%' normal
+check_probe 'brightness uses the raw fallback scale' 'BRT: 25%' raw
+check_probe 'brightness preserves a measured zero' 'BRT: 0%' zero
+check_probe 'brightness shows absence when both probes fail' 'BRT: --' failed
+check_probe 'brightness ignores output from a failed probe' 'BRT: --' partial
+check_probe 'brightness rounds a fractional CLI reading' 'BRT: 50%' fraction
 comma_locale=$(locale -a | awk 'tolower($0) ~ /^de_de\.utf-?8$/ {print; exit}')
 if [ -n "$comma_locale" ]; then
-    check_render 'brightness rounds a fractional CLI reading in a comma-decimal locale' \
-        'BRT: 50%' fraction '' "export LC_ALL=$comma_locale"
+    check_probe 'brightness rounds a fractional CLI reading in a comma-decimal locale' \
+        'BRT: 50%' fraction "export LC_ALL=$comma_locale"
 fi
 
 printf '\nResults: %s passed, %s failed\n' "$PASS" "$FAIL"

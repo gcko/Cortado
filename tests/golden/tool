@@ -12,7 +12,7 @@ case "${0##*/}:$*" in
     pgrep:*) exit 1 ;;
     'pmset:-g batt')
         printf '%s\n' "Now drawing from 'AC Power'" ' -InternalBattery-0 73%; charging;' ;;
-    'top:-l 1 -n 0') printf '%s\n' 'CPU usage: 10.00% user, 15.00% sys, 75.00% idle' ;;
+    'iostat:-d -C -n 0 -c 2 -w 1') printf '%s\n' 'us sy id' '20 20 60' '10 15 75' ;;
     'vm_stat:') printf '%s\n' 'Pages free: 1000.' 'Pages active: 400000.' 'Pages wired down: 124288.' ;;
     'sysctl:-n hw.pagesize') printf '%s\n' 4096 ;;
     'sysctl:-n hw.memsize') printf '%s\n' 8589934592 ;;
@@ -25,7 +25,7 @@ case "${0##*/}:$*" in
     'uptime:') printf '%s\n' '12:00  up 1 day, 1:00, 1 user, load averages: 0.50 0.35 0.20' ;;
     'osx-cpu-temp:') printf '%s\n' '62.0°C' ;;
     'brightness:-l') printf '%s\n' 'display 0: brightness 0.50' ;;
-    'ps:aux') printf '%s\n' 'USER PID %CPU %MEM VSZ RSS TT STAT' 'test 42 0 0 0 0 ?? R' ;;
+    'ps:-A -o state=') printf '%s\n' R ;;
     'docker:info') ;;
     'docker:ps -q'|'docker:ps -aq') printf '%s\n' 'test-container' ;;
     'node:--version') printf '%s\n' 'v20.0.0' ;;

@@ -45,44 +45,35 @@ module_battery() {
     local show_pct="${BATTERY_SHOW_PERCENTAGE:-true}"
 
     # Get battery info
-    local batt_info
-    if ! batt_info=$(pmset -g batt 2>/dev/null); then
-        echo "$(get_icon "$icon" "BAT:") --"
+    local batt_info pct_num pattern='([0-9]+)%'
+    if ! batt_info=$(pmset -g batt 2>/dev/null) || ! [[ "$batt_info" =~ $pattern ]]; then
+        get_icon_reply "$icon" "BAT:"
+        echo "$REPLY --"
         return
     fi
-
-    local battery
-    battery=$(echo "$batt_info" | grep -oE '[0-9]+%' | head -1)
-    if [ -z "$battery" ]; then
-        echo "$(get_icon "$icon" "BAT:") --"
-        return
-    fi
-
-    # Extract percentage number
-    local pct_num
-    pct_num=$(echo "$battery" | tr -d '%')
+    pct_num=${BASH_REMATCH[1]}
 
     # Determine icon based on level
-    local display_icon="$icon"
     if [ "$pct_num" -le "$crit_thresh" ] 2>/dev/null; then
-        display_icon=$(get_icon "$critical_icon" "CRIT:")
+        get_icon_reply "$critical_icon" "CRIT:"
     elif [ "$pct_num" -le "$low_thresh" ] 2>/dev/null; then
-        display_icon=$(get_icon "$low_icon" "LOW:")
+        get_icon_reply "$low_icon" "LOW:"
     else
-        display_icon=$(get_icon "$icon" "BAT:")
+        get_icon_reply "$icon" "BAT:"
     fi
+    local display_icon="$REPLY"
 
     # Check if charging
     local charging=""
     if [ "$show_charging" = "true" ]; then
-        if echo "$batt_info" | grep -q "AC Power\|charging"; then
+        if [[ "$batt_info" == *'AC Power'* || "$batt_info" == *charging* ]]; then
             charging=" $charging_icon"
         fi
     fi
 
     # Build output
     if [ "$show_pct" = "true" ]; then
-        echo "$display_icon $battery$charging"
+        echo "$display_icon $pct_num%$charging"
     else
         echo "$display_icon$charging"
     fi

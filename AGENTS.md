@@ -84,7 +84,7 @@ Cortado/
 
 ### `modules/utils.sh` (Required Utilities)
 - **Theme system**: `apply_theme()` sets icons and indicators based on `COLOR_THEME`
-- **Cache system**: File-based caching for expensive operations
+- **Cache system**: File-based caching for expensive operations. Weather, network, CPU, load, brightness, processes, Docker, and Node.js read fresh cache entries and show `--` during a detached refresh. Warm reads share a clock and file timestamp snapshot per render. Workers use a nonblocking descriptor lock per probe and publish via `cache_set`. A watchdog bounds each probe to five seconds and any failure-cache write to one more second. Failed probes cool down for fifteen seconds for weather and WAN IP or five seconds for other probes.
 - **Safe number handling**: `safe_int()`, `safe_divide()`, `safe_percent()`
 - **Status indicators**: `get_status()` (3-level), `get_status_4level()` (4-level for rate limits)
 - **Icon handling**: `get_icon()` respects `USE_ICONS` setting
@@ -201,6 +201,7 @@ Regression tests live in `tests/` and share the Bash assertions in `tests/lib/as
 /bin/bash tests/test_install_update.sh  # installer update flags, runtime copy, migration
 /bin/bash tests/run-jq-variants.sh      # all suites with Homebrew and Apple jq on macOS
 /bin/bash tests/render_timing.sh        # p50 and p95 for default renders with fresh caches
+/bin/bash tests/test_all_modules_timing.sh # p50 and p95 with all modules enabled and warm probe caches
 ```
 
 Lint with `shellcheck`. `.shellcheckrc` disables SC2155, SC2034, SC2059, SC2001, SC2012, SC1090, SC2129, SC2086, and SC2002 project-wide. See upstream pstuart/Barista#21 for the original policy.
@@ -323,7 +324,7 @@ Development skills live in `.claude/skills/` (canonical). Each `.agents/skills/<
 
 ## Dependencies
 
-- **Required**: `jq` (JSON processor; without it the line reads `cortado: jq missing`). `bc` is used only by the opt-in brightness, load and temperature modules.
+- **Required**: `jq` (JSON processor; without it the line reads `cortado: jq missing`). `bc` is used by the opt-in load and temperature modules. Perl runs the detached probes.
 - **Optional**: Various CLI tools for specific modules (docker, node, etc.)
 
 ## Custom Config Directory

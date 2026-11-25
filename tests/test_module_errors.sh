@@ -28,7 +28,7 @@ without_tool() {
 
 without_tool "$TEST_BASE/no-grep" grep
 without_tool "$TEST_BASE/no-jq" jq
-# Supply a battery reading on desktops and on Linux so grep is actually reached.
+# Supply a battery reading even on hosts without pmset.
 rm -f "$TEST_BASE/no-grep/pmset"
 cat > "$TEST_BASE/no-grep/pmset" <<'EOF'
 #!/bin/bash
@@ -47,6 +47,12 @@ printf '%s\n' 'first source diagnostic' 'second source diagnostic' >&2
 if [ "${TEST_MODEL_DIAGNOSTIC:-false}" = true ]; then
     module_model() {
         printf '%s\n' 'model runtime diagnostic' >&2
+        printf '%s\n' '🤖 Opus'
+    }
+fi
+if [ "${TEST_MODEL_MISSING_GREP:-false}" = true ]; then
+    module_model() {
+        grep -q . /dev/null
         printf '%s\n' '🤖 Opus'
     }
 fi
@@ -151,15 +157,20 @@ render() {
 for debug in false true; do
     render "$PROJECT_ROOT" "$TEST_BASE/no-grep" clean 'MODULE_ORDER="battery,model"' \
         'MODULE_BATTERY="true"' "DEBUG_MODE=$debug"
-    assert_eq "Missing grep shows battery as -- and keeps the model reading (debug $debug)" '🔋 -- | 🤖 Opus' "$out"
+    assert_eq "Missing grep keeps both battery and model readings (debug $debug)" '🔋 80% ⚡ | 🤖 Opus' "$out"
     assert_eq "Missing grep keeps process stderr quiet (debug $debug)" '' "$err"
     if [ "$debug" = true ]; then
-        assert_contains 'Debug logs the missing grep error under battery' 'battery: ' "$log"
-        assert_contains 'The log records the shell diagnostic' 'grep: command not found' "$log"
+        assert_not_contains 'Battery needs no grep diagnostic' 'battery: ' "$log"
     else
         assert_eq 'Ordinary mode creates no log' '' "$log"
     fi
 done
+
+render "$SOURCE_TREE" "$TEST_BASE/no-grep" clean 'MODULE_ORDER=model' 'DEBUG_MODE=true' 'TEST_MODEL_MISSING_GREP=true'
+assert_eq 'A missing command keeps the surviving reading intact' '🤖 Opus' "$out"
+assert_eq 'A missing command keeps process stderr quiet' '' "$err"
+assert_contains 'Debug logs the missing command under its module' 'model: ' "$log"
+assert_contains 'Debug retains the missing-command diagnostic' 'grep: command not found' "$log"
 
 render "$SOURCE_TREE" "$TEST_BASE/no-jq" clean 'MODULE_ORDER="model"'
 assert_eq 'Missing jq exits successfully' 0 "$?"
