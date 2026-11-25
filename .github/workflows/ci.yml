@@ -1,0 +1,134 @@
+name: Cortado checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS (Bash 3.2)
+            runner: macos-26
+          - name: Ubuntu
+            runner: ubuntu-24.04
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install macOS dependencies
+        if: runner.os == 'macOS'
+        run: |
+          if [ ! -x "$(brew --prefix jq)/bin/jq" ]; then brew install jq; fi
+          if ! command -v bc >/dev/null; then brew install bc; fi
+          if ! command -v shellcheck >/dev/null; then brew install shellcheck; fi
+          test -x /usr/bin/jq
+          printf '%s\n' "$(brew --prefix jq)/bin" >> "$GITHUB_PATH"
+
+      - name: Install Ubuntu dependencies
+        if: runner.os == 'Linux'
+        run: |
+          missing=()
+          for tool in jq bc shellcheck; do
+            if ! command -v "$tool" >/dev/null; then missing+=("$tool"); fi
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            sudo apt-get update
+            sudo apt-get install -y "${missing[@]}"
+          fi
+
+      - name: Identify tools
+        id: tools
+        run: |
+          /bin/bash --version
+          jq --version
+          command -v bc
+          if [ "$RUNNER_OS" = macOS ]; then
+            /bin/bash -c '[[ $BASH_VERSION == 3.2.* ]]'
+            /usr/bin/jq --version
+          fi
+
+      - name: Check shell syntax
+        run: |
+          failed=0
+          for script in cortado.sh install.sh lib/*.sh modules/*.sh tests/*.sh tests/lib/*.sh; do
+            /bin/bash -n "$script" || { printf 'SYNTAX: %s\n' "$script"; failed=1; }
+          done
+          exit "$failed"
+
+      - name: Compare ShellCheck findings with the merge base
+        if: ${{ !cancelled() && steps.tools.outcome == 'success' }}
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [[ "$BASE_SHA" =~ ^0+$ ]]; then BASE_SHA=HEAD^; fi
+          merge_base=$(git merge-base HEAD "$BASE_SHA")
+          scratch=$(mktemp -d)
+          trap 'rm -rf "$scratch"' EXIT
+          mkdir "$scratch/base"
+          git archive "$merge_base" | tar -x -C "$scratch/base"
+          sc() (
+            cd "$1" || exit 1
+            shopt -s nullglob
+            local_status=0
+            shellcheck -f json cortado.sh install.sh lib/*.sh modules/*.sh tests/*.sh tests/lib/*.sh > "$2" || local_status=$?
+            if [ "$local_status" -gt 1 ]; then
+              cat "$2" >&2
+              exit "$local_status"
+            fi
+            jq -es 'if length == 1 and (.[0] | type == "array") then .[0] | length else error("Expected one ShellCheck diagnostics array") end' "$2" || {
+              local_status=$?
+              cat "$2" >&2
+              exit "$local_status"
+            }
+          )
+          base_count=$(sc "$scratch/base" "$scratch/base.json")
+          head_count=$(sc . "$scratch/head.json")
+          printf 'shellcheck findings: base %s, head %s\n' "$base_count" "$head_count"
+          if [ "$head_count" -gt "$base_count" ]; then
+            cat "$scratch/head.json"
+            exit 1
+          fi
+
+      - name: Run all suites with macOS system Bash and both jq variants
+        if: ${{ !cancelled() && steps.tools.outcome == 'success' && runner.os == 'macOS' }}
+        run: /bin/bash tests/run-jq-variants.sh
+
+      - name: Run all suites
+        if: ${{ !cancelled() && steps.tools.outcome == 'success' && runner.os != 'macOS' }}
+        run: |
+          log=$(mktemp)
+          trap 'rm -f "$log"' EXIT
+          failed=0
+          for suite in tests/test_*.sh; do
+            if /bin/bash "$suite" > "$log" 2>&1; then
+              printf 'PASS: %s\n' "${suite##*/}"
+            else
+              printf 'FAIL: %s\n' "${suite##*/}"
+              cat "$log"
+              failed=1
+            fi
+          done
+          exit "$failed"
+
+      - name: Record default render p50 and p95
+        if: ${{ !cancelled() && steps.tools.outcome == 'success' }}
+        continue-on-error: true
+        run: /bin/bash tests/render_timing.sh

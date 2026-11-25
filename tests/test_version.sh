@@ -3,8 +3,8 @@
 set -u
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PASS=0
-FAIL=0
+# shellcheck source=tests/lib/assert.sh
+. "$PROJECT_ROOT/tests/lib/assert.sh" plain
 TEST_BASE=$(mktemp -d)
 trap 'rm -rf "$TEST_BASE"' EXIT
 mkdir "$TEST_BASE/bin"
@@ -34,17 +34,6 @@ now=$(/bin/date +%s)
 render() {
     printf '%s' "$1" | PATH="$TEST_BASE/bin:$PATH" TEST_NOW="$((now + $2))" \
         CLAUDE_CONFIG_DIR="$sb" /bin/bash "$PROJECT_ROOT/cortado.sh" 2>&1
-}
-
-assert_eq() {
-    local desc="$1" expected="$2" actual="$3"
-    if [ "$actual" = "$expected" ]; then
-        PASS=$((PASS + 1))
-        printf 'PASS: %s\n' "$desc"
-    else
-        FAIL=$((FAIL + 1))
-        printf 'FAIL: %s (expected [%s] got [%s])\n' "$desc" "$expected" "$actual"
-    fi
 }
 
 check() {

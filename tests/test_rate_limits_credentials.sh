@@ -10,25 +10,13 @@ export CLAUDE_CONFIG_DIR="$HOME/.claude"
 export TMPDIR="$TEST_ROOT/tmp"
 mkdir -p "$CLAUDE_CONFIG_DIR" "$TMPDIR"
 DEBUG_MODE=false
-PASS=0
-FAIL=0
+# shellcheck source=tests/lib/assert.sh
+. "$SCRIPT_DIR/tests/lib/assert.sh" indented
 CURL_CALLS="$TEST_ROOT/curl-called"
 KEYCHAIN_CALLS="$TEST_ROOT/keychain-called"
 CURL_AUTH_OK="$TEST_ROOT/curl-auth-ok"
 : > "$CURL_CALLS"
 : > "$KEYCHAIN_CALLS"
-assert_eq() {
-    local desc="$1" expected="$2" actual="$3"
-    if [ "$expected" = "$actual" ]; then
-        echo "  PASS: $desc"
-        PASS=$((PASS + 1))
-    else
-        echo "  FAIL: $desc"
-        echo "    expected: '$expected'"
-        echo "    actual:   '$actual'"
-        FAIL=$((FAIL + 1))
-    fi
-}
 # Never consult a real Keychain or run a real curl. Force generic curl on Git Bash.
 security() { printf 'unexpected call\n' >> "$KEYCHAIN_CALLS"; return 1; }
 uname() { printf '%s\n' CortadoCredentialTest; }
@@ -121,9 +109,11 @@ rm -f "$CREDS_FILE"
 assert_rejected_file "missing file"
 # Check jq status independently of its filter.
 write_credentials '{"claudeAiOauth":{"accessToken":"test-token-REDACTED"}}'
+# shellcheck disable=SC2329 # The sourced rate-limit module calls this mock.
 jq() { printf '%s\n' test-token-REDACTED-partial; return 1; }
 assert_rejected_file "jq failure after producing output"
 unset -f jq
+# shellcheck disable=SC2329 # The sourced rate-limit module calls this mock.
 jq() { return 127; }
 assert_rejected_file "jq unavailable"
 unset -f jq

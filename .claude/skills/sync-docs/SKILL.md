@@ -39,7 +39,7 @@ a diff-and-reconcile pass, not a rewrite.
 | `CLAUDE.md` | Claude-Code-only addenda. | Line 1 stays the bare `@AGENTS.md` import. Anything also true for Codex belongs in `AGENTS.md`. |
 | `cortado.conf` comments | The per-setting reference every install ships with. | Comment lines only. Each documented key must be one the code reads, with the default the code uses. |
 | Module header comments (`# Configuration options:`) | The per-module option reference. | Comment lines only. Each listed option must match a `${KEY:-default}` read in that module, default included. |
-| `.github/NO_GITHUB_ACTIONS.md` | The statement that this repository has no CI. | Keep it true and about Cortado. |
+| `.github/workflows/ci.yml` | The automated pull request and main checks. | Read it to verify the CI policy in `AGENTS.md`. |
 | `.claude/skills/*/SKILL.md` and their `references/` | Repository development skills, including this one. Not shipped. | `.claude/skills/` is canonical; each `.agents/skills/<name>` is a relative symlink to it, and each skill has its own `agents/openai.yaml`. A skill's commands must have been run before they are written down. |
 
 ## Files that are not documentation: never reconcile these
@@ -67,7 +67,7 @@ is its mechanical backstop, since nothing else enforces tone.
 harness has it, but this repository does not vendor it, so everything needed to apply the standard
 by hand is here.
 
-In scope: `README.md` and `.github/NO_GITHUB_ACTIONS.md`. Out of scope, deliberately: `AGENTS.md`
+In scope: `README.md`. Out of scope, deliberately: `AGENTS.md`
 and `CLAUDE.md` (agent contracts loaded verbatim), the skills (agent instructions), and config and
 code comments.
 
@@ -183,7 +183,7 @@ counts are the most common drift.
    bash -n cortado.conf && for f in modules/*.sh; do bash -n "$f"; done && echo "syntax ok"
 
    # e. Tone: no em/en dashes or curly quotes in the human-facing lines this pass added.
-   if git diff HEAD -U0 -- README.md .github/NO_GITHUB_ACTIONS.md | grep -E '^\+[^+]' \
+   if git diff HEAD -U0 -- README.md | grep -E '^\+[^+]' \
         | sed 's/`[^`]*`//g' | grep -n '—\|–\|[“”‘’]'; then
      echo "TONE DRIFT: reapply Voice and tone to the lines listed above"
    else

@@ -4,21 +4,8 @@
 # ABOUTME: Run with: bash tests/test_utils.sh
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PASS=0
-FAIL=0
-
-assert_eq() {
-    local desc="$1" expected="$2" actual="$3"
-    if [ "$expected" = "$actual" ]; then
-        echo "  PASS: $desc"
-        PASS=$((PASS + 1))
-    else
-        echo "  FAIL: $desc"
-        echo "    expected: '$expected'"
-        echo "    actual:   '$actual'"
-        FAIL=$((FAIL + 1))
-    fi
-}
+# shellcheck source=tests/lib/assert.sh
+. "$SCRIPT_DIR/tests/lib/assert.sh" indented
 
 # Load utils (the functions under test)
 . "$SCRIPT_DIR/modules/utils.sh"
@@ -335,7 +322,7 @@ mem_probe() {
     # $1 = MemTotal field, $2 = MemAvailable field. Prints rc|stdout|stderr.
     local out err rc
     out=$(MOCK_MEM_TOTAL="$1" MOCK_MEM_AVAIL="$2" PATH="$MOCK_DIR:$PATH" \
-          bash "$MOCK_DIR/run.sh" 2>"$MOCK_DIR/err"); rc=$?
+          /bin/bash "$MOCK_DIR/run.sh" 2>"$MOCK_DIR/err"); rc=$?
     err=$(cat "$MOCK_DIR/err")
     printf '%s|%s|%s' "$rc" "$out" "$err"
 }

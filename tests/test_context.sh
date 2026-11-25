@@ -3,8 +3,8 @@
 set -u
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PASS=0
-FAIL=0
+# shellcheck source=tests/lib/assert.sh
+. "$PROJECT_ROOT/tests/lib/assert.sh" plain
 
 render() (
     sb=$(mktemp -d)
@@ -20,13 +20,7 @@ check() {
     local desc="$1" expected="$2" actual
     shift 2
     actual=$(render "$@")
-    if [ "$actual" = "$expected" ]; then
-        PASS=$((PASS + 1))
-        printf 'PASS: %s\n' "$desc"
-    else
-        FAIL=$((FAIL + 1))
-        printf 'FAIL: %s (expected [%s] got [%s])\n' "$desc" "$expected" "$actual"
-    fi
+    assert_eq "$desc" "$expected" "$actual"
 }
 
 check "usage without a window size shows absence" "CTX: --" \

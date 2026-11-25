@@ -10,32 +10,12 @@ CLAUDE_CONFIG_DIR=$(mktemp -d)
 export CLAUDE_CONFIG_DIR
 export CACHE_DIR="$CLAUDE_CONFIG_DIR/cortado-cache"
 trap 'rm -rf "$CLAUDE_CONFIG_DIR"' EXIT
-PASS=0
-FAIL=0
-
-assert_eq() {
-    local desc="$1" expected="$2" actual="$3"
-    if [ "$expected" = "$actual" ]; then
-        echo "  PASS: $desc"
-        PASS=$((PASS + 1))
-    else
-        echo "  FAIL: $desc"
-        echo "    expected: '$expected'"
-        echo "    actual:   '$actual'"
-        FAIL=$((FAIL + 1))
-    fi
-}
+# shellcheck source=tests/lib/assert.sh
+. "$REPO_ROOT/tests/lib/assert.sh" indented
 
 # Load installer functions without running main.
-# shellcheck source=../install.sh
+# shellcheck source=install.sh
 . "$INSTALL"
-
-assert_rc() {
-    local desc="$1" expected="$2"
-    shift 2
-    "$@"
-    assert_eq "$desc" "$expected" "$?"
-}
 
 # --- parse_args ---
 USE_EMOJI="true"
@@ -179,6 +159,7 @@ assert_rc "git clone is not Homebrew" 1 _is_homebrew_prefix "/Users/me/src/Corta
 
 # --- do_update refuses Homebrew and does not re-exec ---
 REEXEC_LOG=""
+# shellcheck disable=SC2329 # The sourced installer calls this mock if the guard fails.
 _reexec_installer() {
     REEXEC_LOG="called:$*"
 }

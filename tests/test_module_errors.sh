@@ -8,28 +8,8 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 TEST_BASE="$(mktemp -d)"
 trap 'rm -rf "$TEST_BASE"' EXIT
 
-PASS=0
-FAIL=0
-pass() { PASS=$((PASS + 1)); printf 'PASS: %s\n' "$1"; }
-fail() { FAIL=$((FAIL + 1)); printf 'FAIL: %s\n' "$1"; }
-
-assert_eq() {
-    local desc="$1" expected="$2" actual="$3"
-    if [ "$expected" = "$actual" ]; then
-        pass "$desc"
-    else
-        fail "$desc (expected [$expected], got [$actual])"
-    fi
-}
-
-assert_contains() {
-    local desc="$1" needle="$2" actual="$3"
-    case "$actual" in
-        *"$needle"*) pass "$desc" ;;
-        *) fail "$desc (missing [$needle] in [$actual])" ;;
-    esac
-}
-
+# shellcheck source=tests/lib/assert.sh
+. "$PROJECT_ROOT/tests/lib/assert.sh" plain-comma
 # A controlled PATH keeps the system tools available and omits the selected one.
 without_tool() {
     local dest="$1" omit="$2" tool name

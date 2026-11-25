@@ -81,9 +81,9 @@ render() {
 }
 ```
 
-`/bin/bash` is deliberate: on macOS it is Bash 3.2, the floor Cortado supports, and the test suite
-runs under whatever `bash` is first on PATH. `SEED_CACHE` (a JSON file) and `SEED_AGE` (a BSD `date
--v` offset such as `6H`) plant a rate-limit reading. `date -v` is macOS-only; on Linux use
+`/bin/bash` exercises the same Bash 3.2 floor as the macOS Pre-PR Checks and CI job. `SEED_CACHE`
+(a JSON file) and `SEED_AGE` (a BSD `date -v` offset such as `6H`) plant a rate-limit reading.
+`date -v` is macOS-only. On Linux use
 `touch -d '6 hours ago'`.
 
 Pin the modules you are reviewing, so the line holds only what you are reading:
@@ -331,7 +331,7 @@ Each of these produced a wrong reading during the 2026-11-22 walk:
   tried. `DEBUG_MODE="true"` and `cortado.log` in the sandbox do.
 - **Latency.** Claude Code runs the statusline often. Time a render (`time render ...`) when a change
   adds a subprocess or a fetch.
-- **Linux and Git Bash.** The harness above is macOS-flavoured (`date -v`, `/bin/bash` 3.2). A
+- **Linux.** The harness above is macOS-flavoured (`date -v`, `/bin/bash` 3.2). A
   change to a platform branch needs that platform.
 
 When a finding falls in one of these, say which, and name the instrument that would settle it.

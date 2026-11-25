@@ -158,7 +158,7 @@ DIR: myproject | CTX: ####---- 50%[OK] | GIT: main      # ASCII mode
 - **jq** - JSON processor (required)
 - **bc** - Basic calculator (usually pre-installed)
 - The battery module requires macOS. Rate-limit tracking works on macOS and Linux.
-- Windows: untested (Git Bash may work)
+- Windows: not supported
 
 ```bash
 # Install dependencies on macOS

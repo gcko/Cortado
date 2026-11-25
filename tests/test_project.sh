@@ -7,21 +7,8 @@
 # ABOUTME: Run with: bash tests/test_project.sh
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PASS=0
-FAIL=0
-
-assert_eq() {
-    local desc="$1" expected="$2" actual="$3"
-    if [ "$expected" = "$actual" ]; then
-        echo "  PASS: $desc"
-        PASS=$((PASS + 1))
-    else
-        echo "  FAIL: $desc"
-        echo "    expected: '$expected'"
-        echo "    actual:   '$actual'"
-        FAIL=$((FAIL + 1))
-    fi
-}
+# shellcheck source=tests/lib/assert.sh
+. "$SCRIPT_DIR/tests/lib/assert.sh" indented
 
 # Load the module under test. _get_project_icon and _format_project are pure (case + echo, no I/O).
 # ASCII sentinels (DEF/OVR/ICON/NAME) keep assertions byte-clean instead of hinging on emoji bytes.

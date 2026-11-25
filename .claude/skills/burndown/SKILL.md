@@ -106,8 +106,8 @@ delivery needs `gh stack` (the `gh-stack` extension) at v0.3.0 or later. The liv
 needs `tmux` and a logged-in `claude` on PATH; without them, say so in the pull request rather than
 skipping it silently.
 
-The trunk is `main`. Cortado has no CI and no branch protection, so the Pre-PR Checks run by the
-builder and re-run by the orchestrator on the exact head are the only gate, and every pull request
-records their output. Code issues finish only when their change reaches `origin/main`; research and
-decision issues may finish on their verified findings or ruling. Merge with `--squash`, and leave
+The trunk is `main`. GitHub Actions runs on pull requests and pushes to `main`. The builder runs
+the local Pre-PR Checks and the orchestrator reruns them on the commit being merged. Every pull
+request records their output. Code issues finish only when their change reaches `origin/main`.
+Research and decision issues may finish on their verified findings or ruling. Merge with `--squash`, and leave
 `VERSION` and its literals to `cortado-release`.
