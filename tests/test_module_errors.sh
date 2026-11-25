@@ -71,28 +71,45 @@ if [ "${TEST_MODEL_FLOOD:-false}" = true ]; then
 fi
 if [ -n "${TEST_OMITTED_BYTES:-}" ]; then
     module_model() {
-        local capture retry boundary
         # Write 4097 bytes first, including a two-byte character and a newline.
         printf '%4094s%s\n' 'first uneven diagnostic' 'é' >&2
-        # Let the reader consume the short write before sending the rest.
-        for capture in "$TMPDIR"/cortado-stderr.*/data; do
-            for ((retry = 0; retry < 250; retry++)); do
-                [ ! -s "$capture" ] || break
-                /bin/sleep 0.02
-            done
-        done
-        [ -n "${capture:-}" ] && [ -s "$capture" ] || return 1
+        # Wait for the short write to drain from this module's FIFO. The reused
+        # data file can still contain old diagnostics or be awaiting a flush.
+        python3 - "$CORTADO_STDERR_CAPTURE/pipe" "$TEST_OMITTED_BYTES" <<'FIFO' || return 1
+import array
+import fcntl
+import os
+import sys
+import termios
+import time
 
-        # Another 61439 bytes reaches the cap exactly.
-        printf -v boundary '%61438s\n' 'last retained diagnostic'
-        if [ "$TEST_OMITTED_BYTES" -eq 0 ]; then
-            printf '%s' "$boundary" >&2
-        else
-            printf '%sX' "$boundary" >&2
-            if [ "$TEST_OMITTED_BYTES" -gt 1 ]; then
-                printf '%*s\n' "$((TEST_OMITTED_BYTES - 2))" 'omitted tail' >&2
-            fi
-        fi
+# On macOS FIONREAD must query the read end. Opening it here does not read data.
+fd = os.open(sys.argv[1], os.O_RDONLY | os.O_NONBLOCK)
+if not os.path.samestat(os.fstat(fd), os.fstat(2)):
+    raise SystemExit("uneven stderr fixture did not open the module's FIFO")
+
+def wait_until_drained():
+    unread = array.array("i", [0])
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        fcntl.ioctl(fd, termios.FIONREAD, unread, True)
+        if unread[0] == 0:
+            return
+        time.sleep(0.005)
+    raise SystemExit("uneven stderr fixture timed out waiting for the FIFO to drain")
+
+omitted = int(sys.argv[2])
+wait_until_drained()
+with os.fdopen(os.dup(2), "wb") as stderr:
+    # Fill through byte 65,535, then deliver the cutoff newline and the first
+    # omitted byte together. This forces the faulty reader to see both bytes.
+    stderr.write(b"last retained diagnostic".rjust(61438))
+    stderr.flush()
+    wait_until_drained()
+    os.write(2, b"\nX" if omitted else b"\n")
+    if omitted > 1:
+        stderr.write(b"omitted tail".rjust(omitted - 2) + b"\n")
+FIFO
         printf '%s\n' '🤖 Opus'
     }
 fi
@@ -321,7 +338,7 @@ for omitted in 2031616 0 1; do
     expected_marker=''
     if [ "$omitted" -gt 0 ]; then expected_marker="model: [truncated $omitted bytes]"; fi
     assert_eq "$bytes stderr bytes report the exact omitted byte count" "$expected_marker" \
-        "$(sed -n 's/^.*\(model: \[truncated .* bytes\]\)$/\1/p' "$sb/cortado.log")"
+        "$(sed -n '/^model: \[truncated .* bytes\]$/p' "$sb/cortado.log")"
 done
 
 render "$SOURCE_TREE" "$PATH" clean 'MODULE_ORDER=version' 'MODULE_VERSION=true' 'TEST_VERSION_PAYLOAD=true'
