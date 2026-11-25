@@ -78,6 +78,7 @@ fi
 if [ -n "$output" ] && [ -n "$headers" ]; then
     case "$REQUEST_ID" in
         second|history-second) five=78; seven=91 ;;
+        missing-utilization) five=null; seven=42 ;;
         *) five=42; seven=10 ;;
     esac
     printf '{"five_hour":{"utilization":%s},"seven_day":{"utilization":%s}}' "$five" "$seven" > "$output"
@@ -113,6 +114,13 @@ echo CortadoConcurrencyTest
 STUB
 chmod +x "$TEST_BASE/bin/curl" "$TEST_BASE/bin/uname"
 
+echo "=== a fresh API response can omit a reading ==="
+sb=$(sandbox)
+write_credentials "$sb"
+assert_eq "a fresh API null displays absence beside its measured sibling" '5h:-- 7d:42%' \
+    "$(REQUEST_ID=missing-utilization render "$sb" '{}')"
+assert_eq "a partial API response does not add a history point" '' "$(cat "$sb/.usage_history" 2>/dev/null)"
+
 echo "=== concurrent sessions display their own usage ==="
 sb=$(sandbox)
 write_credentials "$sb"
@@ -126,8 +134,8 @@ touch "$STUB_STATE/first.release"
 wait "$first_pid"
 touch "$STUB_STATE/second.release"
 wait "$second_pid"
-assert_eq "first concurrent render shows its own reading" '5h:42%  7d:10% ' "$(cat "$STUB_STATE/first.render")"
-assert_eq "second concurrent render shows its own reading" '5h:78%  7d:91% ' "$(cat "$STUB_STATE/second.render")"
+assert_eq "first concurrent render shows its own reading" '5h:42% 7d:10%' "$(cat "$STUB_STATE/first.render")"
+assert_eq "second concurrent render shows its own reading" '5h:78% 7d:91%' "$(cat "$STUB_STATE/second.render")"
 for kind in body headers; do
     assert_eq "the concurrent requests use different $kind paths" yes \
         "$([ "$(cat "$STUB_STATE/first.$kind-path")" != "$(cat "$STUB_STATE/second.$kind-path")" ] && echo yes)"
@@ -203,8 +211,8 @@ await_file "$STUB_STATE/history-second.done" 25 || :
 touch "$STUB_STATE/history-release"
 wait "$first_pid"
 wait "$second_pid"
-assert_eq "the first history writer renders its own reading" '5h:42%  7d:10% ' "$(cat "$STUB_STATE/history-first.render")"
-assert_eq "the second history writer renders its own reading" '5h:78%  7d:91% ' "$(cat "$STUB_STATE/history-second.render")"
+assert_eq "the first history writer renders its own reading" '5h:42% 7d:10%' "$(cat "$STUB_STATE/history-first.render")"
+assert_eq "the second history writer renders its own reading" '5h:78% 7d:91%' "$(cat "$STUB_STATE/history-second.render")"
 assert_eq "history retains exactly one complete row per reading" $'42,10,,\n78,91,,' \
     "$(awk -F, 'NF != 5 || $1 !~ /^[0-9]+$/ { print "invalid row" } { sub(/^[^,]*,/, ""); print }' \
         "$sb/.usage_history" | sort)"
@@ -216,7 +224,7 @@ HISTORY_FAULT=kill-at-rename render "$sb" "$history_payload" >/dev/null
 assert_eq "the history writer was killed at publication" yes "$([ -f "$STUB_STATE/history-killed" ] && echo yes)"
 assert_eq "KILL at history publication leaves the old row readable" "$previous" "$(cat "$sb/.usage_history")"
 write_credentials "$sb"
-assert_eq "a later render displays fresh data after a history writer is killed" '5h:78%  7d:91% ' \
+assert_eq "a later render displays fresh data after a history writer is killed" '5h:78% 7d:91%' \
     "$(REQUEST_ID=history-second render "$sb" '{}')"
 assert_eq "a later writer can append after KILL" $'19,28,,\n78,91,,' "$(cut -d, -f2- "$sb/.usage_history")"
 
@@ -228,7 +236,7 @@ failed_open_render=$(
     exec 9>>"$TEST_BASE/unrelated-lock"
     render "$sb" "$history_payload"
 )
-assert_eq "a failed lock open still displays the reading" '5h:42%  7d:10% ' "$failed_open_render"
+assert_eq "a failed lock open still displays the reading" '5h:42% 7d:10%' "$failed_open_render"
 assert_eq "a failed lock open leaves history intact" "$previous" "$(cat "$sb/.usage_history")"
 
 sb=$(sandbox)
@@ -238,7 +246,7 @@ cat > "$TEST_BASE/bin/flock" <<'STUB'
 exit 75
 STUB
 chmod +x "$TEST_BASE/bin/flock"
-assert_eq "a denied history lock still displays the reading" '5h:42%  7d:10% ' "$(render "$sb" "$history_payload")"
+assert_eq "a denied history lock still displays the reading" '5h:42% 7d:10%' "$(render "$sb" "$history_payload")"
 assert_eq "a denied history lock leaves history intact" "$previous" "$(cat "$sb/.usage_history")"
 assert_eq "the lock file is owner-only under a permissive umask" '-rw-------' \
     "$(ls -ld "$sb/.usage_history-lock" | cut -c1-10)"
@@ -249,7 +257,7 @@ sb=$(sandbox)
 legacy_config="$sb/cortado-cache/rate_limits_curlcfg"
 printf '%s\n' 'legacy curl config fixture' > "$legacy_config"
 touch -t 200001010000 "$legacy_config"
-assert_eq "cleanup still displays the payload reading" '5h:42%  7d:10% ' "$(render "$sb" "$history_payload")"
+assert_eq "cleanup still displays the payload reading" '5h:42% 7d:10%' "$(render "$sb" "$history_payload")"
 assert_eq "a render removes an old legacy curl config" no "$([ -f "$legacy_config" ] && echo yes || echo no)"
 
 sb=$(sandbox)
@@ -382,7 +390,7 @@ assert_eq "killed writer leaves the previous history snapshot readable" "$previo
 
 sb=$(sandbox)
 printf '%s\n' "$previous" > "$sb/.usage_history"
-assert_eq "history rewrite failure still displays the current reading" '5h:65%  7d:32% ' "$(HISTORY_FAULT=fail render "$sb" "$payload")"
+assert_eq "history rewrite failure still displays the current reading" '5h:65% 7d:32%' "$(HISTORY_FAULT=fail render "$sb" "$payload")"
 assert_eq "failed history rewrite keeps the previous snapshot" "$previous" "$(cat "$sb/.usage_history")"
 assert_eq "failed history rewrite cleans its staging file" '' "$(find "$sb" -name '.usage_history.*' -print)"
 
@@ -398,7 +406,7 @@ assert_eq "failed history read keeps the previous snapshot" "$previous" "$(cat "
 rm -f "$TEST_BASE/bin/tail"
 
 sb=$(sandbox)
-assert_eq "successful history update displays the current reading" '5h:65%  7d:32% ' "$(render "$sb" "$payload")"
+assert_eq "successful history update displays the current reading" '5h:65% 7d:32%' "$(render "$sb" "$payload")"
 assert_eq "history snapshot is owner-only" '-rw-------' "$(ls -ld "$sb/.usage_history" | cut -c1-10)"
 
 sb=$(sandbox)

@@ -120,8 +120,8 @@ _check_backoff() {
 #   rate_limits.seven_day.used_percentage, rate_limits.seven_day.resets_at
 # Prints them in the usage API's shape ({five_hour:{utilization,resets_at}, ...},
 # resets_at as an ISO 8601 UTC string) so the renderer below needs no second path.
-# Prints nothing unless both windows carry a numeric percentage: a partial or
-# malformed object falls back to the credential path rather than rendering a guess.
+# Both window objects and at least one numeric reading are needed to use the
+# payload. A missing or invalid percentage stays null if its sibling can render.
 # A reset time that is neither a number nor a strict ISO 8601 string is dropped
 # (no countdown), because it is written into the comma-separated history file.
 _usage_from_payload() {
@@ -129,8 +129,8 @@ _usage_from_payload() {
     [ -n "$input" ] || return 0
     printf '%s' "$input" | jq -c '
         def window:
-            if type == "object" and (.used_percentage | type) == "number"
-            then {utilization: .used_percentage,
+            if type == "object"
+            then {utilization: ((.used_percentage | numbers) // null),
                   resets_at: (if (.resets_at | type) == "number"
                               then (.resets_at | floor | todate)
                               elif (.resets_at | type) == "string"
@@ -142,6 +142,7 @@ _usage_from_payload() {
         | select(type == "object")
         | {five_hour: (.five_hour | window), seven_day: (.seven_day | window)}
         | select(.five_hour != null and .seven_day != null)
+        | select(.five_hour.utilization != null or .seven_day.utilization != null)
     ' 2>/dev/null
 }
 
@@ -345,6 +346,7 @@ module_rate_limits() {
     esac
     local history_file="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.usage_history"
     local usage_data=""
+    local from_payload=false
     local fresh_fetch=false
     local in_backoff=false
     local backoff_remaining=0
@@ -355,13 +357,7 @@ module_rate_limits() {
     # the next session's start would read as current when it is not.
     usage_data=$(_usage_from_payload "$input")
     if [ -n "$usage_data" ]; then
-        # The payload arrives on every render. Record a history point (which
-        # drives the projections) at most once per cache interval, as the API
-        # path does, so the history file does not grow on every redraw.
-        if ! cache_get "rate_limits_payload_recorded" "$cache_ttl" >/dev/null; then
-            cache_set "rate_limits_payload_recorded" "$(date +%s)"
-            fresh_fetch=true
-        fi
+        from_payload=true
     else
         # Check if we're in API backoff (429 cooldown). The probe result is shared
         # with _get_claude_usage so it does not repeat the check in this process.
@@ -406,18 +402,23 @@ module_rate_limits() {
         return
     fi
 
-    local five_hour=$(echo "$five_hour_obj" | jq -r '.utilization // 0' 2>/dev/null)
-    local seven_day=$(echo "$seven_day_obj" | jq -r '.utilization // 0' 2>/dev/null)
+    local five_hour=$(echo "$five_hour_obj" | jq -r '.utilization | numbers' 2>/dev/null)
+    local seven_day=$(echo "$seven_day_obj" | jq -r '.utilization | numbers' 2>/dev/null)
     local five_hour_reset=$(echo "$five_hour_obj" | jq -r '.resets_at // empty' 2>/dev/null)
     local seven_day_reset=$(echo "$seven_day_obj" | jq -r '.resets_at // empty' 2>/dev/null)
 
     local now=$(date +%s)
 
-    # Only record data point when fresh data was fetched (not from cache)
-    # This prevents unbounded file growth from frequent statusline invocations
-    if [ "$fresh_fetch" = "true" ]; then
-        _record_usage_history "$history_file" "$now" \
-            "$now,$five_hour,$seven_day,$five_hour_reset,$seven_day_reset"
+    # History rows drive both projections and need two measured percentages.
+    if [ -n "$five_hour" ] && [ -n "$seven_day" ]; then
+        if [ "$from_payload" = "true" ] && ! cache_get "rate_limits_payload_recorded" "$cache_ttl" >/dev/null; then
+            cache_set "rate_limits_payload_recorded" "$now"
+            fresh_fetch=true
+        fi
+        if [ "$fresh_fetch" = "true" ]; then
+            _record_usage_history "$history_file" "$now" \
+                "$now,$five_hour,$seven_day,$five_hour_reset,$seven_day_reset"
+        fi
     fi
 
     local five_hour_status=""
@@ -426,7 +427,7 @@ module_rate_limits() {
     local seven_day_remaining=0
 
     # Parse 5-hour reset time and calculate projection
-    if [ -n "$five_hour_reset" ]; then
+    if [ -n "$five_hour" ] && [ -n "$five_hour_reset" ]; then
         local five_hour_reset_epoch=$(_parse_reset_epoch "${five_hour_reset%%.*}")
         five_hour_remaining=$((five_hour_reset_epoch - now))
         if [ "$five_hour_remaining" -gt 18000 ]; then
@@ -458,7 +459,7 @@ module_rate_limits() {
     fi
 
     # Parse 7-day reset time and calculate projection
-    if [ -n "$seven_day_reset" ]; then
+    if [ -n "$seven_day" ] && [ -n "$seven_day_reset" ]; then
         local seven_day_reset_epoch=$(_parse_reset_epoch "${seven_day_reset%%.*}")
         seven_day_remaining=$((seven_day_reset_epoch - now))
         if [ "$seven_day_remaining" -gt 604800 ]; then
@@ -490,15 +491,39 @@ module_rate_limits() {
         fi
     fi
 
-    local five_hour_int=$(printf "%.0f" "$five_hour" 2>/dev/null || echo "0")
-    local seven_day_int=$(printf "%.0f" "$seven_day" 2>/dev/null || echo "0")
+    local five_hour_int seven_day_int
+    # jq emits a decimal point regardless of the user's locale. Clear any
+    # partial output printf emits before reporting a conversion error.
+    five_hour_int=$(
+        LC_ALL=C
+        printf "%.0f" "${five_hour:-0}" 2>/dev/null
+    ) || five_hour_int=""
+    seven_day_int=$(
+        LC_ALL=C
+        printf "%.0f" "${seven_day:-0}" 2>/dev/null
+    ) || seven_day_int=""
 
-    # Get usage level indicators (4-level: green/yellow/orange/red)
-    local five_hour_usage_ind=""
-    local seven_day_usage_ind=""
-    if [ "$show_usage_status" = "true" ]; then
-        five_hour_usage_ind=$(get_status_4level "$five_hour_int" "$low_thresh" "$medium_thresh" "$high_thresh")
-        seven_day_usage_ind=$(get_status_4level "$seven_day_int" "$low_thresh" "$medium_thresh" "$high_thresh")
+    local five_hour_part="--"
+    local seven_day_part="--"
+    if [ -n "$five_hour" ] && [ -n "$five_hour_int" ]; then
+        five_hour_part="${five_hour_int}%"
+        if [ "$show_bar" = "true" ]; then
+            five_hour_part="$(progress_bar "$five_hour_int" "$bar_width") $five_hour_part"
+        fi
+        if [ "$show_usage_status" = "true" ]; then
+            five_hour_part="$five_hour_part$(get_status_4level "$five_hour_int" "$low_thresh" "$medium_thresh" "$high_thresh")"
+        fi
+        five_hour_part="$five_hour_part$five_hour_status"
+    fi
+    if [ -n "$seven_day" ] && [ -n "$seven_day_int" ]; then
+        seven_day_part="${seven_day_int}%"
+        if [ "$show_bar" = "true" ]; then
+            seven_day_part="$(progress_bar "$seven_day_int" "$bar_width") $seven_day_part"
+        fi
+        if [ "$show_usage_status" = "true" ]; then
+            seven_day_part="$seven_day_part$(get_status_4level "$seven_day_int" "$low_thresh" "$medium_thresh" "$high_thresh")"
+        fi
+        seven_day_part="$seven_day_part$seven_day_status"
     fi
 
     # Build output
@@ -510,27 +535,18 @@ module_rate_limits() {
         stale_marker=" $(get_icon '⏸' 'WAIT')$(format_cooldown "$backoff_remaining")"
     fi
 
-    # Optional progress bars (rendered between label and percentage)
-    local five_hour_bar=""
-    local seven_day_bar=""
-    if [ "$show_bar" = "true" ]; then
-        five_hour_bar="$(progress_bar "$five_hour_int" "$bar_width") "
-        seven_day_bar="$(progress_bar "$seven_day_int" "$bar_width") "
-    fi
-
     if [ "$show_5h" = "true" ]; then
-        result="${label_5h}:${five_hour_bar}${five_hour_int}% ${five_hour_usage_ind}${five_hour_status}"
+        result="${label_5h}:${five_hour_part}"
         if [ "$show_time" = "true" ] && [ "$five_hour_remaining" -gt 0 ] 2>/dev/null && ! is_compact "$compact"; then
-            result="${result} ($(format_time_remaining $five_hour_remaining))"
+            result="${result} ($(format_time_remaining "$five_hour_remaining"))"
         fi
     fi
 
     if [ "$show_7d" = "true" ]; then
-        local seven_day_part="${label_7d}:${seven_day_bar}${seven_day_int}% ${seven_day_usage_ind}${seven_day_status}"
+        result="${result:+$result }${label_7d}:${seven_day_part}"
         if [ "$show_time" = "true" ] && [ "$seven_day_remaining" -gt 0 ] 2>/dev/null && ! is_compact "$compact"; then
-            seven_day_part="${seven_day_part} ($(format_time_remaining $seven_day_remaining))"
+            result="${result} ($(format_time_remaining "$seven_day_remaining"))"
         fi
-        result="${result:+$result }${seven_day_part}"
     fi
 
     # Append backoff indicator at the end

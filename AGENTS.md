@@ -42,7 +42,7 @@ Cortado/
 │   ├── docker.sh       # Docker container status
 │   ├── weather.sh      # Weather via wttr.in
 │   ├── sandbox.sh      # Lock icon when in a macOS app sandbox
-│   ├── version.sh      # Cortado version, shown briefly after startup
+│   ├── version.sh      # Cortado version, shown briefly at the start of each session
 │   ├── update.sh       # GitHub release check with a shorter retry interval on failure
 │   └── ...             # Additional modules
 ├── tests/              # Regression tests (bash tests/test_*.sh, standalone)
@@ -139,7 +139,7 @@ module_name() {
 
 ### What a module prints when it does not know
 
-A module that has no reading must say so, never print a value that reads as an all-clear. `rate-limits` prints `5h:-- 7d:--` rather than `0%`; follow that pattern. "Zero", "green" and "nothing" are claims, and a missing field, a failed fetch or a stale cache must not produce one. The `visual-review-and-fix` skill walks these cases.
+A module that has no reading must say so, never print a value that reads as an all-clear. `rate-limits` prints `5h:-- 7d:--` (or `--` for the one window it lacks) rather than `0%`, and `context` prints `--` until Claude Code reports usage; follow that pattern. "Zero", "green" and "nothing" are claims, and a missing field, a failed fetch or a stale cache must not produce one. The `visual-review-and-fix` skill walks these cases.
 
 ## Display Modes
 
@@ -196,9 +196,12 @@ bash tests/test_rate_limits.sh     # rate-limit parsers/backoff
 bash tests/test_config_cli.sh      # cortado config CLI (set/toggle/project) and Barista migration
 bash tests/test_install_update.sh  # installer update flags, runtime copy, migration
 # also: test_cache, test_cost, test_git_cache, test_install_settings, test_model,
-#       test_project, test_project_config, test_rate_limits_concurrency,
+#       test_context, test_processes, test_project, test_project_config,
+#       test_rate_limits_concurrency,
 #       test_rate_limits_credentials, test_rate_limits_payload, test_sandbox,
-#       test_status_render, test_timezone, test_ttl_validation, test_update, test_uptime
+#       test_status_render, test_timezone, test_ttl_validation, test_update, test_uptime,
+#       test_version
+# tests/run-jq-variants.sh runs every suite under each jq it finds (Homebrew and /usr/bin/jq)
 ```
 
 Lint with `shellcheck`. `.shellcheckrc` disables SC2155, SC2034, SC2059, SC2001, SC2012, SC1090, SC2129, SC2086, and SC2002 project-wide. See upstream pstuart/Barista#21 for the original policy.
