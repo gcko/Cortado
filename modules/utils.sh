@@ -46,7 +46,7 @@ init_cache() {
     # Always re-assert owner-only mode. #34 chmod'd only on create, so a
     # pre-existing world-readable ~/.claude/cortado-cache (older install or
     # permissive umask) was never repaired. Cache key names (weather, wan_ip,
-    # rate_limits_curlcfg, update_check…) must not leak to other local users.
+    # rate_limits_usage, update_check…) must not leak to other local users.
     # Matches network.sh / weather.sh which re-chmod every call.
     if [ -d "$CACHE_DIR" ]; then
         chmod 700 "$CACHE_DIR" 2>/dev/null
@@ -103,6 +103,25 @@ cache_get() {
     return 0
 }
 
+# Publish a writer's stdout as an owner-only file, without truncating the
+# destination for readers. Stage beside the destination for a same-filesystem
+# rename. The subshell keeps the cleanup trap out of the caller's shell.
+_atomic_write_file() {
+    local target="$1"
+    local staging
+    shift
+
+    (
+        # mv would move the staging file into an existing directory.
+        [ ! -d "$target" ] || return 1
+        umask 077
+        staging=$(mktemp "${target}.XXXXXX" 2>/dev/null) || return 1
+        trap 'rm -f -- "$staging" 2>/dev/null' EXIT
+        trap 'exit 143' TERM
+        "$@" >| "$staging" && mv -f -- "$staging" "$target"
+    ) 2>/dev/null
+}
+
 # Set cache value
 # Usage: cache_set <key> <value>
 cache_set() {
@@ -122,14 +141,7 @@ cache_set() {
     local cache_dirname
     cache_dirname=$(dirname "$cache_file")
     mkdir -p "$cache_dirname" 2>/dev/null
-    local status=1
-    if echo "$value" > "$cache_file" 2>/dev/null; then
-        status=0
-    fi
-    # Defense-in-depth if dir 700 fails (odd FS/umask); matches wan_ip/token files.
-    # Best-effort: a chmod failure must not replace the write's status.
-    chmod 600 "$cache_file" 2>/dev/null
-    return "$status"
+    _atomic_write_file "$cache_file" printf '%s\n' "$value"
 }
 
 # Clear specific cache key or all cache

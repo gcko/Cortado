@@ -109,7 +109,7 @@ _check_backoff() {
         echo "$remaining"
         return 0
     else
-        rm -f "$backoff_file" 2>/dev/null
+        # A concurrent 429 may have already replaced this marker.
         return 1
     fi
 }
@@ -145,10 +145,22 @@ _usage_from_payload() {
     ' 2>/dev/null
 }
 
-# Fetch usage from Anthropic API
-_get_claude_usage() {
-    local backoff_file="$CACHE_DIR/rate_limits_backoff"
+# Older versions briefly wrote the bearer config to a fixed path. Remove a
+# leftover only after the five-minute grace period for an older render.
+_cleanup_legacy_curl_config() {
+    local legacy_config="$CACHE_DIR/rate_limits_curlcfg"
+    if [ -f "$legacy_config" ]; then
+        local mtime now
+        now=$(date +%s)
+        mtime=$(_file_mtime "$legacy_config")
+        if [ "$mtime" -gt 0 ] && [ "$((now - mtime))" -gt 300 ]; then
+            rm -f -- "$legacy_config" 2>/dev/null
+        fi
+    fi
+}
 
+# Fetch usage from Anthropic API
+_get_claude_usage() (
     # Check if we're in backoff period from a previous 429. Callers that have
     # already probed the backoff state export RATE_BACKOFF_PROBED to reuse it.
     if [ "${RATE_BACKOFF_PROBED:-false}" = "true" ]; then
@@ -167,23 +179,21 @@ _get_claude_usage() {
     local token
     token=$(_get_claude_token)
 
-    if [ -z "$token" ]; then
-        return 1
-    fi
+    # Only bearer-token characters may enter the quoted curl config value.
+    local LC_ALL=C
+    case "$token" in
+        ''|*[!a-zA-Z0-9._~+/=-]*) return 1 ;;
+    esac
 
-    # Capture both body and HTTP status code, plus headers for retry-after
-    # Token is passed via a temporary config file (mode 0600) to keep it out of
-    # the process table (`ps` output) and shell history.
-    local tmp_file="$CACHE_DIR/rate_limits_response"
-    local tmp_headers="$CACHE_DIR/rate_limits_headers"
-    local tmp_curlcfg="$CACHE_DIR/rate_limits_curlcfg"
+    # Each request owns its body and headers. A subshell scopes EXIT cleanup
+    # and umask to this request, including when called directly.
     init_cache
-    # Clean curlcfg (Bearer token) + response temps even if curl is killed/timeout.
-    # Bash 3.2: EXIT trap covers normal return and signals that terminate the shell.
-    # shellcheck disable=SC2064
-    trap 'rm -f "$tmp_curlcfg" "$tmp_file" "$tmp_headers" 2>/dev/null' EXIT
-    printf 'header = "Authorization: Bearer %s"\n' "$token" > "$tmp_curlcfg"
-    chmod 600 "$tmp_curlcfg" 2>/dev/null
+    umask 077
+    local request_dir
+    request_dir=$(mktemp -d "$CACHE_DIR/rate_limits_request.XXXXXX" 2>/dev/null) || return 1
+    trap 'rm -rf -- "$request_dir" 2>/dev/null' EXIT
+    local tmp_file="$request_dir/response"
+    local tmp_headers="$request_dir/headers"
     # On Git Bash / MSYS, some mingw curl builds (notably 8.8 shipped with
     # recent Git for Windows) hit libcurl error 43 on this endpoint due to a
     # schannel TLS-renegotiation bug. Windows' system curl.exe works fine.
@@ -200,23 +210,19 @@ _get_claude_usage() {
     esac
 
     local http_code
-    # --proto =https + --max-redirs 3: match weather/update; block HTTP redirect
-    # that could re-expose the Bearer token from curlcfg on a non-TLS hop.
-    http_code=$("$curl_bin" -s --max-time 5 --proto =https --max-redirs 3 \
-        -o "$tmp_file" -D "$tmp_headers" -w "%{http_code}" \
-        --config "$tmp_curlcfg" \
-        "https://api.anthropic.com/api/oauth/usage" \
-        -H "anthropic-beta: oauth-2025-04-20" \
-        -H "Accept: application/json" 2>/dev/null)
-    # Wipe token file immediately after curl (trap is the safety net)
-    rm -f "$tmp_curlcfg" 2>/dev/null
+    # Send authorization only through stdin. Disable the default curl config
+    # so its trace options cannot log the header.
+    http_code=$(printf 'header = "Authorization: Bearer %s"\n' "$token" | \
+        "$curl_bin" -q -s --max-time 5 --proto =https --max-redirs 3 \
+            -o "$tmp_file" -D "$tmp_headers" -w "%{http_code}" \
+            --config - \
+            "https://api.anthropic.com/api/oauth/usage" \
+            -H "anthropic-beta: oauth-2025-04-20" \
+            -H "Accept: application/json" 2>/dev/null) || return 1
 
     case "$http_code" in
         200)
             cat "$tmp_file" 2>/dev/null
-            rm -f "$tmp_file" "$tmp_headers" 2>/dev/null
-            trap - EXIT
-            return 0
             ;;
         429)
             # Parse retry-after header (seconds) from response
@@ -224,20 +230,51 @@ _get_claude_usage() {
             retry_after=$(grep -i '^retry-after:' "$tmp_headers" 2>/dev/null | tr -d '\r' | awk '{print $2}')
             local backoff_duration="${retry_after:-${RATE_BACKOFF_SECONDS:-300}}"
             log_debug "rate-limits: received 429, backing off for ${backoff_duration}s (retry-after: ${retry_after:-not set})"
-            init_cache
-            echo "$backoff_duration" > "$backoff_file" 2>/dev/null
-            rm -f "$tmp_file" "$tmp_headers" 2>/dev/null
-            trap - EXIT
+            cache_set rate_limits_backoff "$backoff_duration"
             return 1
             ;;
         *)
             log_debug "rate-limits: API returned HTTP $http_code"
-            rm -f "$tmp_file" "$tmp_headers" 2>/dev/null
-            trap - EXIT
             return 1
             ;;
     esac
+)
+
+# Emit the next history snapshot for _atomic_write_file.
+_write_usage_history() {
+    local history_file="$1" now="$2" entry="$3"
+    if [ -f "$history_file" ]; then
+        # Keep 100 points including the new one. Bound the input more tightly
+        # when an older history file has grown past the 50 KB limit.
+        local limit=99
+        local current_size
+        current_size=$(_file_stat %z %s "$history_file")
+        if [ "$current_size" -gt 51200 ]; then
+            limit=50
+        fi
+        (
+            set -o pipefail
+            tail -n "$limit" "$history_file" | awk -F, -v cutoff="$((now - 86400))" '$1 >= cutoff'
+        ) || return 1
+    fi
+    printf '%s\n' "$entry"
 }
+
+# Serialize the whole read/trim/append/rename sequence. Keep the lock file
+# so waiters always lock the same inode. The descriptor closes on exit,
+# including when the writer is killed.
+_record_usage_history() (
+    local history_file="$1" now="$2" entry="$3"
+    umask 077
+    exec 9>>"${history_file}-lock" || return 1
+    if command -v flock >/dev/null 2>&1; then
+        flock -w 5 9
+    else
+        # macOS and Git Bash ship Perl, which can lock the inherited descriptor.
+        perl -MFcntl=:flock -e 'open(my $lock, ">&=9") or exit 1; alarm 5; exit(!flock($lock, LOCK_EX))'
+    fi || return 1
+    _atomic_write_file "$history_file" _write_usage_history "$history_file" "$now" "$entry"
+) 2>/dev/null
 
 # Get projection status indicator (only shown at warning/critical levels)
 _get_projection_status() {
@@ -292,6 +329,8 @@ module_rate_limits() {
     local compact="${RATE_COMPACT:-false}"
     local label_5h="${RATE_5H_LABEL:-5h}"
     local label_7d="${RATE_7D_LABEL:-7d}"
+
+    _cleanup_legacy_curl_config
 
     # 4-level usage thresholds: green -> yellow -> orange -> red
     local low_thresh="${RATE_LOW_THRESHOLD:-50}"
@@ -377,32 +416,8 @@ module_rate_limits() {
     # Only record data point when fresh data was fetched (not from cache)
     # This prevents unbounded file growth from frequent statusline invocations
     if [ "$fresh_fetch" = "true" ]; then
-        # Cap history file size at 50KB to prevent memory issues
-        local max_history_size=51200
-        local current_size=0
-        if [ -f "$history_file" ]; then
-            current_size=$(_file_stat %z %s "$history_file")
-        fi
-
-        # Cleanup first if file is too large
-        if [ "$current_size" -gt "$max_history_size" ]; then
-            local cutoff=$((now - 86400))
-            tail -50 "$history_file" | awk -F',' -v cutoff="$cutoff" '$1 >= cutoff' > "${history_file}.tmp" 2>/dev/null && \
-                mv "${history_file}.tmp" "$history_file" 2>/dev/null
-        fi
-
-        # Record the data point
-        echo "$now,$five_hour,$seven_day,$five_hour_reset,$seven_day_reset" >> "$history_file" 2>/dev/null
-        # Not secrets, but keep owner-only like cache/token temps (defense-in-depth)
-        chmod 600 "$history_file" 2>/dev/null
-
-        # Routine cleanup - keep last 100 entries within 24 hours
-        if [ -f "$history_file" ]; then
-            local cutoff=$((now - 86400))
-            tail -100 "$history_file" | awk -F',' -v cutoff="$cutoff" '$1 >= cutoff' > "${history_file}.tmp" 2>/dev/null && \
-                mv "${history_file}.tmp" "$history_file" 2>/dev/null
-            chmod 600 "$history_file" 2>/dev/null
-        fi
+        _record_usage_history "$history_file" "$now" \
+            "$now,$five_hour,$seven_day,$five_hour_reset,$seven_day_reset"
     fi
 
     local five_hour_status=""
