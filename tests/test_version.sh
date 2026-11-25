@@ -4,7 +4,7 @@ set -u
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=tests/lib/assert.sh
-. "$PROJECT_ROOT/tests/lib/assert.sh" plain-comma
+. "$PROJECT_ROOT/tests/lib/assert.sh" plain
 TEST_BASE=$(mktemp -d)
 trap 'rm -rf "$TEST_BASE"' EXIT
 mkdir "$TEST_BASE/bin"

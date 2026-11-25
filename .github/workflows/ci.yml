@@ -34,6 +34,10 @@ jobs:
       run:
         shell: bash
     steps:
+      - name: Preserve LF on Windows checkout
+        if: runner.os == 'Windows'
+        run: git config --global core.autocrlf false
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
@@ -113,18 +117,22 @@ jobs:
             cd "$1" || exit 1
             shopt -s nullglob
             local_status=0
-            shellcheck --color=never cortado.sh install.sh lib/*.sh modules/*.sh tests/*.sh tests/lib/*.sh > "$2" || local_status=$?
+            shellcheck -f json cortado.sh install.sh lib/*.sh modules/*.sh tests/*.sh tests/lib/*.sh > "$2" || local_status=$?
             if [ "$local_status" -gt 1 ]; then
               cat "$2" >&2
               exit "$local_status"
             fi
-            awk '/^In / { count++ } END { print count + 0 }' "$2"
+            jq -es 'if length == 1 and (.[0] | type == "array") then .[0] | length else error("Expected one ShellCheck diagnostics array") end' "$2" || {
+              local_status=$?
+              cat "$2" >&2
+              exit "$local_status"
+            }
           )
-          base_count=$(sc "$scratch/base" "$scratch/base.txt")
-          head_count=$(sc . "$scratch/head.txt")
+          base_count=$(sc "$scratch/base" "$scratch/base.json")
+          head_count=$(sc . "$scratch/head.json")
           printf 'shellcheck findings: base %s, head %s\n' "$base_count" "$head_count"
           if [ "$head_count" -gt "$base_count" ]; then
-            cat "$scratch/head.txt"
+            cat "$scratch/head.json"
             exit 1
           fi
 

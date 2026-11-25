@@ -322,7 +322,7 @@ mem_probe() {
     # $1 = MemTotal field, $2 = MemAvailable field. Prints rc|stdout|stderr.
     local out err rc
     out=$(MOCK_MEM_TOTAL="$1" MOCK_MEM_AVAIL="$2" PATH="$MOCK_DIR:$PATH" \
-          bash "$MOCK_DIR/run.sh" 2>"$MOCK_DIR/err"); rc=$?
+          /bin/bash "$MOCK_DIR/run.sh" 2>"$MOCK_DIR/err"); rc=$?
     err=$(cat "$MOCK_DIR/err")
     printf '%s|%s|%s' "$rc" "$out" "$err"
 }

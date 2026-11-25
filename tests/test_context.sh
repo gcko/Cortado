@@ -4,7 +4,7 @@ set -u
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=tests/lib/assert.sh
-. "$PROJECT_ROOT/tests/lib/assert.sh" plain-comma
+. "$PROJECT_ROOT/tests/lib/assert.sh" plain
 
 render() (
     sb=$(mktemp -d)

@@ -231,16 +231,36 @@ for t in tests/test_*.sh; do /bin/bash "$t" >/dev/null 2>&1 || { echo "FAIL: $t"
 for f in cortado.sh install.sh lib/*.sh modules/*.sh tests/*.sh tests/lib/*.sh; do /bin/bash -n "$f" || echo "SYNTAX: $f"; done
 
 # 3. ShellCheck: no more findings than the merge base had
-base=$(mktemp -d)
-git archive "$(git merge-base origin/main HEAD)" | tar -x -C "$base"
+/bin/bash <<'BASH'
+set -euo pipefail
+merge_base=$(git merge-base origin/main HEAD)
+scratch=$(mktemp -d)
+trap 'rm -rf "$scratch"' EXIT
+mkdir "$scratch/base"
+git archive "$merge_base" | tar -x -C "$scratch/base"
 sc() (
     cd "$1" || exit 1
     shopt -s nullglob
-    shellcheck --color=never cortado.sh install.sh lib/*.sh modules/*.sh tests/*.sh tests/lib/*.sh \
-        | awk '/^In / { count++ } END { print count + 0 }'
+    local_status=0
+    shellcheck -f json cortado.sh install.sh lib/*.sh modules/*.sh tests/*.sh tests/lib/*.sh > "$2" || local_status=$?
+    if [ "$local_status" -gt 1 ]; then
+        cat "$2" >&2
+        exit "$local_status"
+    fi
+    jq -es 'if length == 1 and (.[0] | type == "array") then .[0] | length else error("Expected one ShellCheck diagnostics array") end' "$2" || {
+        local_status=$?
+        cat "$2" >&2
+        exit "$local_status"
+    }
 )
-echo "shellcheck findings: base $(sc "$base"), head $(sc .)"
-rm -rf "$base"
+base_count=$(sc "$scratch/base" "$scratch/base.json")
+head_count=$(sc . "$scratch/head.json")
+printf 'shellcheck findings: base %s, head %s\n' "$base_count" "$head_count"
+if [ "$head_count" -gt "$base_count" ]; then
+    cat "$scratch/head.json"
+    exit 1
+fi
+BASH
 
 # 4. Render smoke in a sandbox config dir (never the real ~/.claude)
 sb=$(mktemp -d)
@@ -249,7 +269,7 @@ echo '{"workspace":{"current_dir":"'"$PWD"'"},"model":{"display_name":"Test"},"c
 rm -rf "$sb"
 ```
 
-A FAIL or SYNTAX line, or a head ShellCheck count above the base, blocks the pull request. A change to what the statusline prints also owes the `visual-review-and-fix` walk, and a change to docs owes `sync-docs`.
+A FAIL or SYNTAX line, or a failed ShellCheck comparison, blocks the pull request. A change to what the statusline prints also owes the `visual-review-and-fix` walk, and a change to docs owes `sync-docs`.
 
 ## PR Workflow
 
