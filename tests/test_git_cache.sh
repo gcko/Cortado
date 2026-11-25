@@ -58,8 +58,10 @@ export XDG_CONFIG_HOME="$TEST_BASE/xdg"
 mkdir "$XDG_CONFIG_HOME" || exit 1
 "$real_git" init -q "$repo" || exit 1
 "$real_git" -C "$repo" symbolic-ref HEAD refs/heads/fixture || exit 1
+# Make the porcelain stream larger than a pipe buffer.
+printf -v filename_padding '%0200d' 0
 for ((i=1; i<=501; i++)); do
-    : > "$repo/change-$i" || exit 1
+    : > "$repo/change-$filename_padding-$i" || exit 1
 done
 
 mkdir "$TEST_BASE/bin" || exit 1
@@ -103,12 +105,95 @@ out=$(render_git "$payload")
 assert_eq "a cache hit shows the bounded count for 501 changes" "🌿 fixture [+] 📝 500+" "$out"
 assert_eq "a cache hit with 501 changes reuses the single git status" "1" "$(status_calls)"
 
-# A failed status parser leaves the branch visible and the next render retries.
+# Leave more than a pipe buffer after record 500 so an early parser exit
+# breaks Git's write even when its first 500 records have already been read.
+for ((i=502; i<=2001; i++)); do
+    : > "$repo/change-$filename_padding-$i" || exit 1
+done
+new_render_config
+printf '%s\n' 'DISPLAY_MODE="compact"' >> "$render_config/cortado.conf"
+out=$(render_git "$payload")
+assert_eq "a large successful status keeps its symbols in compact mode" "🌿 fixture [+]" "$out"
+
 repo="$TEST_BASE/small-repo"
 "$real_git" init -q "$repo" || exit 1
 "$real_git" -C "$repo" symbolic-ref HEAD refs/heads/fixture || exit 1
 : > "$repo/change-1" || exit 1
 payload=$(jq -nc --arg dir "$repo" '{workspace:{current_dir:$dir}}') || exit 1
+
+# A failed Git status must show an absence and must not fill the cache.
+mv "$TEST_BASE/bin/git" "$TEST_BASE/bin/git-counting" || exit 1
+cat > "$TEST_BASE/bin/git" <<'EOF'
+#!/bin/bash
+if [ "$1" = status ]; then
+    printf '%s\n' status >> "$GIT_STATUS_LOG"
+    echo 'git status diagnostic' >&2
+    exit 128
+fi
+exec "$REAL_GIT" "$@"
+EOF
+chmod +x "$TEST_BASE/bin/git" || exit 1
+
+for compact_setting in 'DISPLAY_MODE="compact"' 'GIT_COMPACT="true"'; do
+    new_render_config
+    printf '%s\n' "$compact_setting" 'GIT_SHOW_STATUS="false"' 'GIT_SHOW_FILE_COUNT="true"' \
+        >> "$render_config/cortado.conf"
+    out=$(render_git "$payload")
+    assert_eq "hidden compact fields leave only the branch ($compact_setting)" "🌿 fixture" "$out"
+    assert_eq "hidden compact fields skip git status ($compact_setting)" "0" "$(status_calls)"
+done
+
+new_render_config
+out=$(render_git "$payload")
+assert_eq "a failed git status shows that Git status is unavailable" "🌿 fixture [--]" "$out"
+rm "$TEST_BASE/bin/git" || exit 1
+mv "$TEST_BASE/bin/git-counting" "$TEST_BASE/bin/git" || exit 1
+
+out=$(render_git "$payload")
+assert_eq "after git status recovery the next render shows the dirty file" "🌿 fixture [+] 📝 1" "$out"
+assert_eq "after git status recovery the next render reruns git status" "2" "$(status_calls)"
+
+new_render_config
+printf '%s\n' 'GIT_SHOW_STATUS="false"' 'GIT_SHOW_FILE_COUNT="false"' >> "$render_config/cortado.conf"
+out=$(render_git "$payload")
+assert_eq "disabling both Git status fields leaves only the branch" "🌿 fixture" "$out"
+assert_eq "disabling both Git status fields skips git status" "0" "$(status_calls)"
+
+printf '%s\n' 'GIT_SHOW_STATUS="true"' 'GIT_SHOW_FILE_COUNT="true"' >> "$render_config/cortado.conf"
+out=$(render_git "$payload")
+assert_eq "enabling both Git status fields immediately reveals changes" "🌿 fixture [+] 📝 1" "$out"
+assert_eq "enabling both Git status fields reads git status once" "1" "$(status_calls)"
+
+new_render_config
+printf '%s\n' 'GIT_SHOW_STATUS="false"' 'GIT_SHOW_FILE_COUNT="true"' >> "$render_config/cortado.conf"
+out=$(render_git "$payload")
+assert_eq "a count requested on its own shows the changed file" "🌿 fixture 📝 1" "$out"
+assert_eq "a count requested on its own reads git status once" "1" "$(status_calls)"
+
+# A corrupted index invalidates a warm clean reading, even if the index is later removed.
+committed_repo="$TEST_BASE/committed-repo"
+"$real_git" init -q "$committed_repo" || exit 1
+"$real_git" -C "$committed_repo" symbolic-ref HEAD refs/heads/fixture || exit 1
+printf 'tracked\n' > "$committed_repo/tracked"
+"$real_git" -C "$committed_repo" add tracked || exit 1
+"$real_git" -C "$committed_repo" -c user.name=Fixture -c user.email=test@example.invalid \
+    commit -qm initial || exit 1
+committed_payload=$(jq -nc --arg dir "$committed_repo" '{workspace:{current_dir:$dir}}') || exit 1
+
+new_render_config
+out=$(render_git "$committed_payload")
+assert_eq "a clean committed tree warms the cache with the branch alone" "🌿 fixture" "$out"
+# Cache invalidation compares whole-second mtimes.
+sleep 1
+printf corrupt > "$committed_repo/.git/index" || exit 1
+out=$(render_git "$committed_payload")
+assert_eq "a newer corrupt index shows that Git status is unavailable" "🌿 fixture [--]" "$out"
+rm "$committed_repo/.git/index" || exit 1
+out=$(render_git "$committed_payload")
+assert_eq "removing the corrupt index reveals changes on the next render" "🌿 fixture [+✓] 📝 2" "$out"
+assert_eq "warm cache, corrupt index, and recovery each read Git status" "3" "$(status_calls)"
+
+# A failed status parser leaves the branch visible and the next render retries.
 new_render_config
 
 real_awk=$(command -v awk) || exit 1
