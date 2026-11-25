@@ -70,6 +70,10 @@ cat > "$TEST_BASE/bin/git" <<'EOF'
 if [ "$1" = status ]; then
     printf '%s\n' status >> "$GIT_STATUS_LOG"
 fi
+case "$*" in
+    'symbolic-ref --short HEAD'|'rev-parse --short HEAD')
+        [ "${GIT_BRANCH_FAIL:-}" != true ] || exit 128 ;;
+esac
 exec "$REAL_GIT" "$@"
 EOF
 chmod +x "$TEST_BASE/bin/git" || exit 1
@@ -88,7 +92,7 @@ EOF
 render_git() {
     printf '%s' "$1" | PATH="$TEST_BASE/bin:$PATH" REAL_GIT="$real_git" \
         GIT_STATUS_LOG="$TEST_BASE/status.log" CLAUDE_CONFIG_DIR="$render_config" \
-        /bin/bash "$SCRIPT_DIR/cortado.sh"
+        CACHE_DIR="$render_config/cortado-cache" /bin/bash "$SCRIPT_DIR/cortado.sh"
 }
 
 status_calls() {
@@ -120,6 +124,13 @@ repo="$TEST_BASE/small-repo"
 "$real_git" -C "$repo" symbolic-ref HEAD refs/heads/fixture || exit 1
 : > "$repo/change-1" || exit 1
 payload=$(jq -nc --arg dir "$repo" '{workspace:{current_dir:$dir}}') || exit 1
+
+new_render_config
+out=$(GIT_BRANCH_FAIL=true render_git "$payload")
+assert_eq "failed branch and SHA lookups still show dirty status" "🌿 -- [+] 📝 1" "$out"
+out=$(render_git "$payload")
+assert_eq "branch lookup retries after an unavailable branch" "🌿 fixture [+] 📝 1" "$out"
+assert_eq "both renders get dirty status without caching the unknown branch" "2" "$(status_calls)"
 
 # A failed Git status must show an absence and must not fill the cache.
 mv "$TEST_BASE/bin/git" "$TEST_BASE/bin/git-counting" || exit 1

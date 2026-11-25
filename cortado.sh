@@ -272,10 +272,11 @@ create_module_stderr() (
 start_module_stderr() {
     [ -n "$CORTADO_STDERR_CAPTURE" ] || return 0
     local dir="$CORTADO_STDERR_CAPTURE"
-    # Drain the pipe after the first 64 KiB so verbose tools keep running.
+    # Read exactly the prefix: BSD head can consume bytes past its output limit
+    # on a pipe. Buffer dd's writes, then count the rest as the pipe drains.
     (
         umask 077
-        if ! { LC_ALL=C head -c 65536 >| "$dir/data" &&
+        if ! { LC_ALL=C dd ibs=1 obs=4096 count=65536 >| "$dir/data" &&
             LC_ALL=C wc -c >| "$dir/omitted"; }; then
             cat > /dev/null
             exit 1
