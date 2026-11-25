@@ -61,8 +61,8 @@ _cfg_module_var() {
     echo "MODULE_$(echo "$1" | tr '[:lower:]-' '[:upper:]_')"
 }
 
-# --set / assign allowlist: same prefixes as cortado.sh load_config_safe.
-_cfg_is_allowed_key() {
+# The trusted global config editor retains its broader setting prefixes.
+_cfg_is_global_key() {
     local key="$1"
     case "$key" in
         *[!A-Za-z0-9_]*|'') return 1 ;;
@@ -131,13 +131,6 @@ _cfg_value_is_safe() {
     return 0
 }
 
-_cfg_assign() {
-    local key="$1" val="$2"
-    _cfg_is_allowed_key "$key" || return 1
-    _cfg_value_is_safe "$val" || return 1
-    printf -v "$key" '%s' "$val"
-}
-
 _cfg_shell_quote() {
     local s="$1"
     s=${s//\\/\\\\}
@@ -158,18 +151,21 @@ _cfg_module_enabled() {
 }
 
 _cfg_set_module() {
-    local name="$1" state="$2" var
+    local name="$1" state="$2" scope="${3:-global}" var
     var=$(_cfg_module_var "$name")
-    printf -v "$var" '%s' "$state"
+    if [ "$scope" = "project" ]; then
+        _cfg_set_project_value "$var" "$state"
+    else
+        printf -v "$var" '%s' "$state"
+    fi
 }
 
 _cfg_toggle_module() {
-    local name="$1"
+    local name="$1" scope="${2:-global}" state=true
     if _cfg_module_enabled "$name"; then
-        _cfg_set_module "$name" "false"
-    else
-        _cfg_set_module "$name" "true"
+        state=false
     fi
+    _cfg_set_module "$name" "$state" "$scope"
 }
 
 _cfg_mod_name() { echo "$1" | cut -d: -f1; }
@@ -192,26 +188,22 @@ _cfg_resolve_path() {
     esac
 }
 
-# Load defaults + existing conf into shell vars.
-# Project .cortado.conf is never sourced (same rule as cortado.sh main).
+# Project settings overlay the same trusted values that the renderer loaded.
 _cfg_load_into_shell() {
     local path="$1"
     local scope="${2:-global}"
-    # Ship defaults from packaged conf if present
-    if [ -n "${SCRIPT_DIR:-}" ] && [ -f "$SCRIPT_DIR/cortado.conf" ]; then
-        if config_not_group_or_world_writable "$SCRIPT_DIR/cortado.conf" 2>/dev/null; then
-            # shellcheck disable=SC1090
-            . "$SCRIPT_DIR/cortado.conf"
-        fi
-    fi
-    if [ -f "$path" ]; then
-        if [ "$scope" = "project" ]; then
-            _cfg_load_safe_kv "$path"
-        elif config_not_group_or_world_writable "$path" 2>/dev/null; then
-            # shellcheck disable=SC1090
-            . "$path"
-        else
-            _cfg_load_safe_kv "$path"
+    if [ "$scope" = "project" ]; then
+        _CFG_PROJECT_SETTINGS=()
+        [ ! -f "$path" ] || load_config_safe "$path" _cfg_load_project_value
+    else
+        load_config "$SCRIPT_DIR/cortado.conf"
+        if [ -f "$path" ]; then
+            if config_not_group_or_world_writable "$path" 2>/dev/null; then
+                # shellcheck disable=SC1090
+                . "$path"
+            else
+                read_config_kv "$path" _cfg_is_global_key _cfg_load_global_value
+            fi
         fi
     fi
     # Ensure MODULE_* exist for every catalog entry
@@ -235,27 +227,35 @@ _cfg_load_into_shell() {
     NETWORK_WAN_REDACT="${NETWORK_WAN_REDACT:-true}"
 }
 
-_cfg_load_safe_kv() {
-    # Prefer the shared parser in cortado.sh (full prefix allowlist, printf -v).
-    if type load_config_safe >/dev/null 2>&1; then
-        load_config_safe "$1"
-        return $?
-    fi
+_cfg_load_global_value() {
+    printf -v "$1" '%s' "$2" 2>/dev/null
+}
 
-    local config_path="$1" line key val
-    while IFS= read -r line || [ -n "$line" ]; do
-        case "$line" in
-            ''|\#*) continue ;;
-        esac
-        key="${line%%=*}"
-        [ "$key" = "$line" ] && continue
-        _cfg_is_allowed_key "$key" || continue
-        val="${line#*=}"
-        val="${val#\"}"; val="${val%\"}"
-        val="${val#\'}"; val="${val%\'}"
-        _cfg_value_is_safe "$val" || continue
-        printf -v "$key" '%s' "$val"
-    done < "$config_path"
+_cfg_load_project_value() {
+    # Keep a valid preference on disk even if this invocation inherited the key.
+    _CFG_PROJECT_SETTINGS+=("$3")
+    project_config_assign "$1" "$2"
+}
+
+_cfg_set_project_value() {
+    local key="$1" val="$2" line
+    local settings=()
+    project_config_setting_allowed "$key" "$val" || return 1
+    project_config_assign "$key" "$val" || return 1
+    for line in "${_CFG_PROJECT_SETTINGS[@]}"; do
+        [ "${line%%=*}" = "$key" ] || settings+=("$line")
+    done
+    _CFG_PROJECT_SETTINGS=("${settings[@]}" "$key=\"$val\"")
+}
+
+_cfg_write_project_conf() {
+    local path="$1" tmp
+    tmp=$(mktemp "$path.XXXXXX") || return 1
+    {
+        printf '%s\n' '# Cortado project configuration'
+        printf '%s\n' "${_CFG_PROJECT_SETTINGS[@]}"
+    } > "$tmp" || { rm -f "$tmp"; return 1; }
+    mv "$tmp" "$path" || { rm -f "$tmp"; return 1; }
 }
 
 _cfg_rebuild_module_order() {
@@ -320,11 +320,15 @@ _cfg_sync_module_order() {
     fi
 }
 
-# $1 path  $2 rebuild_order (1=catalog rebuild, default 0)  $3 extra key to emit
+# $1 path  $2 rebuild_order (1=catalog rebuild)  $3 extra key  $4 scope
 _cfg_write_conf() {
     local path="$1"
     local rebuild_order="${2:-0}"
     local extra_key="${3:-}"
+    if [ "${4:-global}" = "project" ]; then
+        _cfg_write_project_conf "$path"
+        return $?
+    fi
     local dir tmp extras line key extra_val
     dir=$(dirname "$path")
     mkdir -p "$dir" || return 1
@@ -346,7 +350,7 @@ _cfg_write_conf() {
                     case "$key" in
                         *[!A-Za-z0-9_]*|'') continue ;;
                     esac
-                    if ! _cfg_is_allowed_key "$key"; then
+                    if ! _cfg_is_global_key "$key"; then
                         continue
                     fi
                     if _cfg_is_tui_owned_key "$key"; then
@@ -396,7 +400,7 @@ _cfg_write_conf() {
         echo ""
         echo "MODULE_ORDER=\"$(_cfg_shell_quote "${MODULE_ORDER}")\""
         if [ -n "$extra_key" ] && ! _cfg_is_tui_owned_key "$extra_key" \
-            && _cfg_is_allowed_key "$extra_key" && _cfg_value_is_safe "${!extra_key}"; then
+            && _cfg_is_global_key "$extra_key" && _cfg_value_is_safe "${!extra_key}"; then
             echo ""
             echo "${extra_key}=\"$(_cfg_shell_quote "${!extra_key}")\""
         fi
@@ -498,8 +502,8 @@ _cfg_preview_line() {
 # ---- Interactive menus -------------------------------------------------------
 
 _cfg_draw_module_menu() {
-    local title="$1" current_idx="$2"
-    shift 2
+    local title="$1" current_idx="$2" scope="$3"
+    shift 3
     local items=("$@")
     local count=${#items[@]}
     local i=0 name desc state
@@ -509,7 +513,11 @@ _cfg_draw_module_menu() {
     fi
 
     printf "\033[K${CFG_BOLD}${CFG_MAGENTA}=== %s ===${CFG_NC}\n" "$title"
-    printf "\033[K${CFG_DIM}Space toggle · a all · n none · Enter next · s save · q quit${CFG_NC}\n"
+    if [ "$scope" = "project" ]; then
+        printf "\033[K${CFG_DIM}Space disable · n disable all · Enter next · s save · q quit${CFG_NC}\n"
+    else
+        printf "\033[K${CFG_DIM}Space toggle · a all · n none · Enter next · s save · q quit${CFG_NC}\n"
+    fi
     printf "\033[K${CFG_DIM}Preview: %s${CFG_NC}\n" "$(_cfg_preview_line)"
     printf "\033[K\n"
 
@@ -540,18 +548,18 @@ _cfg_draw_module_menu() {
 }
 
 _cfg_interactive_modules() {
-    local title="$1"
-    shift
+    local title="$1" scope="$2"
+    shift 2
     local modules=("$@")
     local count=${#modules[@]}
     [ "$count" -eq 0 ] && return 0
 
     local current_idx=0
-    local name key escape_seq
+    local name key escape_seq mod_def
     _CFG_MENU_DRAWN="false"
     printf "\033[?25l"
     echo ""
-    _cfg_draw_module_menu "$title" "$current_idx" "${modules[@]}"
+    _cfg_draw_module_menu "$title" "$current_idx" "$scope" "${modules[@]}"
 
     while true; do
         IFS= read -rsn1 key
@@ -567,14 +575,14 @@ _cfg_interactive_modules() {
             esac
         elif [[ "$key" == " " ]]; then
             name=$(_cfg_mod_name "${modules[$current_idx]}")
-            _cfg_toggle_module "$name"
+            _cfg_toggle_module "$name" "$scope"
         elif [ "$key" = "a" ] || [ "$key" = "A" ]; then
             for mod_def in "${modules[@]}"; do
-                _cfg_set_module "$(_cfg_mod_name "$mod_def")" "true"
+                _cfg_set_module "$(_cfg_mod_name "$mod_def")" "true" "$scope"
             done
         elif [ "$key" = "n" ] || [ "$key" = "N" ]; then
             for mod_def in "${modules[@]}"; do
-                _cfg_set_module "$(_cfg_mod_name "$mod_def")" "false"
+                _cfg_set_module "$(_cfg_mod_name "$mod_def")" "false" "$scope"
             done
         elif [ "$key" = "s" ] || [ "$key" = "S" ]; then
             _CFG_SAVE_REQUESTED=1
@@ -585,7 +593,7 @@ _cfg_interactive_modules() {
         elif [ "$key" = "" ]; then
             break
         fi
-        _cfg_draw_module_menu "$title" "$current_idx" "${modules[@]}"
+        _cfg_draw_module_menu "$title" "$current_idx" "$scope" "${modules[@]}"
     done
     printf "\033[?25h"
     echo ""
@@ -636,30 +644,25 @@ _cfg_interactive_choice() {
 }
 
 _cfg_run_interactive() {
-    local path="$1"
+    local path="$1" scope="$2" mod_group theme
     _CFG_SAVE_REQUESTED=0
     _CFG_QUIT_REQUESTED=0
 
     echo ""
     printf "%sCortado config%s  %s\n" "$CFG_BOLD" "$CFG_NC" "$path"
-    echo "Arrow keys · Space toggle · s save · q cancel without write"
+    echo "Arrow keys · s save · q cancel without write"
     echo ""
 
-    _cfg_interactive_modules "Core modules" "${_CFG_CORE_MODULES[@]}"
-    [ "${_CFG_QUIT_REQUESTED:-0}" = "1" ] && { echo "Cancelled — no changes written."; return 1; }
-    [ "${_CFG_SAVE_REQUESTED:-0}" = "1" ] && { _cfg_write_conf "$path" 1 && echo "Saved $path"; return 0; }
-
-    _cfg_interactive_modules "System modules" "${_CFG_SYSTEM_MODULES[@]}"
-    [ "${_CFG_QUIT_REQUESTED:-0}" = "1" ] && { echo "Cancelled — no changes written."; return 1; }
-    [ "${_CFG_SAVE_REQUESTED:-0}" = "1" ] && { _cfg_write_conf "$path" 1 && echo "Saved $path"; return 0; }
-
-    _cfg_interactive_modules "Dev modules" "${_CFG_DEV_MODULES[@]}"
-    [ "${_CFG_QUIT_REQUESTED:-0}" = "1" ] && { echo "Cancelled — no changes written."; return 1; }
-    [ "${_CFG_SAVE_REQUESTED:-0}" = "1" ] && { _cfg_write_conf "$path" 1 && echo "Saved $path"; return 0; }
-
-    _cfg_interactive_modules "Extra modules" "${_CFG_EXTRA_MODULES[@]}"
-    [ "${_CFG_QUIT_REQUESTED:-0}" = "1" ] && { echo "Cancelled — no changes written."; return 1; }
-    [ "${_CFG_SAVE_REQUESTED:-0}" = "1" ] && { _cfg_write_conf "$path" 1 && echo "Saved $path"; return 0; }
+    for mod_group in Core System Dev Extra; do
+        case "$mod_group" in
+            Core) _cfg_interactive_modules "Core modules" "$scope" "${_CFG_CORE_MODULES[@]}" ;;
+            System) _cfg_interactive_modules "System modules" "$scope" "${_CFG_SYSTEM_MODULES[@]}" ;;
+            Dev) _cfg_interactive_modules "Dev modules" "$scope" "${_CFG_DEV_MODULES[@]}" ;;
+            Extra) _cfg_interactive_modules "Extra modules" "$scope" "${_CFG_EXTRA_MODULES[@]}" ;;
+        esac
+        [ "$_CFG_QUIT_REQUESTED" = "1" ] && { echo "Cancelled — no changes written."; return 1; }
+        [ "$_CFG_SAVE_REQUESTED" = "1" ] && { _cfg_write_conf "$path" 1 "" "$scope" && echo "Saved $path"; return; }
+    done
 
     _cfg_interactive_choice "Color theme" \
         "default|Standard emoji" \
@@ -668,22 +671,27 @@ _cfg_run_interactive() {
         "monochrome|ASCII" \
         "nerd|Nerd Font glyphs"
     case "${CFG_CHOICE_RESULT:-0}" in
-        0) COLOR_THEME="default" ;;
-        1) COLOR_THEME="minimal" ;;
-        2) COLOR_THEME="vibrant" ;;
-        3) COLOR_THEME="monochrome" ;;
-        4) COLOR_THEME="nerd" ;;
+        0) theme="default" ;;
+        1) theme="minimal" ;;
+        2) theme="vibrant" ;;
+        3) theme="monochrome" ;;
+        4) theme="nerd" ;;
     esac
 
-    _cfg_interactive_choice "WAN IP (privacy)" \
-        "off|Do not fetch WAN IP (recommended)" \
-        "redacted|Fetch but redact" \
-        "show|Show full WAN IP"
-    case "${CFG_CHOICE_RESULT:-0}" in
-        0) NETWORK_SHOW_WAN="false"; NETWORK_WAN_REDACT="true" ;;
-        1) NETWORK_SHOW_WAN="true"; NETWORK_WAN_REDACT="true" ;;
-        2) NETWORK_SHOW_WAN="true"; NETWORK_WAN_REDACT="false" ;;
-    esac
+    if [ "$scope" = "project" ]; then
+        _cfg_set_project_value COLOR_THEME "$theme"
+    else
+        COLOR_THEME="$theme"
+        _cfg_interactive_choice "WAN IP (privacy)" \
+            "off|Do not fetch WAN IP (recommended)" \
+            "redacted|Fetch but redact" \
+            "show|Show full WAN IP"
+        case "${CFG_CHOICE_RESULT:-0}" in
+            0) NETWORK_SHOW_WAN="false"; NETWORK_WAN_REDACT="true" ;;
+            1) NETWORK_SHOW_WAN="true"; NETWORK_WAN_REDACT="true" ;;
+            2) NETWORK_SHOW_WAN="true"; NETWORK_WAN_REDACT="false" ;;
+        esac
+    fi
 
     echo ""
     printf "Preview: %s\n" "$(_cfg_preview_line)"
@@ -697,7 +705,7 @@ _cfg_run_interactive() {
             return 1
             ;;
     esac
-    if _cfg_write_conf "$path" 1; then
+    if _cfg_write_conf "$path" 1 "" "$scope"; then
         echo "Saved $path"
         echo "Restart Claude Code (or re-render statusline) to apply."
         return 0
@@ -720,7 +728,7 @@ Options:
   --set KEY=VALUE     Set a single key (MODULE_*, COLOR_THEME, …) and save
   --toggle NAME       Toggle a module on/off by short name (e.g. git, cpu)
   --path              Print resolved config path and exit
-  --project           Edit ./.cortado.conf instead of user global
+  --project           Edit display settings and disable modules in ./.cortado.conf
   --global            Edit $CLAUDE_CONFIG_DIR/cortado.conf (default)
   -h, --help          This help
 
@@ -729,7 +737,7 @@ Examples:
   cortado config --show
   cortado config --toggle weather
   cortado config --set COLOR_THEME=minimal
-  cortado config --project --set MODULE_CPU=true
+  cortado config --project --set MODULE_CPU=false
 EOF
 }
 
@@ -776,23 +784,18 @@ cortado_config_main() {
     fi
 
     # Pre-rename fallback for project scope (the global barista.conf is carried over
-    # by cortado.sh at startup). --show reads ./.barista.conf as-is; an edit copies it
-    # to ./.cortado.conf first so its settings survive the rewrite. The copy is still
-    # only ever read with the safe parser.
+    # by cortado.sh at startup). Load valid legacy settings, then write the new
+    # name only if an edit succeeds.
+    local load_path="$path"
     if [ "$scope" = "project" ] && [ ! -f "$path" ] && [ -f "${PWD}/.barista.conf" ]; then
-        if [ "$action" = "show" ]; then
-            path="${PWD}/.barista.conf"
-        else
-            cp "${PWD}/.barista.conf" "$path" 2>/dev/null || true
-        fi
+        load_path="${PWD}/.barista.conf"
     fi
 
-    # config_not_group_or_world_writable comes from cortado.sh
-    _cfg_load_into_shell "$path" "$scope"
+    _cfg_load_into_shell "$load_path" "$scope"
 
     case "$action" in
         show)
-            _cfg_show "$path"
+            _cfg_show "$load_path"
             return 0
             ;;
         set)
@@ -801,7 +804,7 @@ cortado_config_main() {
                 echo "config: --set requires KEY=VALUE" >&2
                 return 2
             fi
-            if ! _cfg_is_allowed_key "$key"; then
+            if [ "$scope" = "global" ] && ! _cfg_is_global_key "$key"; then
                 echo "config: unknown or invalid key: $key" >&2
                 return 2
             fi
@@ -809,15 +812,22 @@ cortado_config_main() {
                 echo "config: invalid value characters" >&2
                 return 2
             fi
-            if ! _cfg_assign "$key" "$val"; then
-                echo "config: could not set $key" >&2
-                return 2
+            if [ "$scope" = "project" ]; then
+                if ! _cfg_set_project_value "$key" "$val"; then
+                    echo "config: project config cannot set $key to that value" >&2
+                    return 2
+                fi
+            else
+                if ! printf -v "$key" '%s' "$val"; then
+                    echo "config: could not set $key" >&2
+                    return 2
+                fi
+                local set_mod
+                if set_mod=$(_cfg_module_name_from_var "$key"); then
+                    _cfg_sync_module_order "$set_mod"
+                fi
             fi
-            local set_mod
-            if set_mod=$(_cfg_module_name_from_var "$key"); then
-                _cfg_sync_module_order "$set_mod"
-            fi
-            if _cfg_write_conf "$path" 0 "$key"; then
+            if _cfg_write_conf "$path" 0 "$key" "$scope"; then
                 echo "Set $key=$val → $path"
                 return 0
             fi
@@ -829,8 +839,13 @@ cortado_config_main() {
                 name=$(_cfg_mod_name "$mod_def")
                 if [ "$name" = "$toggle_name" ]; then
                     found=1
-                    _cfg_toggle_module "$name"
-                    _cfg_sync_module_order "$name"
+                    if ! _cfg_toggle_module "$name" "$scope"; then
+                        echo "config: could not toggle $name in $scope config" >&2
+                        return 2
+                    fi
+                    if [ "$scope" = "global" ]; then
+                        _cfg_sync_module_order "$name"
+                    fi
                     break
                 fi
             done
@@ -838,7 +853,7 @@ cortado_config_main() {
                 echo "config: unknown module: $toggle_name" >&2
                 return 2
             fi
-            if _cfg_write_conf "$path" 0; then
+            if _cfg_write_conf "$path" 0 "" "$scope"; then
                 if _cfg_module_enabled "$toggle_name"; then
                     echo "Enabled $toggle_name → $path"
                 else
@@ -853,7 +868,7 @@ cortado_config_main() {
                 echo "config: interactive TUI requires a TTY. Use --show / --set / --toggle." >&2
                 return 2
             fi
-            _cfg_run_interactive "$path"
+            _cfg_run_interactive "$path" "$scope"
             return $?
             ;;
     esac

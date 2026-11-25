@@ -15,6 +15,9 @@
 # Requires: jq
 # =============================================================================
 
+# Remember which settings were inherited before loading trusted defaults.
+CORTADO_STARTUP_ENV=$(compgen -e)
+
 # Determine script directory (handles symlinks)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 MODULES_DIR="$SCRIPT_DIR/modules"
@@ -81,11 +84,10 @@ load_config() {
     return 1
 }
 
-# Load an untrusted config file safely (project-level .cortado.conf)
-# Only allows KEY=VALUE assignments for known configuration variable names.
-# Ignores comments, blank lines, and any line that doesn't match the pattern.
-load_config_safe() {
-    local config_path="$1"
+# Read literal KEY=VALUE lines through the caller's policy and consumer.
+read_config_kv() {
+    local config_path="$1" allows_setting="$2" consume_setting="$3"
+    local line key val
     [ -f "$config_path" ] || return 1
 
     while IFS= read -r line || [ -n "$line" ]; do
@@ -93,53 +95,97 @@ load_config_safe() {
         line="${line#"${line%%[![:space:]]*}"}"
         line="${line%"${line##*[![:space:]]}"}"
 
-        # Skip comments and blank lines
         case "$line" in
             ""|\#*) continue ;;
+            *=*) ;;
+            *) continue ;;
         esac
 
-        # Only allow KEY="value" or KEY=value where KEY matches known config prefixes
-        # This rejects semicolons, backticks, $(), and other shell metacharacters in values
-        case "$line" in
-            MODULE_*=*|SEPARATOR=*|DISPLAY_MODE=*|COLOR_THEME=*|USE_ICONS=*|\
-            USE_STATUS_INDICATORS=*|STATUS_STYLE=*|STATUS_*=*|\
-            PROGRESS_BAR_*=*|DIRECTORY_*=*|CONTEXT_*=*|GIT_*=*|\
-            PROJECT_*=*|MODEL_*=*|COST_*=*|RATE_*=*|TIME_*=*|\
-            BATTERY_*=*|CPU_*=*|MEMORY_*=*|DISK_*=*|NETWORK_*=*|\
-            UPTIME_*=*|LOAD_*=*|TEMP_*=*|BRIGHTNESS_*=*|PROC_*=*|\
-            DOCKER_*=*|NODE_*=*|WEATHER_*=*|TIMEZONE_*=*|SANDBOX_*=*|\
-            CACHE_MAX_AGE=*|DEBUG_MODE=*|LAYOUT_MODE=*|\
-            TERMINAL_WIDTH=*|RIGHT_SIDE_RESERVE=*|VERSION_*=*|UPDATE_*=*)
-                # Extract key and value
-                local key="${line%%=*}"
-                local val="${line#*=}"
-
-                # Reject keys with non-alphanumeric/underscore characters
-                case "$key" in
-                    *[!A-Za-z0-9_]*) continue ;;
-                esac
-
-                # Strip optional surrounding quotes (single or double)
-                case "$val" in
-                    \"*\") val="${val#\"}"; val="${val%\"}" ;;
-                    \'*\') val="${val#\'}"; val="${val%\'}" ;;
-                esac
-
-                # Reject shell metacharacters. Allow `|` so SEPARATOR=" | " loads.
-                # Reject `$` and glob chars so project files cannot park them.
-                case "$val" in
-                    *\`*|*\$*|*\;*|*\&*|*\>*|*\<*|*'*'*|*'?'*|*'['*) continue ;;
-                esac
-
-                # Safe to assign via printf into the variable
-                printf -v "$key" '%s' "$val" 2>/dev/null || true
-                ;;
-            *)
-                # Unrecognized line — skip silently for safety
-                ;;
+        key="${line%%=*}"
+        val="${line#*=}"
+        case "$val" in
+            \"*\") val="${val#\"}"; val="${val%\"}" ;;
+            \'*\') val="${val#\'}"; val="${val%\'}" ;;
         esac
+
+        # Allow a pipe for the default separator.
+        case "$val" in
+            *\`*|*\$*|*\;*|*\&*|*\>*|*\<*|*'*'*|*'?'*|*'['*) continue ;;
+        esac
+
+        "$allows_setting" "$key" "$val" || continue
+        "$consume_setting" "$key" "$val" "$line" || true
     done < "$config_path"
     return 0
+}
+
+# Shared project allowlist for the renderer and config CLI.
+project_config_setting_allowed() {
+    local key="$1" val="$2"
+    case "$val" in *[[:cntrl:]]*) return 1 ;; esac
+    case "$key" in
+        MODULE_SANDBOX|MODULE_VERSION|MODULE_UPDATE|MODULE_DIRECTORY|MODULE_CONTEXT|MODULE_GIT|\
+        MODULE_PROJECT|MODULE_MODEL|MODULE_COST|MODULE_RATE_LIMITS|MODULE_TIME|MODULE_BATTERY|\
+        MODULE_CPU|MODULE_MEMORY|MODULE_DISK|MODULE_NETWORK|MODULE_UPTIME|MODULE_LOAD|\
+        MODULE_TEMPERATURE|MODULE_BRIGHTNESS|MODULE_PROCESSES|MODULE_DOCKER|MODULE_NODE|\
+        MODULE_WEATHER|MODULE_TIMEZONE)
+            [ "$val" = "false" ]
+            ;;
+        SEPARATOR|DISPLAY_MODE|COLOR_THEME|USE_ICONS|USE_STATUS_INDICATORS|STATUS_STYLE|\
+        STATUS_GREEN|STATUS_YELLOW|STATUS_ORANGE|STATUS_RED|\
+        LAYOUT_MODE|TERMINAL_WIDTH|RIGHT_SIDE_RESERVE|MODULE_ORDER|\
+        PROGRESS_BAR_WIDTH|PROGRESS_BAR_FILLED|PROGRESS_BAR_EMPTY|\
+        DIRECTORY_ICON|DIRECTORY_STYLE|DIRECTORY_SHOW_FULL_PATH|DIRECTORY_MAX_LENGTH|\
+        CONTEXT_ICON|CONTEXT_SHOW_PROGRESS_BAR|CONTEXT_SHOW_PERCENTAGE|CONTEXT_SHOW_STATUS|\
+        CONTEXT_SHOW_TOKENS_REMAINING|CONTEXT_COMPACT_ICON|CONTEXT_WARNING_THRESHOLD|\
+        CONTEXT_CRITICAL_THRESHOLD|CONTEXT_COMPACT_THRESHOLD|\
+        GIT_ICON|GIT_SHOW_BRANCH|GIT_SYMBOL_MODIFIED|\
+        GIT_SYMBOL_UNTRACKED|GIT_SYMBOL_STAGED|GIT_FILE_ICON|GIT_COMPACT|\
+        PROJECT_STYLE|PROJECT_DEV_ICON|PROJECT_BUILD_ICON|PROJECT_ICON_ASTRO|PROJECT_ICON_BUN|\
+        PROJECT_ICON_DENO|PROJECT_ICON_ELIXIR|PROJECT_ICON_GO|PROJECT_ICON_JAVA|PROJECT_ICON_KOTLIN|\
+        PROJECT_ICON_NEXTJS|PROJECT_ICON_NODE|PROJECT_ICON_NUXT|PROJECT_ICON_PHP|PROJECT_ICON_PYTHON|\
+        PROJECT_ICON_REMIX|PROJECT_ICON_RUBY|PROJECT_ICON_RUST|PROJECT_ICON_SVELTE|\
+        PROJECT_ICON_SWIFT|PROJECT_ICON_VITE|\
+        MODEL_ICON|MODEL_SHOW_OUTPUT_STYLE|MODEL_COMPACT|MODEL_STYLE|MODEL_SHOW_THINKING|MODEL_THINKING_ICON|\
+        COST_ICON|COST_SHOW_BURN_RATE|COST_SHOW_TPM|COST_TPM_ICON|COST_DECIMAL_PLACES|\
+        COST_COMPACT|COST_MINIMUM_DISPLAY|\
+        RATE_SHOW_5H|RATE_SHOW_7D|RATE_SHOW_TIME_REMAINING|RATE_SHOW_PROJECTION|RATE_SHOW_PROGRESS_BAR|\
+        RATE_PROGRESS_BAR_WIDTH|RATE_WARNING_THRESHOLD|RATE_CRITICAL_THRESHOLD|RATE_COMPACT|\
+        RATE_5H_LABEL|RATE_7D_LABEL|RATE_LOW_THRESHOLD|RATE_MEDIUM_THRESHOLD|RATE_HIGH_THRESHOLD|\
+        RATE_SHOW_USAGE_STATUS|\
+        VERSION_ICON|VERSION_SHOW_DURATION|SANDBOX_ICON|\
+        TIME_DATE_ICON|TIME_CLOCK_ICON|TIME_SHOW_DATE|TIME_SHOW_TIME|TIME_DATE_FORMAT|TIME_TIME_FORMAT|TIME_COMPACT|\
+        BATTERY_ICON|BATTERY_SHOW_CHARGING|BATTERY_CHARGING_ICON|BATTERY_LOW_ICON|BATTERY_CRITICAL_ICON|\
+        BATTERY_LOW_THRESHOLD|BATTERY_CRITICAL_THRESHOLD|BATTERY_SHOW_PERCENTAGE|\
+        CPU_ICON|CPU_SHOW_PERCENTAGE|CPU_WARNING_THRESHOLD|CPU_CRITICAL_THRESHOLD|CPU_SHOW_STATUS|\
+        MEMORY_ICON|MEMORY_SHOW_PERCENTAGE|MEMORY_SHOW_USED|MEMORY_WARNING_THRESHOLD|\
+        MEMORY_CRITICAL_THRESHOLD|MEMORY_SHOW_STATUS|\
+        DISK_ICON|DISK_SHOW_PERCENTAGE|DISK_SHOW_FREE|DISK_WARNING_THRESHOLD|DISK_CRITICAL_THRESHOLD|DISK_SHOW_STATUS|\
+        NETWORK_ICON|NETWORK_COMPACT|UPTIME_ICON|UPTIME_STYLE|\
+        LOAD_ICON|LOAD_SHOW_ALL|LOAD_WARNING_THRESHOLD|LOAD_CRITICAL_THRESHOLD|LOAD_SHOW_STATUS|\
+        TEMP_ICON|TEMP_UNITS|TEMP_WARNING_THRESHOLD|TEMP_CRITICAL_THRESHOLD|TEMP_SHOW_STATUS|\
+        BRIGHTNESS_ICON|BRIGHTNESS_SHOW_PERCENT|BRIGHTNESS_SHOW_BAR|BRIGHTNESS_BAR_WIDTH|\
+        PROC_ICON|PROC_SHOW_TOTAL|PROC_SHOW_RUNNING|PROC_WARNING_THRESHOLD|PROC_CRITICAL_THRESHOLD|PROC_SHOW_STATUS|\
+        DOCKER_ICON|DOCKER_SHOW_RUNNING|DOCKER_SHOW_TOTAL|DOCKER_SHOW_STATUS|DOCKER_COMPACT|\
+        NODE_ICON|NODE_SHOW_NVM|NODE_COMPACT|WEATHER_SHOW_TEMP|WEATHER_SHOW_COND|WEATHER_COMPACT|\
+        TIMEZONE_FORMAT|TIMEZONE_SHOW_LABEL|TIMEZONE_LABELS|TIMEZONE_COMPACT)
+            return 0
+            ;;
+        *) return 1 ;;
+    esac
+}
+
+# Call only with a validated project setting. Match complete exported names.
+project_config_assign() {
+    local key="$1"
+    case $'\n'"${CORTADO_STARTUP_ENV}"$'\n' in
+        *$'\n'"$key"$'\n'*) return 1 ;;
+    esac
+    printf -v "$key" '%s' "$2" 2>/dev/null
+}
+
+load_config_safe() {
+    read_config_kv "$1" project_config_setting_allowed "${2:-project_config_assign}"
 }
 
 # Load configuration in order of precedence:

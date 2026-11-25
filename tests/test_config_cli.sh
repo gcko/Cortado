@@ -75,9 +75,9 @@ PROJ="$TMPHOME/proj"
 mkdir -p "$PROJ"
 (
   cd "$PROJ" || exit 1
-  "$CORTADO" config --project --set MODULE_CPU=true >/dev/null 2>&1
+  "$CORTADO" config --project --set MODULE_DIRECTORY=false >/dev/null 2>&1
 )
-assert_file_contains "project conf written" 'MODULE_CPU="true"' "$PROJ/.cortado.conf"
+assert_file_contains "project conf written" 'MODULE_DIRECTORY="false"' "$PROJ/.cortado.conf"
 
 # statusline path still works with empty-ish JSON (no args)
 json='{"cwd":"/tmp","model":{"display_name":"Test"},"context_window":{"used_percentage":10}}'
@@ -128,7 +128,7 @@ assert_file_contains "toggle still preserves RATE_*" 'RATE_SHOW_PROGRESS_BAR="tr
 
 # Project .cortado.conf must not be sourced (644 is typical for a cloned repo)
 PROJ_PWN="$PROJ"
-printf '%s\n' 'touch "$CLAUDE_CONFIG_DIR/pwned"' 'MODULE_CPU="true"' > "$PROJ_PWN/.cortado.conf"
+printf '%s\n' 'touch "$CLAUDE_CONFIG_DIR/pwned"' 'MODULE_DIRECTORY="false"' > "$PROJ_PWN/.cortado.conf"
 chmod 644 "$PROJ_PWN/.cortado.conf"
 (
   cd "$PROJ_PWN" || exit 1
@@ -144,7 +144,7 @@ fi
 # Safe parser should still honor KEY=VALUE
 show_proj=$(cd "$PROJ_PWN" && "$CORTADO" config --project --show 2>&1)
 assert_contains "project --show still works" "Modules:" "$show_proj"
-assert_contains "project --show honors MODULE_CPU" "[on ] cpu" "$show_proj"
+assert_contains "project --show honors MODULE_DIRECTORY=false" "[off] directory" "$show_proj"
 
 # --project --set must not copy extras that are not allowlisted / not safe
 printf '%s\n' \
@@ -251,7 +251,7 @@ assert_file_contains "cortado.conf not overwritten" 'COLOR_THEME="minimal"' "$MI
 # Project .barista.conf is honored (safe parser) when no .cortado.conf exists
 PROJ_MIG="$TMPHOME/proj-mig"
 mkdir -p "$PROJ_MIG"
-printf '%s\n' 'MODULE_DIRECTORY="true"' 'MODULE_MODEL="true"' 'MODULE_ORDER="directory,model"' \
+printf '%s\n' 'MODULE_ORDER="directory,model"' \
     'SEPARATOR="@@"' 'RATE_SHOW_PROGRESS_BAR="true"' > "$PROJ_MIG/.barista.conf"
 mig_json='{"workspace":{"current_dir":"'"$PROJ_MIG"'"},"model":{"display_name":"Test"}}'
 mig_out=$(echo "$mig_json" | "$CORTADO" 2>/dev/null)
