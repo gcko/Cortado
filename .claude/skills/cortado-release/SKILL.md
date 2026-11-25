@@ -20,6 +20,7 @@ a release pull request, publishes the tag and GitHub Release, and checks the res
 
 - A checkout of `gcko/Cortado` with `origin` pointing at it, push access, and `gh` authenticated.
 - `shellcheck`, `jq` and `bash` for the Pre-PR Checks.
+- `shasum` or `sha256sum` to create the release checksum.
 - For the announcement only: a channel the owner names, a way to post to it, and the
   `humanizer:humanizer` skill. All optional. Missing them costs the announcement and nothing else.
 
@@ -200,16 +201,40 @@ the right one.
 
 ## 6. Publish, and confirm it landed
 
-Publish the tag and the Release in one call, on exactly the bump commit:
+Package exactly the bump commit as `Cortado-source.zip` and write its SHA-256 to `SHA256SUMS`.
+The installer downloads these two named assets. Attach both in the release creation command so
+GitHub CLI uploads them before it publishes the Release.
 
 ```bash
-gh release create "v$VERSION" -R gcko/Cortado --target "$SHA" \
-  --title "Cortado v$VERSION" --notes-file "<the approved note>"
+(
+  set -e
+  assets=$(mktemp -d)
+  trap 'rm -rf "$assets"' EXIT
+  git archive --format=zip --prefix="Cortado-$VERSION/" \
+    --output="$assets/Cortado-source.zip" "$SHA"
+  (
+    cd "$assets"
+    if command -v shasum >/dev/null 2>&1; then
+      shasum -a 256 Cortado-source.zip
+    else
+      sha256sum Cortado-source.zip
+    fi
+  ) > "$assets/SHA256SUMS"
+
+  gh release create "v$VERSION" "$assets/Cortado-source.zip" "$assets/SHA256SUMS" \
+    -R gcko/Cortado --target "$SHA" --title "Cortado v$VERSION" --notes-file "<the approved note>"
+
+  mkdir "$assets/downloaded"
+  gh release download "v$VERSION" -R gcko/Cortado --dir "$assets/downloaded" \
+    --pattern Cortado-source.zip --pattern SHA256SUMS
+  cmp "$assets/Cortado-source.zip" "$assets/downloaded/Cortado-source.zip"
+  cmp "$assets/SHA256SUMS" "$assets/downloaded/SHA256SUMS"
+)
 ```
 
-`--target` with a full SHA creates the tag on that commit server-side, so no local tag (signed or
-otherwise) is involved. Then confirm all of these, because a release nobody's install can see is not
-a release:
+`--target` with a full SHA creates the tag on that commit server-side. Both `cmp` commands must
+exit zero. If publication or verification fails, inspect the existing tag, Release and assets
+before retrying. Confirm that the tag is on the bump commit and that installs can see the Release:
 
 ```bash
 git ls-remote --tags origin "refs/tags/v$VERSION"                          # exists
@@ -218,9 +243,7 @@ gh release view "v$VERSION" -R gcko/Cortado --json tagName,url,isDraft     # isD
 gh api repos/gcko/Cortado/releases/latest --jq .tag_name                   # v$VERSION
 ```
 
-The last line is what every install's `update` module and `./install.sh --check-update` read. Do
-not use `./install.sh --check-update` as the proof: when the API answers 404 (no release at all, as
-on 2026-11-22) it prints "You have the latest version", which is true of nothing.
+The last line is what every install's `update` module and `./install.sh --check-update` read.
 
 If the Release published but `releases/latest` names an older tag, the new one was published as a
 prerelease or with `--latest=false`; fix it with `gh release edit "v$VERSION" --latest`.

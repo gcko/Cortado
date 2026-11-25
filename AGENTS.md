@@ -360,3 +360,5 @@ The installer (`install.sh`) provides:
 - Copies `cortado.sh`, `VERSION`, `modules/`, and `lib/` (required for `cortado config`)
 
 `./install.sh --check-update`, `./install.sh --check`, and `./install.sh --update` exit with status 1 and print `Could not determine the latest version` if they cannot find a release.
+
+Archive updates download the tagged Release's `SHA256SUMS` and `Cortado-source.zip` assets. Each download has a 5-second connection deadline and a 60-second total deadline. The installer verifies the published SHA-256 before extracting the archive. An unavailable checksum or a mismatch aborts the update before any files are replaced. The `cortado-release` skill publishes both assets.
