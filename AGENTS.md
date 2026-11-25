@@ -64,9 +64,9 @@ Cortado/
    - `$CLAUDE_CONFIG_DIR/cortado.conf` (user overrides, defaults to `~/.claude/`)
    - `.cortado.conf` in current project directory (per-project overrides)
 
-   Pre-rename fallbacks: if `cortado.conf` is missing, `cortado.sh` copies `$CLAUDE_CONFIG_DIR/barista.conf` to it once (with `cp -p`, falling back to reading the legacy file directly). A project's `.barista.conf` is read only when that project has no `.cortado.conf`. Keep these fallbacks until Barista users have had time to migrate.
+   Pre-rename fallbacks: if `cortado.conf` is missing, `cortado.sh` checks `$CLAUDE_CONFIG_DIR/barista.conf` before copying it once with `cp -p`. If the copy fails, it can load the legacy file in place. A project's `.barista.conf` is read only when that project has no `.cortado.conf`. Keep these fallbacks until Barista users have had time to migrate.
 
-   Packaged `cortado.conf` and the user override (`$CLAUDE_CONFIG_DIR/cortado.conf`) are sourced as bash after a group/world-writable check. Per-directory `.cortado.conf` is untrusted: `load_config_safe` (KEY=VALUE allowlist) never sources it. Config-derived numerics are validated before they reach `bc`/URL sinks. `cortado config --project` uses the same safe parser.
+   Cortado and the installer use the same permission check before sourcing Bash config. The resolved file must belong to the current user, with root also allowed for packaged config. Its parent must belong to the current user or root. Group or other write access is refused, except on a parent with the sticky bit. Unreadable permission metadata also causes a refusal. Refusals go to stderr and to the statusline's debug log when enabled. Per-directory `.cortado.conf` is read as literal KEY=VALUE settings through `load_config_safe`. Config-derived numerics are validated before they reach `bc`/URL sinks. `cortado config --project` uses the same safe parser.
 3. **Modules are discovered** from their headers in `modules/` and in `$CLAUDE_CONFIG_DIR/cortado-modules/`. The renderer sources the installed scripts with `utils.sh` first. It sources user modules inside their execution subshell after checking ownership and permissions.
 4. **Modules are executed** in the order specified by `MODULE_ORDER` config
 5. **Output is concatenated** with the configured `SEPARATOR` and printed

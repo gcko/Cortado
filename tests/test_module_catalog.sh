@@ -127,9 +127,25 @@ chmod 600 "$user_dir/mycustom.sh"
 chmod 720 "$user_dir"
 assert_eq 'a group-writable module directory cannot supply code' '🤖 Opus' "$(recipe_render 2>/dev/null)"
 chmod 700 "$user_dir"
+# An unsafe config directory also refuses the user cortado.conf that names the
+# module, so these checks name it from the packaged config instead and test
+# the module guard alone.
+packaged_order() {
+    mv "$CLAUDE_CONFIG_DIR/cortado.conf" "$TEST_BASE/user.conf" || exit 1
+    cp "$tree/cortado.conf" "$TEST_BASE/packaged.conf" || exit 1
+    printf '%s\n' "$@" >> "$tree/cortado.conf" || exit 1
+}
+restore_order() {
+    cp "$TEST_BASE/packaged.conf" "$tree/cortado.conf" || exit 1
+    mv "$TEST_BASE/user.conf" "$CLAUDE_CONFIG_DIR/cortado.conf" || exit 1
+}
+packaged_order 'MODULE_MYCUSTOM="true"' 'MODULE_ORDER="model,mycustom"'
+assert_eq 'control: a packaged MODULE_ORDER reaches a user module' '🤖 Opus | 🎯 My Output' \
+    "$(recipe_render 2>/dev/null)"
 chmod 702 "$CLAUDE_CONFIG_DIR"
 assert_eq 'a world-writable config parent cannot supply modules' '🤖 Opus' "$(recipe_render 2>/dev/null)"
 chmod 700 "$CLAUDE_CONFIG_DIR"
+restore_order
 
 mv "$user_dir" "$CLAUDE_CONFIG_DIR/other-modules"
 ln -s other-modules "$user_dir"
@@ -292,8 +308,11 @@ chmod 700 "$TEST_BASE/ownerbin/stat"
 real_config=$(cd "$CLAUDE_CONFIG_DIR" && pwd -P)
 owner_render() { PATH="$TEST_BASE/ownerbin:$PATH" guard_render; }
 assert_eq 'control: the owner stub alone changes nothing' '🤖 Opus | GUARD' "$(owner_render)"
+packaged_order 'MODULE_ORDER="model,guard"'
+assert_eq 'control: a packaged MODULE_ORDER reaches the guard module' '🤖 Opus | GUARD' "$(owner_render)"
 assert_eq 'a config dir owned by another user cannot supply modules' '🤖 Opus' \
     "$(TEST_FOREIGN_PATH="$real_config" owner_render)"
+restore_order
 assert_eq 'a module dir owned by another user cannot supply modules' '🤖 Opus' \
     "$(TEST_FOREIGN_PATH="$real_config/cortado-modules" TEST_FOREIGN_POS=1 owner_render)"
 

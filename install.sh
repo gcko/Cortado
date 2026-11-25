@@ -64,6 +64,10 @@ setup_colors() {
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/semver.sh
 . "$SCRIPT_DIR/lib/semver.sh"
+if [ -r "$SCRIPT_DIR/lib/config-permissions.sh" ]; then
+    # shellcheck source=lib/config-permissions.sh
+    . "$SCRIPT_DIR/lib/config-permissions.sh"
+fi
 # shellcheck source=lib/module-registry.sh
 . "$SCRIPT_DIR/lib/module-registry.sh"
 
@@ -1081,8 +1085,9 @@ show_statusline_preview() {
 # =============================================================================
 # CONFIGURATION GENERATION
 # =============================================================================
-generate_config() {
+generate_config() (
     local config_file="$1"
+    umask 077
 
     cat > "$config_file" << 'HEADER'
 # =============================================================================
@@ -1181,22 +1186,22 @@ DEBUG_MODE="false"
 #   - Different modules for different project types
 #   - Disabling slow modules in certain directories
 FOOTER
-}
+)
 
 # =============================================================================
 # VALIDATION
 # =============================================================================
 validate_config() {
-    local config_file="$1"
-    local errors=0
+    local config_file="$1" REPLY
 
-    if [ ! -f "$config_file" ]; then
+    if [[ ! -e "$config_file" && ! -L "$config_file" ]]; then
         return 0
     fi
+    check_trusted_config "$config_file" packaged || return 1
 
     # Source the config to validate
     (
-        . "$config_file" 2>/dev/null
+        . "$REPLY" 2>/dev/null
 
         # Validate MODULE_ORDER contains valid modules
         if [ -n "$MODULE_ORDER" ]; then
@@ -1235,7 +1240,7 @@ validate_config() {
         done
     )
 
-    return $errors
+    return 0
 }
 
 # =============================================================================
@@ -1243,14 +1248,16 @@ validate_config() {
 # =============================================================================
 # Copy the user's Barista override (barista.conf) to cortado.conf so their settings
 # carry over. Never overwrites an existing cortado.conf and leaves the original in
-# place. cp -p keeps the 600 mode that cortado.sh's writable-config check expects.
+# place. Verify the original before copying it with permissions intact.
 # Prints the path it migrated, or nothing when there was nothing to do.
 migrate_legacy_user_config() {
     local legacy="${1:-$LEGACY_USER_CONFIG}"
     local target="${2:-$CLAUDE_DIR/cortado.conf}"
-    [ -f "$legacy" ] || return 0
-    [ -f "$target" ] && return 0
-    cp -p "$legacy" "$target" || return 1
+    local REPLY
+    [[ -e "$legacy" || -L "$legacy" ]] || return 0
+    [[ -e "$target" || -L "$target" ]] && return 0
+    check_trusted_config "$legacy" || return 1
+    cp -p "$REPLY" "$target" || return 1
     echo "$target"
 }
 
@@ -1455,7 +1462,7 @@ do_uninstall() {
 }
 
 # Copy runtime files (script, VERSION, modules, lib) into an install prefix.
-# Testable without writing settings.json. Fail if lib/config-tui.sh is absent.
+# Testable without writing settings.json.
 copy_runtime_files() {
     local src="${1:-$SCRIPT_DIR}"
     local dest="$2"
@@ -1463,7 +1470,7 @@ copy_runtime_files() {
     [ -n "$dest" ] || return 1
     [ -f "$src/cortado.sh" ] || return 1
     [ -d "$src/modules" ] || return 1
-    [ -d "$src/lib" ] || return 1
+    [ -f "$src/lib/config-permissions.sh" ] && [ -f "$src/lib/config-tui.sh" ] || return 1
 
     mkdir -p "$dest/modules" "$dest/lib" || return 1
     cp "$src/cortado.sh" "$dest/" || return 1
@@ -1473,7 +1480,6 @@ copy_runtime_files() {
     fi
     cp "$src/modules/"*.sh "$dest/modules/" || return 1
     cp "$src/lib/"*.sh "$dest/lib/" || return 1
-    [ -f "$dest/lib/config-tui.sh" ] || return 1
     return 0
 }
 
@@ -1694,7 +1700,7 @@ do_install() (
     echo ""
 
     # Create directories
-    mkdir -p "$CLAUDE_DIR" || {
+    (umask 077; mkdir -p "$CLAUDE_DIR") || {
         print_error "Could not create $CLAUDE_DIR"
         exit 1
     }
@@ -1729,7 +1735,7 @@ do_install() (
     # Install files
     print_info "Installing Cortado..."
 
-    mkdir -p "$CORTADO_DIR" || {
+    (umask 077; mkdir -p "$CORTADO_DIR") || {
         print_error "Could not create $CORTADO_DIR"
         exit 1
     }
@@ -1741,7 +1747,7 @@ do_install() (
     fi
 
     if ! copy_runtime_files "$SCRIPT_DIR" "$CORTADO_DIR"; then
-        print_error "Could not copy Cortado runtime files (need cortado.sh, modules/, lib/config-tui.sh)"
+        print_error "Could not copy Cortado runtime files (need cortado.sh, modules/, and lib/)"
         exit 1
     fi
 
@@ -1765,7 +1771,7 @@ do_install() (
     generate_config "$CORTADO_DIR/cortado.conf"
 
     # Validate generated config
-    validate_config "$CORTADO_DIR/cortado.conf"
+    validate_config "$CORTADO_DIR/cortado.conf" || exit 1
 
     print_success "Copied statusline files to $CORTADO_DIR"
 

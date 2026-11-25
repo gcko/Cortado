@@ -148,19 +148,20 @@ _cfg_resolve_path() {
 
 # Project settings overlay the same trusted values that the renderer loaded.
 _cfg_load_into_shell() {
-    local path="$1"
+    local path="$1" REPLY
     local scope="${2:-global}"
     if [ "$scope" = "project" ]; then
         _CFG_PROJECT_SETTINGS=()
         _CFG_PROJECT_ORIGINAL=()
         [ ! -f "$path" ] || load_config_safe "$path" _cfg_load_project_value
     else
-        load_config "$SCRIPT_DIR/cortado.conf"
+        load_config "$SCRIPT_DIR/cortado.conf" packaged
         if _cfg_resolve_target "$path" && [ -f "$REPLY" ]; then
             local target="$REPLY"
-            if config_not_group_or_world_writable "$target" 2>/dev/null; then
+            # The trust check follows the link itself; source exactly what it judged.
+            if check_trusted_config "$path" 2>/dev/null; then
                 # shellcheck disable=SC1090
-                . "$path"
+                . "$REPLY"
             else
                 read_config_kv "$target" _cfg_is_global_key _cfg_load_global_value
             fi

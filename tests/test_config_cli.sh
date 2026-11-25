@@ -2,6 +2,7 @@
 # ABOUTME: Tests for cortado.sh config subcommand (CLI path, show, set, toggle, write)
 # ABOUTME: Run with: bash tests/test_config_cli.sh
 
+umask 077
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=tests/lib/assert.sh
 . "$SCRIPT_DIR/tests/lib/assert.sh" indented

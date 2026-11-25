@@ -41,44 +41,18 @@ CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 # CONFIGURATION LOADING
 # =============================================================================
 
-# Succeeds unless $1 is group- or world-writable. A cortado.conf is sourced as full
-# bash, so a writable one is a persistent code-exec vector (Refs #28 part 3). Mirrors
-# the Darwin/Linux stat fork used in utils.sh; fails open if the mode can't be read so
-# an unusual environment never breaks the statusline.
-config_not_group_or_world_writable() {
-    local f="$1" perms len group_digit other_digit
-    if [[ "${BASH_VERSINFO[5]}" == *-darwin* ]]; then
-        perms=$(/usr/bin/stat -f '%Lp' "$f" 2>/dev/null)
-    else
-        perms=$(stat -c '%a' "$f" 2>/dev/null)
-    fi
-    [ -n "$perms" ] || return 0
-    len=${#perms}
-    group_digit="${perms:len-2:1}"
-    other_digit="${perms:len-1:1}"
-    # octal write bit is 2 (present in digits 2,3,6,7)
-    if (( (group_digit & 2) != 0 || (other_digit & 2) != 0 )); then
+CONFIG_REFUSALS=()
+
+# Load Bash config only after verifying its target and parent.
+load_config() {
+    local config_path="$1" REPLY
+    [[ -e "$config_path" || -L "$config_path" ]] || return 1
+    if ! check_trusted_config "$config_path" "${2:-user}"; then
+        CONFIG_REFUSALS+=("$config_path")
         return 1
     fi
-    return 0
-}
-
-# Load a trusted config file by sourcing it (only for configs we ship or the user owns)
-load_config() {
-    local config_path="$1"
-    if [ -f "$config_path" ]; then
-        # The file is sourced as full bash; refuse a group/world-writable one so a
-        # weak umask or shared install dir can't turn it into a code-exec path (#28).
-        if ! config_not_group_or_world_writable "$config_path"; then
-            [ "${DEBUG_MODE:-false}" = "true" ] && \
-                echo "cortado: refusing to source group/world-writable config: $config_path" >&2
-            return 1
-        fi
-        # shellcheck source=/dev/null
-        . "$config_path"
-        return 0
-    fi
-    return 1
+    # shellcheck source=/dev/null
+    . "$REPLY"
 }
 
 # Read literal KEY=VALUE lines through the caller's policy and consumer.
@@ -208,17 +182,19 @@ _CORTADO_MODULE_REGISTRY_UNAVAILABLE=false
 if ! discover_module_registry "$MODULES_DIR" "$CLAUDE_CONFIG_DIR/cortado-modules" true; then
     _CORTADO_MODULE_REGISTRY_UNAVAILABLE=true
 fi
-load_config "$CONFIG_FILE"
+load_config "$CONFIG_FILE" packaged
 
 USER_CONFIG="$CLAUDE_CONFIG_DIR/cortado.conf"
-# One-time carry-over from Barista (the project Cortado was forked from): if the user
-# still has $CLAUDE_CONFIG_DIR/barista.conf and no cortado.conf yet, copy it across with
-# its permissions intact (cp -p keeps 600, and load_config still runs its writable
-# check). The original is left in place. If the copy can't be written, read the legacy
-# file directly so the user's settings still apply.
+# One-time carry-over from Barista. Check the original before copying it with
+# its permissions intact. If the copy fails, load the legacy config in place.
 LEGACY_USER_CONFIG="$CLAUDE_CONFIG_DIR/barista.conf"
-if [ ! -f "$USER_CONFIG" ] && [ -f "$LEGACY_USER_CONFIG" ]; then
-    cp -p "$LEGACY_USER_CONFIG" "$USER_CONFIG" 2>/dev/null || USER_CONFIG="$LEGACY_USER_CONFIG"
+if [[ ! -e "$USER_CONFIG" && ! -L "$USER_CONFIG" ]] &&
+   [[ -e "$LEGACY_USER_CONFIG" || -L "$LEGACY_USER_CONFIG" ]]; then
+    if check_trusted_config "$LEGACY_USER_CONFIG"; then
+        cp -p "$REPLY" "$USER_CONFIG" 2>/dev/null || USER_CONFIG="$LEGACY_USER_CONFIG"
+    else
+        CONFIG_REFUSALS+=("$LEGACY_USER_CONFIG")
+    fi
 fi
 load_config "$USER_CONFIG"
 
@@ -421,7 +397,8 @@ validate_module_order() {
 }
 
 # Discovery runs before config sets DEBUG_MODE, so it only collects refusals.
-# Like a refused cortado.conf, they are reported only in debug mode.
+# A module the user did not enable stays quiet, so they are reported only in
+# debug mode.
 report_module_refusals() {
     local entry message
     [ "${DEBUG_MODE:-false}" = true ] || return 0
@@ -894,6 +871,12 @@ main() {
         fi
     fi
     load_modules "$module_stderr"
+    if [ "${DEBUG_MODE:-false}" = "true" ]; then
+        local refused_config
+        for refused_config in "${CONFIG_REFUSALS[@]}"; do
+            log_debug "$(config_refusal_message "$refused_config")"
+        done
+    fi
     report_module_refusals
 
     # Resolve the OS in main so trusted configs can supply a uname hook.
