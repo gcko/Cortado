@@ -46,7 +46,7 @@ A feature-rich, modular statusline for [Claude Code CLI](https://docs.anthropic.
   - `smart` (default) - Wraps at separator boundaries when content exceeds terminal width
   - `newline` - Forces Claude's right-side info to next line
   - `wrap` - Pads output to line boundary
-  - `truncate` - Cuts output with "..." to fit on same line
+  - `truncate` - Shortens output to fit on the same line. The marker uses up to three dots, depending on available space.
   - `none` - No adjustments, natural terminal behavior
 - Prevents awkward mid-module line breaks on wide statuslines
 - Configurable `RIGHT_SIDE_RESERVE` and `TERMINAL_WIDTH` settings
