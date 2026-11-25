@@ -757,11 +757,11 @@ show_banner() {
     echo ""
     echo -e "${CYAN}"
     cat << 'EOF'
-    ____             _      __
-   / __ )____ ______(_)____/ /_____ _
-  / __  / __ `/ ___/ / ___/ __/ __ `/
- / /_/ / /_/ / /  / (__  ) /_/ /_/ /
-/_____/\__,_/_/  /_/____/\__/\__,_/
+ CCCC  OOO  RRRR  TTTTT   A   DDDD   OOO
+C     O   O R   R   T    A A  D   D O   O
+C     O   O RRRR    T   AAAAA D   D O   O
+C     O   O R  R    T   A   A D   D O   O
+ CCCC  OOO  R   R   T   A   A DDDD   OOO
 EOF
     echo -e "${NC}"
     local coffee=$(emoji "☕" "")
@@ -1292,16 +1292,10 @@ interactive_display_preferences() {
     # Color theme
     interactive_choice "Color Theme:" \
         "Default|Standard emoji (🟢🟡🔴)" \
-        "Minimal|Subtle shapes (◦ ◐ →)" \
-        "Vibrant|Bold hearts (💚💛🧡❤️)" \
-        "Monochrome|ASCII only ([OK] [!!])" \
-        "Nerd Font|Nerd Font icons ()"
+        "Monochrome|ASCII labels and indicators ([OK] [WARN])"
 
     case "$CHOICE_RESULT" in
-        1) COLOR_THEME="minimal" ;;
-        2) COLOR_THEME="vibrant" ;;
-        3) COLOR_THEME="monochrome" ;;
-        4) COLOR_THEME="nerd" ;;
+        1) COLOR_THEME="monochrome" ;;
         *) COLOR_THEME="default" ;;
     esac
     print_success "Color theme: $COLOR_THEME"
@@ -2111,7 +2105,7 @@ show_help() {
     echo "  --no-color         Disable colors in installer output"
     echo ""
     echo -e "${BOLD}Update Options:${NC}"
-    echo "  --check-update     Check if a newer version is available"
+    echo "  --check-update, --check  Check if a newer version is available"
     echo "  --update           Download and install the latest version"
     echo "  --skip-update-check  Skip automatic update check during install"
     echo "  --version, -v      Show current version"

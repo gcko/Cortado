@@ -59,12 +59,7 @@ A feature-rich, modular statusline for [Claude Code CLI](https://docs.anthropic.
 
 ### v1.3.0
 
-- **Enhanced Color Themes** - 5 distinct visual themes that actually look different:
-  - `default` - Standard emoji (🟢🟡🟠🔴)
-  - `minimal` - Subtle geometric shapes (◦ ◐ → ⎇)
-  - `vibrant` - Bold heart colors (💚💛🧡❤️)
-  - `monochrome` - Pure ASCII ([OK] [~~] [!!] [XX])
-  - `nerd` - Nerd Font icons (requires Nerd Font)
+- Added more color theme settings.
 - **Improved Spacing** - Status indicators now have proper spacing in normal/verbose modes
 - **Smart Compact Mode** - Separator padding and status spacing automatically removed in compact mode
 - **Fixed Installer Preview** - Preview now shows actual sample data instead of just icons
@@ -79,7 +74,7 @@ A feature-rich, modular statusline for [Claude Code CLI](https://docs.anthropic.
 - **Auto-Update Checking** - Cortado checks GitHub for updates and can self-update
 - **Interactive Installer** - Arrow key navigation with space to toggle selections
 - **Customizable Separators** - Choose from pipe, arrow, bullet, and more
-- **Color Themes** - Default, minimal, vibrant, or monochrome
+- **Color Themes** - Default (emoji) or monochrome (ASCII)
 - **Display Modes** - Normal, compact, or verbose output
 - **Live Preview** - See your statusline before installing
 - **Bash 3.2 Compatible** - Works with macOS default bash (no brew required)
@@ -101,7 +96,7 @@ A feature-rich, modular statusline for [Claude Code CLI](https://docs.anthropic.
 | **battery** | Battery percentage (macOS) |
 | **sandbox** | Lock icon when running inside a macOS app sandbox |
 | **version** | Cortado version, shown briefly after startup |
-| **update** | Daily check for new Cortado releases with update notification |
+| **update** | Checks GitHub for new Cortado releases. Successful checks are cached for a day by default. `⬆ --` or `UPD: --` means the check was unavailable. The next render after the failure cache expires (at most one hour) retries. |
 
 ### System Modules (The Espresso Shots)
 
@@ -162,7 +157,8 @@ DIR: myproject | CTX: ####---- 50%[OK] | GIT: main      # ASCII mode
 - **Bash 3.2+** - Works with macOS default bash
 - **jq** - JSON processor (required)
 - **bc** - Basic calculator (usually pre-installed)
-- **macOS** - For the battery module; rate-limit tracking works on macOS, Linux and Windows (Git Bash)
+- The battery module requires macOS. Rate-limit tracking works on macOS and Linux.
+- Windows: untested (Git Bash may work)
 
 ```bash
 # Install dependencies on macOS
@@ -206,6 +202,7 @@ The interactive installer features:
 
 # Updates (from-source / git clone only — not shipped by Homebrew)
 ./install.sh --check-update       # Check the latest GitHub *release* tag
+./install.sh --check              # Alias for --check-update
 ./install.sh --update             # Install that tagged release (not floating main)
 ./install.sh --skip-update-check  # Skip the automatic update check during install
 ./install.sh --version            # Show current version
@@ -217,7 +214,7 @@ The interactive installer features:
 
 ### Staying Up to Date
 
-**From source (git clone or a copied tree):** `./install.sh --check-update` and `./install.sh --update` use GitHub `releases/latest` on [gcko/Cortado](https://github.com/gcko/Cortado), the same tag source as the statusline `update` module. They do **not** track unpinned `main`. The installer refuses to `--update` a Homebrew Cellar/opt prefix.
+For a source install, `./install.sh --check-update`, its alias `./install.sh --check`, and `./install.sh --update` use the latest published release tag on GitHub. The statusline `update` module uses the same repository by default. When the installer cannot find a release, these commands exit with status 1 and print `Could not determine the latest version`. The installer refuses to `--update` a Homebrew Cellar/opt prefix. [Cortado releases](https://github.com/gcko/Cortado/releases)
 
 Cortado also checks for a newer *release* when you run the from-source installer (skip with `--skip-update-check`).
 
@@ -267,8 +264,10 @@ The installer lets you customize:
 | **Status Indicators** | 🟢🟡🔴 Emoji, ●●● Dots, or [OK][WARN] ASCII |
 | **Progress Bars** | ████░░ Blocks, ▓▓▓░░ Shaded, ●●●○○ Circles, #### Hash |
 | **Separators** | \| Pipe, ║ Double, › Arrow, • Bullet, : Colon |
-| **Color Themes** | Default, Minimal, Vibrant, Monochrome, Nerd Font |
+| **Color Themes** | `default` (emoji), `monochrome` (ASCII labels and status indicators) |
 | **Display Mode** | Normal, Compact, Verbose |
+
+Existing configs can still use `minimal`, `vibrant`, or `nerd`. With the shipped display settings they look like `default`.
 
 ### Runtime config (`cortado config`)
 
@@ -277,9 +276,13 @@ After install, reconfigure without re-running the installer:
 ```bash
 cortado config                 # interactive TUI (modules, theme, WAN privacy)
 cortado config --show          # print current settings
+cortado config --list          # alias for --show
 cortado config --toggle weather
-cortado config --set COLOR_THEME=minimal
+cortado config --set COLOR_THEME=monochrome
 cortado config --project       # edit ./.cortado.conf in the current directory
+cortado config --global        # edit the user config (default scope)
+cortado config --path          # print the resolved config path
+cortado config --help          # show usage
 ```
 
 The default save path is `$CLAUDE_CONFIG_DIR/cortado.conf` (usually `~/.claude/cortado.conf`). Use `--project` to save allowed preferences in the current directory. Cancel leaves the file untouched.
@@ -341,12 +344,13 @@ Configuration is loaded in order of precedence:
 
 SEPARATOR=" | "           # Section separator (or " › ", " • ", etc.)
 DISPLAY_MODE="normal"     # "normal", "compact", "verbose"
-COLOR_THEME="default"     # "default", "minimal", "vibrant", "monochrome", "nerd"
+COLOR_THEME="default"     # "default" or "monochrome"
 USE_ICONS="true"          # Enable emoji icons
 USE_STATUS_INDICATORS="true"  # Enable colored status dots/emoji
 STATUS_STYLE="emoji"      # "emoji", "ascii", "dots"
 
-# Custom status indicators (STATUS_STYLE="emoji"; COLOR_THEME fills indicator and icon variables only when they are still unset, and shipped cortado.conf already sets the default emoji, so minimal, vibrant, and nerd do not replace them. monochrome still forces STATUS_STYLE=ascii and USE_ICONS=false).
+# Custom status indicators apply when STATUS_STYLE="emoji".
+# The monochrome theme sets STATUS_STYLE="ascii" and USE_ICONS="false".
 STATUS_GREEN="🟢"
 STATUS_YELLOW="🟡"
 STATUS_ORANGE="🟠"        # 4-level indicators (rate limits) use the orange band
@@ -373,7 +377,7 @@ MODULE_TIME="true"
 MODULE_BATTERY="true"
 MODULE_SANDBOX="true"       # Lock icon when in a macOS app sandbox
 MODULE_VERSION="true"       # Version notice after startup
-MODULE_UPDATE="true"        # Daily update check
+MODULE_UPDATE="true"        # Check for releases when update is in MODULE_ORDER
 
 # System modules (off by default)
 MODULE_CPU="false"
@@ -423,6 +427,8 @@ DEBUG_MODE="false"           # Debug logging to $CLAUDE_CONFIG_DIR/cortado.log
 ```
 
 Per-module settings (icons, thresholds, formats, and TTLs such as `GIT_CACHE_TTL`, `RATE_CACHE_TTL`, `WEATHER_CACHE_TTL`, `VERSION_SHOW_DURATION`, and `UPDATE_CHECK_INTERVAL`) are documented inline in the shipped `cortado.conf`.
+
+`UPDATE_CHECK_INTERVAL` sets how long a successful release check is cached (86,400 seconds by default). After an unavailable check, Cortado shows `⬆ --` or `UPD: --` and retries on the next render after half the configured interval, capped at one hour.
 
 ### Preset Recipes
 
