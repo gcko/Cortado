@@ -86,16 +86,16 @@ A feature-rich, modular statusline for [Claude Code CLI](https://docs.anthropic.
 | Module | What It Serves |
 |--------|----------------|
 | **directory** | Current working directory name |
-| **context** | Visual progress bar showing context usage with auto-compact warnings |
+| **context** | Visual progress bar showing context usage with auto-compact warnings; shows `--` until Claude Code reports usage (every new session starts that way) |
 | **git** | Branch name, dirty status, staged/modified/untracked indicators |
 | **project** | Auto-detects Node.js, Nuxt, Next.js, Vite, Rust, Go, Python, Swift, and more |
 | **model** | Current Claude model, output style, and optional thinking/reasoning-effort state (`MODEL_SHOW_THINKING`) |
 | **cost** | Session cost with burn rate ($/hour) and tokens per minute (TPM) |
-| **rate-limits** | Real-time 5-hour and 7-day rate limit tracking with projections |
+| **rate-limits** | Real-time 5-hour and 7-day rate limit tracking with projections; a window with no reading shows `--` (for example `5h:42% 7d:--`) |
 | **time** | Current date and time |
 | **battery** | Battery percentage (macOS) |
 | **sandbox** | Lock icon when running inside a macOS app sandbox |
-| **version** | Cortado version, shown briefly after startup |
+| **version** | Cortado version, shown briefly at the start of each Claude Code session |
 | **update** | Checks GitHub for new Cortado releases. Successful checks are cached for a day by default. `⬆ --` or `UPD: --` means the check was unavailable. The next render after the failure cache expires (at most one hour) retries. |
 
 ### System Modules (The Espresso Shots)
@@ -110,7 +110,7 @@ A feature-rich, modular statusline for [Claude Code CLI](https://docs.anthropic.
 | **load** | System load average |
 | **temperature** | CPU temperature (requires osx-cpu-temp) |
 | **brightness** | Screen brightness |
-| **processes** | Process count |
+| **processes** | Process count; `--` when `ps` gives no reading |
 
 ### Dev Tools (The Specialty Drinks)
 
@@ -376,7 +376,7 @@ MODULE_RATE_LIMITS="true"
 MODULE_TIME="true"
 MODULE_BATTERY="true"
 MODULE_SANDBOX="true"       # Lock icon when in a macOS app sandbox
-MODULE_VERSION="true"       # Version notice after startup
+MODULE_VERSION="true"       # Version notice at the start of each session
 MODULE_UPDATE="true"        # Check for releases when update is in MODULE_ORDER
 
 # System modules (off by default)
