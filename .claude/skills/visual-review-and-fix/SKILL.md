@@ -331,7 +331,7 @@ Each of these produced a wrong reading during the 2026-11-22 walk:
   tried. `DEBUG_MODE="true"` and `cortado.log` in the sandbox do.
 - **Latency.** Claude Code runs the statusline often. Time a render (`time render ...`) when a change
   adds a subprocess or a fetch.
-- **Linux and Git Bash.** The harness above is macOS-flavoured (`date -v`, `/bin/bash` 3.2). A
+- **Linux.** The harness above is macOS-flavoured (`date -v`, `/bin/bash` 3.2). A
   change to a platform branch needs that platform.
 
 When a finding falls in one of these, say which, and name the instrument that would settle it.

@@ -16,28 +16,18 @@ jobs:
   checks:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
-    continue-on-error: ${{ matrix.experimental }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - name: macOS (Bash 3.2)
             runner: macos-26
-            experimental: false
           - name: Ubuntu
             runner: ubuntu-24.04
-            experimental: false
-          - name: Windows Git Bash (experimental)
-            runner: windows-2025
-            experimental: true
     defaults:
       run:
         shell: bash
     steps:
-      - name: Preserve LF on Windows checkout
-        if: runner.os == 'Windows'
-        run: git config --global core.autocrlf false
-
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
@@ -64,21 +54,6 @@ jobs:
             sudo apt-get install -y "${missing[@]}"
           fi
 
-      - name: Install Windows dependencies
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          if (-not (Get-Command jq -CommandType Application -ErrorAction SilentlyContinue)) {
-            choco install jq -y
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          }
-          if (-not (Get-Command bc -CommandType Application -ErrorAction SilentlyContinue)) {
-            # Install native bc from the runner's MSYS2 without adding its shell to PATH.
-            & 'C:\msys64\usr\bin\bash.exe' -lc 'pacman -Sy --needed --noconfirm mingw-w64-ucrt-x86_64-bc'
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            'C:\msys64\ucrt64\bin' | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          }
-
       - name: Identify tools
         id: tools
         run: |
@@ -103,10 +78,6 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
-          if [ "$RUNNER_OS" = Windows ] && ! command -v shellcheck >/dev/null; then
-            echo "Skipping ShellCheck on Windows because the runner has no ShellCheck binary."
-            exit 0
-          fi
           if [[ "$BASE_SHA" =~ ^0+$ ]]; then BASE_SHA=HEAD^; fi
           merge_base=$(git merge-base HEAD "$BASE_SHA")
           scratch=$(mktemp -d)
