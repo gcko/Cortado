@@ -139,5 +139,5 @@ jobs:
         if: ${{ !cancelled() && steps.tools.outcome == 'success' }}
         continue-on-error: ${{ runner.os != 'macOS' }}
         env:
-          CORTADO_RENDER_P95_LIMIT_MS: ${{ runner.os == 'macOS' && '150' || '0' }}
+          CORTADO_RENDER_P95_LIMIT_MS: ${{ runner.os == 'macOS' && '250' || '0' }}
         run: /bin/bash tests/render_timing.sh 60

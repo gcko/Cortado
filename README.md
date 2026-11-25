@@ -156,7 +156,7 @@ DIR: myproject | CTX: ####---- 50%[OK] | GIT: main      # ASCII mode
 - **Claude Code CLI** - [Installation Guide](https://docs.anthropic.com/en/docs/claude-code)
 - **Bash 3.2+** - Works with macOS default bash
 - **jq** - JSON processor (required)
-- **bc** - Basic calculator (usually pre-installed)
+- **bc** - Basic calculator, used only by the opt-in brightness, load and temperature modules (usually pre-installed)
 - The battery module requires macOS. Rate-limit tracking works on macOS and Linux.
 - Windows: not supported
 
