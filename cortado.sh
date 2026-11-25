@@ -327,20 +327,31 @@ load_modules() {
         . "$MODULES_DIR/utils.sh" 2>|"$stderr_file"
         log_module_stderr utils
     else
+        CACHE_DIR="$CLAUDE_CONFIG_DIR/cortado-cache"
+        cache_get() { return 1; }
+        cache_set() { :; }
+        init_cache() { return 1; }
+        _file_mtime() { printf '0\n'; }
+        is_compact() { [[ "${DISPLAY_MODE:-normal}" == compact || "${1:-}" == true ]]; }
         get_icon() { echo "$1"; }
+        get_icon_reply() { REPLY="$1"; }
         get_status() { echo ""; }
+        get_status_reply() { REPLY=; }
+        get_status_4level() { echo ""; }
+        get_status_4level_reply() { REPLY=; }
         progress_bar() { echo ""; }
+        progress_bar_reply() { REPLY=; }
         format_number() { echo "$1"; }
-        safe_int() { echo "${1:-0}"; }
-        safe_percent() { echo "0"; }
-        json_get() { echo "${3:-}"; }
-        json_get_int() { echo "${3:-0}"; }
+        format_number_reply() { REPLY="$1"; }
+        # A complete payload helper is also loaded by utils.sh.
+        with_payload_context() { local -r CTX_READY=true; "$@"; }
     fi
 
     for module_file in "$MODULES_DIR"/*.sh; do
         [ -f "$module_file" ] || continue
         module_name="${module_file##*/}"
         [ "$module_name" != utils.sh ] || continue
+        if [ "$module_name" = payload.sh ] && [ -f "$MODULES_DIR/utils.sh" ]; then continue; fi
         start_module_stderr
         # shellcheck source=/dev/null
         . "$module_file" 2>|"$stderr_file"
@@ -356,32 +367,32 @@ load_modules() {
 get_module_function() {
     local module_name="$1"
     case "$module_name" in
-        directory)    echo "module_directory" ;;
-        context)      echo "module_context" ;;
-        git)          echo "module_git" ;;
-        project)      echo "module_project" ;;
-        model)        echo "module_model" ;;
-        cost)         echo "module_cost" ;;
-        rate-limits)  echo "module_rate_limits" ;;
-        time)         echo "module_time" ;;
-        battery)      echo "module_battery" ;;
-        cpu)          echo "module_cpu" ;;
-        memory)       echo "module_memory" ;;
-        disk)         echo "module_disk" ;;
-        network)      echo "module_network" ;;
-        uptime)       echo "module_uptime" ;;
-        load)         echo "module_load" ;;
-        temperature)  echo "module_temperature" ;;
-        brightness)   echo "module_brightness" ;;
-        docker)       echo "module_docker" ;;
-        node)         echo "module_node" ;;
-        processes)    echo "module_processes" ;;
-        weather)      echo "module_weather" ;;
-        timezone)     echo "module_timezone" ;;
-        sandbox)      echo "module_sandbox" ;;
-        version)      echo "module_version" ;;
-        update)       echo "module_update" ;;
-        *)            echo "" ;;
+        directory)    REPLY="module_directory" ;;
+        context)      REPLY="module_context" ;;
+        git)          REPLY="module_git" ;;
+        project)      REPLY="module_project" ;;
+        model)        REPLY="module_model" ;;
+        cost)         REPLY="module_cost" ;;
+        rate-limits)  REPLY="module_rate_limits" ;;
+        time)         REPLY="module_time" ;;
+        battery)      REPLY="module_battery" ;;
+        cpu)          REPLY="module_cpu" ;;
+        memory)       REPLY="module_memory" ;;
+        disk)         REPLY="module_disk" ;;
+        network)      REPLY="module_network" ;;
+        uptime)       REPLY="module_uptime" ;;
+        load)         REPLY="module_load" ;;
+        temperature)  REPLY="module_temperature" ;;
+        brightness)   REPLY="module_brightness" ;;
+        docker)       REPLY="module_docker" ;;
+        node)         REPLY="module_node" ;;
+        processes)    REPLY="module_processes" ;;
+        weather)      REPLY="module_weather" ;;
+        timezone)     REPLY="module_timezone" ;;
+        sandbox)      REPLY="module_sandbox" ;;
+        version)      REPLY="module_version" ;;
+        update)       REPLY="module_update" ;;
+        *)            REPLY="" ;;
     esac
 }
 
@@ -393,10 +404,10 @@ run_module() {
     local module_name="$1"
     local current_dir="$2"
     local input_json="$3"
-
     # Get function name from registry
     local func_name
-    func_name=$(get_module_function "$module_name")
+    get_module_function "$module_name"
+    func_name=$REPLY
 
     if [ -z "$func_name" ]; then
         log_debug "Unknown module: $module_name"
@@ -411,14 +422,11 @@ run_module() {
 
     # Call the appropriate module function with correct arguments
     case "$module_name" in
-        directory)
+        directory|git|project)
             "$func_name" "$current_dir"
             ;;
         context|model|cost|rate-limits|version)
             "$func_name" "$input_json"
-            ;;
-        git|project)
-            "$func_name" "$current_dir"
             ;;
         *)
             # Modules that take no arguments or handle their own
@@ -490,7 +498,8 @@ validate_module_order() {
     IFS=',' read -r -a modules <<< "$order"
     for module in "${modules[@]}"; do
         remove_render_spaces module
-        func_name=$(get_module_function "$module")
+        get_module_function "$module"
+        func_name=$REPLY
         if [ -z "$func_name" ]; then
             log_debug "Warning: Unknown module in MODULE_ORDER: $module"
         fi
@@ -952,13 +961,29 @@ main() {
     fi
     load_modules "$module_stderr"
 
-    # Read input JSON from Claude Code
-    local input
-    input=$(cat)
+    # Resolve the OS in main so trusted configs can supply a uname hook.
+    # Issue #31 will replace render_os with CORTADO_OS.
+    local render_os
+    if [[ "${OSTYPE:-}" == darwin* && "${BASH_VERSINFO[5]}" == *-darwin* ]]; then
+        render_os=Darwin
+    elif [[ "${OSTYPE:-}" == linux* && "${BASH_VERSINFO[5]}" == *-linux* ]]; then
+        render_os=Linux
+    else
+        render_os=$(uname -s 2>/dev/null)
+    fi
 
-    # Extract current directory
-    local current_dir
-    current_dir=$(echo "$input" | jq -r '.workspace.current_dir // .cwd // "."' 2>/dev/null)
+    # Keep the original JSON argument for module hooks. A raw NUL is invalid
+    # JSON and read stops there. Strip trailing newlines as command substitution did.
+    local input
+    if IFS= read -r -d '' input; then
+        input=
+    fi
+    while [[ "$input" == *$'\n' ]]; do input=${input%$'\n'}; done
+    with_payload_context render_statusline "$module_stderr" "$input" <<< "$input"
+}
+
+render_statusline() {
+    local module_stderr="$1" input="$2" current_dir="${CTX_CURRENT_DIR:-}"
 
     # Load per-directory config if it exists
     # This allows project-specific statusline customization
@@ -1007,16 +1032,6 @@ main() {
 
     if [ "${DEBUG_MODE:-false}" = "true" ]; then
         validate_module_order "$module_order"
-    fi
-
-    # Issue #31 will replace render_os with CORTADO_OS.
-    local render_os
-    if [[ "${OSTYPE:-}" == darwin* && "${BASH_VERSINFO[5]}" == *-darwin* ]]; then
-        render_os=Darwin
-    elif [[ "${OSTYPE:-}" == linux* && "${BASH_VERSINFO[5]}" == *-linux* ]]; then
-        render_os=Linux
-    else
-        render_os=$(uname -s 2>/dev/null)
     fi
 
     # Build status line sections

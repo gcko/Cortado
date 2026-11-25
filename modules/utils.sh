@@ -6,6 +6,10 @@
 # It must be loaded first before any other modules.
 # =============================================================================
 
+# The payload and fixed-point helpers also serve the incomplete-install path.
+# shellcheck source=modules/payload.sh
+. "${BASH_SOURCE[0]%utils.sh}payload.sh"
+
 # =============================================================================
 # PORTABLE FILE STAT HELPERS
 # =============================================================================
@@ -163,67 +167,6 @@ cache_clear() {
     else
         rm -rf "$CACHE_DIR" 2>/dev/null
     fi
-}
-
-# =============================================================================
-# SAFE NUMBER HANDLING
-# =============================================================================
-# Functions to handle null/empty/invalid numeric values safely
-
-# Safely convert value to integer, with default
-# Usage: safe_int <value> [default]
-safe_int() {
-    local val="$1"
-    local default="${2:-0}"
-
-    # Handle null, empty, or invalid
-    if [ -z "$val" ] || [ "$val" = "null" ] || [ "$val" = "undefined" ]; then
-        echo "$default"
-        return
-    fi
-
-    # Remove any decimal portion
-    val="${val%%.*}"
-
-    # Require digits across the whole value after an optional leading minus.
-    # Pure Bash avoids grep on this hot path and also rejects embedded newlines.
-    local digits="${val#-}"
-    case "$digits" in
-        '' | *[!0-9]*) echo "$default" ;;
-        *) echo "$val" ;;
-    esac
-}
-
-# Safe division that avoids divide by zero
-# Usage: safe_divide <numerator> <denominator> [default]
-safe_divide() {
-    local num=$(safe_int "$1" 0)
-    local denom=$(safe_int "$2" 1)
-    local default="${3:-0}"
-
-    # Avoid divide by zero
-    if [ "$denom" -eq 0 ] 2>/dev/null; then
-        echo "$default"
-        return
-    fi
-
-    echo $((num / denom))
-}
-
-# Safe percentage calculation
-# Usage: safe_percent <value> <total> [default]
-safe_percent() {
-    local value=$(safe_int "$1" 0)
-    local total=$(safe_int "$2" 1)
-    local default="${3:-0}"
-
-    # Avoid divide by zero
-    if [ "$total" -eq 0 ] 2>/dev/null; then
-        echo "$default"
-        return
-    fi
-
-    echo $((value * 100 / total))
 }
 
 # =============================================================================
@@ -443,7 +386,7 @@ theme_status_glyph() {
 # Usage: _status_style <levels>
 #   levels 3 or 4 (4 includes the orange band); the ascii yellow label follows
 #   the band count: 3-level → "[WARN]", 4-level → "[MED]"
-_status_style() {
+_status_style_reply() {
     local levels="${1:-3}"
     local green="${STATUS_GREEN:-🟢}"
     local yellow="${STATUS_YELLOW:-🟡}"
@@ -470,72 +413,71 @@ _status_style() {
     esac
 
     if [ "$levels" -ge 4 ] 2>/dev/null; then
-        printf '%s %s %s %s\n' "$green" "$yellow" "$orange" "$red"
+        REPLY="$green $yellow $orange $red"
     else
-        printf '%s %s %s\n' "$green" "$yellow" "$red"
+        REPLY="$green $yellow $red"
     fi
 }
 
-# Echo the leading space placed before a status indicator outside compact mode,
-# shared by both status helpers so they stay consistent.
-_display_prefix() {
-    if [ "${DISPLAY_MODE:-normal}" != "compact" ]; then
-        echo " "
-    fi
-}
+# Return the status indicator including its normal-mode separator.
+get_status_reply() {
+    local value warning critical
+    safe_int_reply "$1" 0; value=$REPLY
+    safe_int_reply "$2" 60; warning=$REPLY
+    safe_int_reply "$3" 80; critical=$REPLY
 
-# Get status indicator based on value and thresholds
-# Usage: get_status <value> <warning_threshold> <critical_threshold>
-get_status() {
-    local value=$(safe_int "$1" 0)
-    local warning=$(safe_int "$2" 60)
-    local critical=$(safe_int "$3" 80)
+    REPLY=
+    [ "${USE_STATUS_INDICATORS:-true}" = "true" ] || return 0
 
-    if [ "${USE_STATUS_INDICATORS:-true}" != "true" ]; then
-        echo ""
-        return
-    fi
-
-    local green yellow red prefix
-    read -r green yellow red <<< "$(_status_style 3)"
-    prefix="$(_display_prefix)"
+    local green yellow red
+    _status_style_reply 3
+    IFS=$' \t\n' read -r green yellow red <<< "$REPLY"
 
     if [ "$value" -ge "$critical" ] 2>/dev/null; then
-        echo "${prefix}${red}"
+        REPLY=$red
     elif [ "$value" -ge "$warning" ] 2>/dev/null; then
-        echo "${prefix}${yellow}"
+        REPLY=$yellow
     else
-        echo "${prefix}${green}"
+        REPLY=$green
     fi
+    [ "${DISPLAY_MODE:-normal}" = "compact" ] || REPLY=" $REPLY"
 }
 
-# Get 4-level status indicator for rate limits
-# Usage: get_status_4level <value> <low> <medium> <high> <critical>
-# Returns: green (<low), yellow (low-medium), orange (medium-high), red (>=high)
-get_status_4level() {
-    local value=$(safe_int "$1" 0)
-    local low=$(safe_int "$2" 50)
-    local medium=$(safe_int "$3" 75)
-    local high=$(safe_int "$4" 95)
+get_status() {
+    get_status_reply "$@"
+    echo "$REPLY"
+}
 
-    if [ "${USE_STATUS_INDICATORS:-true}" != "true" ]; then
-        echo ""
-        return
-    fi
+# Return the green, yellow, orange or red band for rate-limit usage.
+get_status_4level_reply() {
+    local value low medium high
+    safe_int_reply "$1" 0; value=$REPLY
+    safe_int_reply "$2" 50; low=$REPLY
+    safe_int_reply "$3" 75; medium=$REPLY
+    safe_int_reply "$4" 95; high=$REPLY
 
-    local green yellow orange red prefix
-    read -r green yellow orange red <<< "$(_status_style 4)"
-    prefix="$(_display_prefix)"
+    REPLY=
+    [ "${USE_STATUS_INDICATORS:-true}" = "true" ] || return 0
+
+    local green yellow orange red
+    _status_style_reply 4
+    IFS=$' \t\n' read -r green yellow orange red <<< "$REPLY"
 
     if [ "$value" -ge "$high" ] 2>/dev/null; then
-        echo "${prefix}${red}"
+        REPLY=$red
     elif [ "$value" -ge "$medium" ] 2>/dev/null; then
-        echo "${prefix}${orange}"
+        REPLY=$orange
     elif [ "$value" -ge "$low" ] 2>/dev/null; then
-        echo "${prefix}${yellow}"
+        REPLY=$yellow
     else
-        echo "${prefix}${green}"
+        REPLY=$green
     fi
+    [ "${DISPLAY_MODE:-normal}" = "compact" ] || REPLY=" $REPLY"
+}
+
+get_status_4level() {
+    get_status_4level_reply "$@"
+    echo "$REPLY"
 }
 
 # =============================================================================
@@ -544,15 +486,17 @@ get_status_4level() {
 
 # Get icon based on USE_ICONS setting
 # Usage: get_icon <icon> <fallback_text>
-get_icon() {
-    local icon="$1"
-    local fallback="${2:-}"
-
+get_icon_reply() {
     if [ "${USE_ICONS:-true}" = "true" ]; then
-        echo "$icon"
+        REPLY="$1"
     else
-        echo "$fallback"
+        REPLY="${2:-}"
     fi
+}
+
+get_icon() {
+    get_icon_reply "$@"
+    echo "$REPLY"
 }
 
 # =============================================================================
@@ -563,7 +507,8 @@ get_icon() {
 # Usage: truncate_string <string> <max_length>
 truncate_string() {
     local str="$1"
-    local max_len=$(safe_int "$2" 0)
+    local max_len
+    safe_int_reply "$2" 0; max_len=$REPLY
 
     if [ "$max_len" -gt 0 ] && [ ${#str} -gt "$max_len" ]; then
         local truncated="${str:0:$((max_len-3))}"
@@ -594,9 +539,10 @@ is_compact() {
 
 # Generate a progress bar
 # Usage: progress_bar <percentage> [width] [filled_char] [empty_char]
-progress_bar() {
-    local percent=$(safe_int "$1" 0)
-    local width=$(safe_int "$2" "${PROGRESS_BAR_WIDTH:-8}")
+progress_bar_reply() {
+    local percent width
+    decimal_int_reply "$1" 0; percent=$REPLY
+    safe_int_reply "${2:-}" "${PROGRESS_BAR_WIDTH:-8}"; width=$REPLY
     local filled_char="${3:-${PROGRESS_BAR_FILLED:-█}}"
     local empty_char="${4:-${PROGRESS_BAR_EMPTY:-░}}"
 
@@ -604,8 +550,16 @@ progress_bar() {
     if [ "$percent" -lt 0 ]; then percent=0; fi
     if [ "$percent" -gt 100 ]; then percent=100; fi
 
-    # Avoid division by zero with width
-    if [ "$width" -le 0 ]; then width=8; fi
+    # Preserve the shell diagnostic for a malformed configured width, then
+    # omit the bar so the module can still show the measured percentage.
+    if [ "$width" -gt 0 ]; then
+        decimal_int_reply "$width" 8; width=$REPLY
+    elif [ "$width" -le 0 ] 2>/dev/null; then
+        width=8
+    else
+        REPLY=
+        return 0
+    fi
 
     local filled=$((percent * width / 100))
     local empty=$((width - filled))
@@ -622,7 +576,12 @@ progress_bar() {
         i=$((i + 1))
     done
 
-    echo "$bar"
+    REPLY=$bar
+}
+
+progress_bar() {
+    progress_bar_reply "$@"
+    echo "$REPLY"
 }
 
 # =============================================================================
@@ -633,7 +592,8 @@ progress_bar() {
 # "30s" (sub-minute). Distinct from format_time_remaining, which reports
 # relative units ("1d 0h", "now") and omits the seconds tier.
 format_cooldown() {
-    local secs=$(safe_int "$1" 0)
+    local secs
+    safe_int_reply "$1" 0; secs=$REPLY
 
     if [ "$secs" -ge 3600 ]; then
         echo "$((secs / 3600))h$((secs % 3600 / 60))m"
@@ -646,7 +606,8 @@ format_cooldown() {
 
 # Format seconds into human-readable time (e.g., "2h 15m" or "3d 5h")
 format_time_remaining() {
-    local seconds=$(safe_int "$1" 0)
+    local seconds
+    safe_int_reply "$1" 0; seconds=$REPLY
 
     if [ "$seconds" -le 0 ]; then
         echo "now"
@@ -671,16 +632,22 @@ format_time_remaining() {
 # =============================================================================
 
 # Format large numbers with k/M suffix
-format_number() {
-    local num=$(safe_int "$1" 0)
+format_number_reply() {
+    local num
+    safe_int_reply "$1" 0; num=$REPLY
 
     if [ "$num" -ge 1000000 ]; then
-        echo "$((num / 1000000))M"
+        REPLY="$((num / 1000000))M"
     elif [ "$num" -ge 1000 ]; then
-        echo "$((num / 1000))k"
+        REPLY="$((num / 1000))k"
     else
-        echo "$num"
+        REPLY=$num
     fi
+}
+
+format_number() {
+    format_number_reply "$@"
+    echo "$REPLY"
 }
 
 # =============================================================================

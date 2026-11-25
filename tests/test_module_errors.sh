@@ -344,5 +344,30 @@ done
 render "$SOURCE_TREE" "$PATH" clean 'MODULE_ORDER=version' 'MODULE_VERSION=true' 'TEST_VERSION_PAYLOAD=true'
 assert_eq 'Version receives the original payload as its only argument' "payload=$PAYLOAD" "$out"
 
+INCOMPLETE_TREE="$TEST_BASE/incomplete"
+mkdir "$INCOMPLETE_TREE"
+cp "$PROJECT_ROOT/cortado.sh" "$PROJECT_ROOT/cortado.conf" "$INCOMPLETE_TREE/" || exit 1
+cp -R "$PROJECT_ROOT/modules" "$INCOMPLETE_TREE/" || exit 1
+rm "$INCOMPLETE_TREE/modules/utils.sh" || exit 1
+# Observe the regular module diagnostics when the utility logger is absent.
+cat > "$INCOMPLETE_TREE/modules/zz-observe.sh" <<'EOF'
+log_debug() { printf '%s\n' "$1" >> "$CLAUDE_CONFIG_DIR/cortado.log"; }
+EOF
+PAYLOAD='{"model":{"display_name":"Claude Sonnet"},"context_window":{"used_percentage":25},"cost":{"total_cost_usd":0.5,"total_duration_ms":10000},"rate_limits":{"five_hour":{"used_percentage":42},"seven_day":{"used_percentage":10}}}'
+render "$INCOMPLETE_TREE" "$PATH" clean 'MODULE_ORDER=model'
+assert_eq 'A missing utils file leaves the exact model name visible' '🤖 Claude Sonnet' "$out"
+# shellcheck disable=SC2016
+render "$INCOMPLETE_TREE" "$PATH" clean 'MODULE_ORDER=context,cost,rate-limits,memory' \
+    'MODULE_MEMORY=true' 'DEBUG_MODE=true' 'TERMINAL_WIDTH=200' \
+    'vm_stat() { printf "%s\n" "Pages free: 10." "Pages active: 10." "Pages wired down: 10."; }' \
+    'sysctl() { case "$2" in hw.pagesize) echo 4096;; hw.memsize) echo 327680;; esac; }' \
+    'grep() { case "$*" in "MemTotal /proc/meminfo") echo "MemTotal: 16777216";; "MemAvailable /proc/meminfo") echo "MemAvailable: 12582912";; *) command grep "$@";; esac; }'
+assert_contains 'A missing utils file leaves context visible' '25%' "$out"
+assert_contains 'A missing utils file leaves cost and burn rate visible' "💰 \$0.50 @\$180.00/h" "$out"
+assert_contains 'A missing utils file leaves quota readings visible' '5h:42% 7d:10%' "$out"
+assert_contains 'A missing utils file leaves memory usage visible' '🧠 25%' "$out"
+assert_eq 'A missing utils file keeps process stderr quiet' '' "$err"
+assert_not_contains 'The shared helpers resolve in the incomplete install' 'command not found' "$log"
+
 printf '\nResults: %s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

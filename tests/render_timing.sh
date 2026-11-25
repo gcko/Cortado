@@ -9,7 +9,7 @@ report_percentiles() {
     fi
 
     # Nearest rank uses the first sample at or above each percentile.
-    LC_ALL=C awk -v samples="$samples" '
+    LC_ALL=C awk -v samples="$samples" -v limit="${3:-0}" '
         $0 !~ /^[0-9]+\.[0-9][0-9][0-9]$/ { invalid = 1 }
         NR == int((50 * samples + 99) / 100) { p50 = $1 }
         NR == int((95 * samples + 99) / 100) { p95 = $1 }
@@ -19,27 +19,50 @@ report_percentiles() {
                 exit 1
             }
             printf "Default render (n=%d): p50=%.3fs p95=%.3fs\n", samples, p50, p95
+            if (limit && int(p95 * 1000 + 0.5) > limit) {
+                printf "Default render p95 exceeds %d ms\n", limit > "/dev/stderr"
+                exit 1
+            }
         }
     ' <<< "$sorted"
+}
+
+record_render() {
+    local tree="$1" timings="$2" sample="$3" config
+    config=$(mktemp -d "$scratch/config.XXXXXX")
+    if ! { time CLAUDE_CONFIG_DIR="$config" CACHE_DIR="$config/cortado-cache" \
+        LC_ALL="$render_lc_all" LC_NUMERIC="$render_lc_numeric" \
+        /bin/bash "$tree/cortado.sh" < "$scratch/payload" > "$scratch/render" \
+            2> "$scratch/render.err"; } 2>> "$timings" ||
+        ! LC_ALL=C grep -Fq 'Timing fixture' "$scratch/render"; then
+        printf 'Default render %s failed\n' "$sample" >&2
+        cat "$scratch/render" "$scratch/render.err" >&2
+        return 1
+    fi
 }
 
 measure_default_renders() (
     set -euo pipefail
 
-    local samples="${1-20}" tool root scratch start_dir i config
+    local samples="${1-20}" base="${2:-}" root scratch start_dir i
+    local limit="${CORTADO_RENDER_P95_LIMIT_MS:-0}"
     local render_lc_all="${LC_ALL-}" render_lc_numeric="${LC_NUMERIC-}"
     local TIMEFORMAT='%3R'
-    if [ "$#" -gt 1 ] || ! [[ "$samples" =~ ^[1-9][0-9]{0,2}$ ]]; then
-        printf '%s\n' 'Usage: render_timing.sh [sample-count (1-999)]' >&2
+    if [ "$#" -gt 2 ] || ! [[ "$samples" =~ ^[1-9][0-9]{0,2}$ ]]; then
+        printf '%s\n' 'Usage: render_timing.sh [sample-count (1-999)] [base-tree]' >&2
         exit 2
     fi
-
-    for tool in jq bc; do
-        if ! command -v "$tool" >/dev/null; then
-            printf 'Cannot time renders without %s\n' "$tool" >&2
-            exit 1
-        fi
-    done
+    if ! [[ "$limit" =~ ^[0-9]{1,6}$ ]]; then
+        printf '%s\n' 'CORTADO_RENDER_P95_LIMIT_MS must be an integer in milliseconds' >&2
+        exit 2
+    fi
+    if [ -n "$base" ]; then
+        base=$(cd "$base" && pwd) || exit 2
+    fi
+    if ! command -v jq >/dev/null; then
+        printf '%s\n' 'Cannot time renders without jq' >&2
+        exit 1
+    fi
 
     root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
     scratch=$(mktemp -d)
@@ -57,20 +80,22 @@ measure_default_renders() (
     # Bash's time uses this shell's numeric locale. The renderer gets the caller's locale.
     unset LC_ALL
     export LC_NUMERIC=C
-    for ((i = 0; i < samples; i++)); do
-        config=$(mktemp -d "$scratch/config.XXXXXX")
-        if ! { time CLAUDE_CONFIG_DIR="$config" CACHE_DIR="$config/cortado-cache" \
-            LC_ALL="$render_lc_all" LC_NUMERIC="$render_lc_numeric" \
-            /bin/bash "$root/cortado.sh" < "$scratch/payload" > "$scratch/render" \
-                2> "$scratch/render.err"; } 2>> "$scratch/timings" ||
-            ! grep -Fq 'Timing fixture' "$scratch/render"; then
-            printf 'Default render %s failed\n' "$((i + 1))" >&2
-            cat "$scratch/render" "$scratch/render.err" >&2
-            exit 1
+    for ((i = 1; i <= samples; i++)); do
+        if [ -n "$base" ] && (( i % 2 )); then
+            record_render "$base" "$scratch/base.timings" "$i"
+        fi
+        record_render "$root" "$scratch/head.timings" "$i"
+        if [ -n "$base" ] && (( i % 2 == 0 )); then
+            record_render "$base" "$scratch/base.timings" "$i"
         fi
     done
 
-    report_percentiles "$samples" "$scratch/timings"
+    if [ -n "$base" ]; then
+        printf 'Base: '
+        report_percentiles "$samples" "$scratch/base.timings"
+        printf 'Head: '
+    fi
+    report_percentiles "$samples" "$scratch/head.timings" "$limit"
 )
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then

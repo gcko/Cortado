@@ -86,7 +86,8 @@ Cortado/
 - **Status indicators**: `get_status()` (3-level), `get_status_4level()` (4-level for rate limits)
 - **Icon handling**: `get_icon()` respects `USE_ICONS` setting
 - **Progress bar**: `progress_bar()` generates visual bars
-- **JSON helpers**: `json_get()`, `json_get_int()` for safe extraction
+- **Payload parsing**: `main` parses the statusline payload once (`modules/payload.sh`, a single `jq` call) into read-only `CTX_*` variables that input modules read, with missing and null kept distinct from 0. Quota cache, credential and API reads share that one `jq` process. `json_get()` and `json_get_int()` remain for standalone use.
+- **REPLY helpers**: `get_status`, `progress_bar` and the `safe_*` helpers set `REPLY` instead of being called through `$(...)`.
 - **Display mode checks**: `is_compact()`
 - **Logging**: `log_debug()` for debug mode
 
@@ -217,7 +218,7 @@ DEBUG_MODE="true"  # In config
 
 ## Pre-PR Checks
 
-[Cortado's GitHub Actions workflow](.github/workflows/ci.yml) runs on every pull request and on pushes to `main`. It checks macOS system Bash 3.2 with Homebrew and Apple jq, and Ubuntu. The render timing is informational. Windows is not supported (owner decision, 2026-11-25, on #24), so CI does not run it. Releases follow the `cortado-release` skill.
+[Cortado's GitHub Actions workflow](.github/workflows/ci.yml) runs on every pull request and on pushes to `main`. It checks macOS system Bash 3.2 with Homebrew and Apple jq, and Ubuntu. Each suite runs under a 300 s limit. On macOS the default-render timing (60 samples) blocks above p95 250 ms, a regression guard; the 150 ms target holds on a developer Mac, but GitHub's shared runner measures about 188 ms (#25). Ubuntu timing is informational. Windows is not supported (owner decision, 2026-11-25, on #24), so CI does not run it. Releases follow the `cortado-release` skill.
 
 Run the local checks below from the repository root before opening a pull request and again before merging. Paste their output into the pull request's `## Verification` section. This is the canonical local gate.
 
@@ -319,7 +320,7 @@ Development skills live in `.claude/skills/` (canonical). Each `.agents/skills/<
 
 ## Dependencies
 
-- **Required**: `jq` (JSON processor; without it the line reads `cortado: jq missing`), `bc` (calculator)
+- **Required**: `jq` (JSON processor; without it the line reads `cortado: jq missing`). `bc` is used only by the opt-in brightness, load and temperature modules.
 - **Optional**: Various CLI tools for specific modules (docker, node, etc.)
 
 ## Custom Config Directory

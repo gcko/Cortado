@@ -13,88 +13,66 @@
 # =============================================================================
 
 module_cost() {
-    local input="$1"
-    local icon=$(get_icon "${COST_ICON:-💰}" "COST:")
+    if [ "${CTX_READY:-}" != true ]; then
+        with_payload_context module_cost <<< "${1:-}"
+        return
+    fi
+
     local show_burn="${COST_SHOW_BURN_RATE:-true}"
     local show_tpm="${COST_SHOW_TPM:-true}"
     local tpm_icon="${COST_TPM_ICON:-⚡}"
-    local decimals=$(safe_int "${COST_DECIMAL_PLACES:-2}" 2)
     local compact="${COST_COMPACT:-false}"
     local min_display="${COST_MINIMUM_DISPLAY:-0.01}"
-    # COST_MINIMUM_DISPLAY can come from an untrusted project .cortado.conf and is
-    # interpolated into the `bc` comparison below — keep it a plain decimal so it can't
-    # carry a bc expression. (Sibling of the bc-sink validation added in #27.)
-    [[ "$min_display" =~ ^[0-9]+(\.[0-9]+)?$ ]] || min_display="0.01"
+    [[ "$min_display" =~ ^[0-9]+(\.[0-9]+)?$ ]] || min_display=0.01
 
-    local result=""
+    local LC_ALL=C
+    local session_cost="${CTX_COST_USD:--}" session_duration_ms cost="" result=""
+    decimal_int_reply "${CTX_DURATION_MS:--}" 0; session_duration_ms=$REPLY
 
-    # PERFORMANCE: parse all needed values from the JSON in one pass.
-    # session_cost stays a raw decimal string — it feeds printf/bc and the
-    # minimum-display gate, so it must not be truncated to an integer.
-    local json_data
-    json_data=$(echo "$input" | jq -r '{
-        cost: (.cost.total_cost_usd // 0),
-        duration_ms: (.cost.total_duration_ms // 0),
-        input_tokens: (.context_window.total_input_tokens // 0),
-        output_tokens: (.context_window.total_output_tokens // 0)
-    }' 2>/dev/null)
-
-    # Extract values from parsed data
-    local session_cost=$(echo "$json_data" | jq -r '.cost // 0' 2>/dev/null)
-    local session_duration_ms=$(echo "$json_data" | jq -r '.duration_ms // 0' 2>/dev/null)
-    local total_input_tokens=$(echo "$json_data" | jq -r '.input_tokens // 0' 2>/dev/null)
-    local total_output_tokens=$(echo "$json_data" | jq -r '.output_tokens // 0' 2>/dev/null)
-
-    # Handle null/empty values
-    [ -z "$session_cost" ] || [ "$session_cost" = "null" ] && session_cost="0"
-    session_duration_ms=$(safe_int "$session_duration_ms" 0)
-    if [ "$session_duration_ms" -lt 0 ] 2>/dev/null; then
-        session_duration_ms="0"
-    fi
-    total_input_tokens=$(safe_int "$total_input_tokens" 0)
-    total_output_tokens=$(safe_int "$total_output_tokens" 0)
-
-    # Check minimum display threshold
-    if [ "$session_cost" != "0" ]; then
-        local above_min
-        above_min=$(echo "$session_cost >= $min_display" | bc -l 2>/dev/null || echo "1")
-        if [ "$above_min" != "1" ]; then
-            return
+    if decimal_fixed_reply "$session_cost"; then
+        cost=$REPLY
+        if ! decimal_fixed_reply "$min_display" || [ "$cost" -lt "$REPLY" ]; then
+            # Positive sub-minimum costs have always hidden the segment.
+            # A zero-cost session can still report its token rate.
+            [ "$cost" -eq 0 ] || return 0
+            cost=
         fi
+    fi
 
-        # Format cost with configurable decimal places
-        local cost_fmt
-        cost_fmt=$(printf "%.${decimals}f" "$session_cost" 2>/dev/null || echo "$session_cost")
+    if [ -n "$cost" ]; then
+        local decimals cost_fmt icon
+        session_cost="${session_cost#-}"  # Normalize signed zero.
+        safe_int_reply "${COST_DECIMAL_PLACES:-2}" 2; decimals=$REPLY
+        printf -v cost_fmt "%.${decimals}f" "$session_cost" 2>/dev/null || cost_fmt="$session_cost"
+        get_icon_reply "${COST_ICON:-💰}" "COST:"; icon=$REPLY
         result="$icon \$${cost_fmt}"
 
-        # Burn rate (skip in compact mode)
-        if [ "$show_burn" = "true" ] && ! is_compact "$compact"; then
-            if [ "$session_duration_ms" != "0" ] && [ "$session_duration_ms" != "null" ]; then
-                local burn_rate_value
-                burn_rate_value=$(echo "scale=2; $session_cost * 3600000 / $session_duration_ms" | bc -l 2>/dev/null)
-                if [ -n "$burn_rate_value" ] && [ "$burn_rate_value" != "0" ]; then
-                    result="$result @\$${burn_rate_value}/h"
-                fi
+        if [ "$show_burn" = "true" ] && ! is_compact "$compact" &&
+            [ "$session_duration_ms" -gt 0 ]; then
+            # 3,600,000 ms/hour * 100 cents / 10^10 units = 9/250.
+            # Divide first to avoid overflow while retaining truncated cents.
+            local whole_units=$((cost / 250)) remainder=$((cost % 250))
+            local cents=$(((whole_units * 9 + remainder * 9 / 250) / session_duration_ms))
+            if [ "$cents" -gt 0 ]; then
+                local burn_rate
+                printf -v burn_rate '%d.%02d' "$((cents / 100))" "$((cents % 100))"
+                result="$result @\$${burn_rate#0}/h"
             fi
         fi
     fi
 
-    # TPM (skip in compact mode)
-    if [ "$show_tpm" = "true" ] && ! is_compact "$compact"; then
-        if [ "$session_duration_ms" != "0" ] && [ "$session_duration_ms" != "null" ]; then
-            local total_tokens=$((total_input_tokens + total_output_tokens))
-
-            if [ "$total_tokens" -gt 0 ]; then
-                local tpm_value
-                tpm_value=$(echo "scale=0; $total_tokens * 60000 / $session_duration_ms" | bc 2>/dev/null)
-                if [ -n "$tpm_value" ] && [ "$tpm_value" != "0" ]; then
-                    local tpm_fmt=$(format_number "$tpm_value")
-                    if [ -n "$result" ]; then
-                        result="$result ${tpm_icon}${tpm_fmt}tpm"
-                    else
-                        result="${tpm_icon}${tpm_fmt}tpm"
-                    fi
-                fi
+    if [ "$show_tpm" = "true" ] && ! is_compact "$compact" &&
+        [ "$session_duration_ms" -gt 0 ]; then
+        local total_input_tokens total_output_tokens total_tokens tpm_value
+        decimal_int_reply "${CTX_TOTAL_IN:--}" 0; total_input_tokens=$REPLY
+        decimal_int_reply "${CTX_TOTAL_OUT:--}" 0; total_output_tokens=$REPLY
+        total_tokens=$((total_input_tokens + total_output_tokens))
+        # Reject a total whose multiplication would exceed Bash's integer range.
+        if [ "$total_tokens" -gt 0 ] && [ "$total_tokens" -le 153722867280912 ]; then
+            tpm_value=$((total_tokens * 60000 / session_duration_ms))
+            if [ "$tpm_value" -gt 0 ]; then
+                format_number_reply "$tpm_value"
+                result="${result:+$result }${tpm_icon}${REPLY}tpm"
             fi
         fi
     fi
