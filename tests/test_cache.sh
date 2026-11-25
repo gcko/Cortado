@@ -19,11 +19,11 @@ assert_eq() {
     fi
 }
 
+TEST_BASE="$(mktemp -d "${TMPDIR:-/tmp}/cortado-cache-test.XXXXXX")"
+trap 'rm -rf "$TEST_BASE"' EXIT
+CLAUDE_CONFIG_DIR="$TEST_BASE"
 # shellcheck source=/dev/null
 . "$SCRIPT_DIR/modules/utils.sh"
-
-# Sandbox: override CACHE_DIR so the suite never touches the real ~/.claude/cortado-cache.
-TEST_BASE="$(mktemp -d "${TMPDIR:-/tmp}/cortado-cache-test.XXXXXX")"
 CACHE_DIR="$TEST_BASE/cache"
 
 # init_cache creates an owner-only directory -- cache keys (weather, wan_ip, update_check…)
@@ -70,6 +70,63 @@ assert_eq "cache_get rejects a '..' key"               "1"          "$?"
 cache_set "sub/key" "value"
 assert_eq "cache_set accepts a key with a slash"       "0"          "$?"
 assert_eq "cache_get returns the value for a slash key" "value"     "$(cache_get sub/key)"
+
+echo "=== interrupted or failed cache writes keep the previous entry ==="
+cache_set atomic original
+{ (
+    # The pre-fix writer uses echo. The staged writer uses printf.
+    # shellcheck disable=SC2329
+    interrupt_write() {
+        builtin printf '%s' partial
+        : > "$TEST_BASE/writing"
+        /bin/sh -c 'kill -KILL "$PPID"'
+        return 1
+    }
+    # shellcheck disable=SC2329
+    echo() { interrupt_write; }
+    # shellcheck disable=SC2329
+    printf() { interrupt_write; }
+    cache_set atomic replacement
+); } 2>/dev/null
+assert_eq "the writer was interrupted after emitting bytes" "yes" "$([ -f "$TEST_BASE/writing" ] && echo yes)"
+assert_eq "a killed writer leaves the previous cache entry readable" "original" "$(cache_get atomic)"
+
+# Remove the temp left by the uncatchable signal before testing cleanup.
+for staging in "$CACHE_DIR"/atomic.*; do
+    [ -f "$staging" ] && rm -f "$staging"
+done
+cache_set atomic original
+for fault in mktemp write mv; do
+    (
+        # These stubs are invoked through the sourced cache helpers.
+        # shellcheck disable=SC2329
+        fail_write() { builtin printf '%s' partial; return 1; }
+        # shellcheck disable=SC2329
+        case "$fault" in
+            mktemp) mktemp() { builtin printf '%s\n' "$CACHE_DIR/atomic.failed"; return 1; } ;;
+            write) echo() { fail_write; }; printf() { fail_write; } ;;
+            mv) mv() { return 1; } ;;
+        esac
+        cache_set atomic replacement
+    )
+    assert_eq "$fault failure is reported" "1" "$?"
+    assert_eq "$fault failure keeps the previous entry" "original" "$(cache_get atomic)"
+    assert_eq "$fault failure leaves no staging file" "" "$(find "$CACHE_DIR" -name 'atomic.*' -print)"
+done
+
+(
+    umask 000
+    cache_set private replacement
+)
+assert_eq "a replacement cache file is owner-only" "-rw-------" "$(ls -ld "$CACHE_DIR/private" | cut -c1-10)"
+
+mkdir "$CACHE_DIR/directory"
+chmod 700 "$CACHE_DIR/directory"
+cache_set directory replacement 2>/dev/null
+assert_eq "a directory at the cache destination rejects the write" "1" "$?"
+assert_eq "a directory destination keeps its mode" "drwx------" "$(ls -ld "$CACHE_DIR/directory" | cut -c1-10)"
+chmod 700 "$CACHE_DIR/directory"
+assert_eq "a directory destination acquires no staged entry" "" "$(ls -A "$CACHE_DIR/directory")"
 
 # cache_clear removes a single named key
 cache_set "update_check" "v1"

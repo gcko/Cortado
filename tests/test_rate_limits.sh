@@ -139,7 +139,7 @@ touch -t 200001010000 "$BACKOFF_FILE"
 out="$(_check_backoff)"; rc=$?
 assert_eq "expired backoff returns non-zero"                  "1" "$rc"
 assert_eq "expired backoff prints nothing"                   ""  "$out"
-assert_eq "expired backoff deletes the stale file"            "1" "$([ ! -f "$BACKOFF_FILE" ] && echo 1 || echo 0)"
+assert_eq "expired backoff leaves the marker for replacement" "1" "$([ -f "$BACKOFF_FILE" ] && echo 1 || echo 0)"
 
 # Empty first line -> duration falls back to RATE_BACKOFF_SECONDS, fresh -> active.
 RATE_BACKOFF_SECONDS=999999

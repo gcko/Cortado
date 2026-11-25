@@ -14,7 +14,7 @@ PASS=0
 FAIL=0
 CURL_CALLS="$TEST_ROOT/curl-called"
 KEYCHAIN_CALLS="$TEST_ROOT/keychain-called"
-CURL_CONFIG="$TEST_ROOT/curl-config"
+CURL_AUTH_OK="$TEST_ROOT/curl-auth-ok"
 : > "$CURL_CALLS"
 : > "$KEYCHAIN_CALLS"
 assert_eq() {
@@ -43,8 +43,10 @@ curl() {
             *) shift ;;
         esac
     done
-    [ -n "$output" ] && [ -n "$headers" ] && [ -n "$config" ] || return 1
-    cat "$config" > "$CURL_CONFIG"
+    [ -n "$output" ] && [ -n "$headers" ] && [ "$config" = - ] || return 1
+    if [ "$(cat)" = "$expected_config" ]; then
+        : > "$CURL_AUTH_OK"
+    fi
     printf '%s' synthetic-usage > "$output"
     : > "$headers"
     printf '%s' 200
@@ -68,41 +70,42 @@ assert_rejected_file() {
 }
 assert_rejected() { write_credentials "$2"; assert_rejected_file "$1"; }
 assert_accepted() {
-    local desc="$1" expected="$3" token usage rc
+    local desc="$1" expected="$3" token usage rc expected_config
+    expected_config=$(printf 'header = "Authorization: Bearer %s"\n' "$expected")
     write_credentials "$2"
     : > "$CURL_CALLS"
+    rm -f "$CURL_AUTH_OK"
     token=$(_get_claude_token)
     assert_eq "$desc: token preserved" "$expected" "$token"
     usage=$(_get_claude_usage); rc=$?
     assert_eq "$desc: usage succeeds" "0" "$rc"
     assert_eq "$desc: synthetic response" "synthetic-usage" "$usage"
     assert_eq "$desc: exactly one stubbed call" "call" "$(cat "$CURL_CALLS")"
-    assert_eq "$desc: correct authorization" \
-        "$(printf 'header = "Authorization: Bearer %s"\n' "$expected")" "$(cat "$CURL_CONFIG")"
+    assert_eq "$desc: correct authorization on stdin" yes "$([ -f "$CURL_AUTH_OK" ] && echo yes)"
 }
 echo '=== Credential Parser and Request Tests ==='
-assert_accepted "normal token" '{"claudeAiOauth":{"accessToken":"fake-token"}}' "fake-token"
-assert_accepted "MCP token is not selected" '{"mcpOAuth":{"server":{"accessToken":"fake-mcp"}},"claudeAiOauth":{"accessToken":"fake-claude"}}' "fake-claude"
-assert_accepted "echo-option-like token" '{"claudeAiOauth":{"accessToken":"-n"}}' "-n"
+assert_accepted "normal token" '{"claudeAiOauth":{"accessToken":"test-token-REDACTED"}}' "test-token-REDACTED"
+assert_accepted "MCP token is not selected" '{"mcpOAuth":{"server":{"accessToken":"test-token-REDACTED-mcp"}},"claudeAiOauth":{"accessToken":"test-token-REDACTED"}}' "test-token-REDACTED"
+assert_accepted "bearer punctuation is preserved" '{"claudeAiOauth":{"accessToken":"test-token-REDACTED._~+/="}}' "test-token-REDACTED._~+/="
 assert_rejected "empty file" ''
 assert_rejected "malformed JSON" '{not-json'
-assert_rejected "valid token then malformed trailing JSON" '{"claudeAiOauth":{"accessToken":"fake-token"}} {'
-assert_rejected "two credential documents" '{"claudeAiOauth":{"accessToken":"fake-one"}} {"claudeAiOauth":{"accessToken":"fake-two"}}'
-assert_rejected "valid token then empty document" '{"claudeAiOauth":{"accessToken":"fake-token"}} {}'
-assert_rejected "array root" '[{"claudeAiOauth":{"accessToken":"fake-token"}}]'
+assert_rejected "valid token then malformed trailing JSON" '{"claudeAiOauth":{"accessToken":"test-token-REDACTED"}} {'
+assert_rejected "two credential documents" '{"claudeAiOauth":{"accessToken":"test-token-REDACTED-one"}} {"claudeAiOauth":{"accessToken":"test-token-REDACTED-two"}}'
+assert_rejected "valid token then empty document" '{"claudeAiOauth":{"accessToken":"test-token-REDACTED"}} {}'
+assert_rejected "array root" '[{"claudeAiOauth":{"accessToken":"test-token-REDACTED"}}]'
 assert_rejected "null root" 'null'
 assert_rejected "missing OAuth object" '{}'
-assert_rejected "non-object OAuth value" '{"claudeAiOauth":"fake-token"}'
+assert_rejected "non-object OAuth value" '{"claudeAiOauth":"test-token-REDACTED"}'
 assert_rejected "MCP-only credentials" '{"mcpOAuth":{"server":{"accessToken":"fake-mcp"}}}'
 assert_rejected "missing token" '{"claudeAiOauth":{}}'
 assert_rejected "null token" '{"claudeAiOauth":{"accessToken":null}}'
 assert_rejected "false token" '{"claudeAiOauth":{"accessToken":false}}'
 assert_rejected "true token" '{"claudeAiOauth":{"accessToken":true}}'
 assert_rejected "numeric token" '{"claudeAiOauth":{"accessToken":123}}'
-assert_rejected "array token" '{"claudeAiOauth":{"accessToken":["fake-token"]}}'
-assert_rejected "object token" '{"claudeAiOauth":{"accessToken":{"value":"fake-token"}}}'
+assert_rejected "array token" '{"claudeAiOauth":{"accessToken":["test-token-REDACTED"]}}'
+assert_rejected "object token" '{"claudeAiOauth":{"accessToken":{"value":"test-token-REDACTED"}}}'
 assert_rejected "empty token" '{"claudeAiOauth":{"accessToken":""}}'
-write_credentials '{"claudeAiOauth":{"accessToken":"fake-token"}}'
+write_credentials '{"claudeAiOauth":{"accessToken":"test-token-REDACTED"}}'
 chmod 640 "$CREDS_FILE"
 assert_rejected_file "group-readable file"
 chmod 604 "$CREDS_FILE"
@@ -110,8 +113,8 @@ assert_rejected_file "world-readable file"
 rm -f "$CREDS_FILE"
 assert_rejected_file "missing file"
 # Check jq status independently of its filter.
-write_credentials '{"claudeAiOauth":{"accessToken":"fake-token"}}'
-jq() { printf '%s\n' fake-partial-output; return 1; }
+write_credentials '{"claudeAiOauth":{"accessToken":"test-token-REDACTED"}}'
+jq() { printf '%s\n' test-token-REDACTED-partial; return 1; }
 assert_rejected_file "jq failure after producing output"
 unset -f jq
 jq() { return 127; }
