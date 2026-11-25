@@ -58,8 +58,10 @@ export XDG_CONFIG_HOME="$TEST_BASE/xdg"
 mkdir "$XDG_CONFIG_HOME" || exit 1
 "$real_git" init -q "$repo" || exit 1
 "$real_git" -C "$repo" symbolic-ref HEAD refs/heads/fixture || exit 1
+# Make the porcelain stream larger than a pipe buffer.
+printf -v filename_padding '%0200d' 0
 for ((i=1; i<=501; i++)); do
-    : > "$repo/change-$i" || exit 1
+    : > "$repo/change-$filename_padding-$i" || exit 1
 done
 
 mkdir "$TEST_BASE/bin" || exit 1
@@ -103,12 +105,40 @@ out=$(render_git "$payload")
 assert_eq "a cache hit shows the bounded count for 501 changes" "🌿 fixture [+] 📝 500+" "$out"
 assert_eq "a cache hit with 501 changes reuses the single git status" "1" "$(status_calls)"
 
-# A failed status parser leaves the branch visible and the next render retries.
+new_render_config
+printf '%s\n' 'DISPLAY_MODE="compact"' >> "$render_config/cortado.conf"
+out=$(render_git "$payload")
+assert_eq "a large successful status keeps its symbols in compact mode" "🌿 fixture [+]" "$out"
+
 repo="$TEST_BASE/small-repo"
 "$real_git" init -q "$repo" || exit 1
 "$real_git" -C "$repo" symbolic-ref HEAD refs/heads/fixture || exit 1
 : > "$repo/change-1" || exit 1
 payload=$(jq -nc --arg dir "$repo" '{workspace:{current_dir:$dir}}') || exit 1
+
+# A failed Git status must show an absence and must not fill the cache.
+new_render_config
+mv "$TEST_BASE/bin/git" "$TEST_BASE/bin/git-counting" || exit 1
+cat > "$TEST_BASE/bin/git" <<'EOF'
+#!/bin/bash
+if [ "$1" = status ]; then
+    printf '%s\n' status >> "$GIT_STATUS_LOG"
+    echo 'git status diagnostic' >&2
+    exit 128
+fi
+exec "$REAL_GIT" "$@"
+EOF
+chmod +x "$TEST_BASE/bin/git" || exit 1
+out=$(render_git "$payload")
+assert_eq "a failed git status shows that Git status is unavailable" "🌿 fixture [--]" "$out"
+rm "$TEST_BASE/bin/git" || exit 1
+mv "$TEST_BASE/bin/git-counting" "$TEST_BASE/bin/git" || exit 1
+
+out=$(render_git "$payload")
+assert_eq "after git status recovery the next render shows the dirty file" "🌿 fixture [+] 📝 1" "$out"
+assert_eq "after git status recovery the next render reruns git status" "2" "$(status_calls)"
+
+# A failed status parser leaves the branch visible and the next render retries.
 new_render_config
 
 real_awk=$(command -v awk) || exit 1

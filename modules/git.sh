@@ -142,14 +142,16 @@ module_git() {
         fi
 
         if [ "$show_status" = "true" ] || [ "$show_count" = "true" ]; then
-            # Keep the sample bounded while counting the same stream when needed.
+            # Bound the sample, but drain the stream so Git can exit normally.
             local status_output
-            if status_output=$(git status --porcelain 2>/dev/null |
-                awk -v limit="$max_lines" -v count_all="$show_file_count" '
-                    NR <= limit { print }
-                    count_all == "false" && NR == limit { exit }
-                    END { printf "%.0f\n", NR }
-                ' 2>/dev/null); then
+            if status_output=$(
+                set -o pipefail
+                git status --porcelain 2>/dev/null |
+                    awk -v limit="$max_lines" '
+                        NR <= limit { print }
+                        END { printf "%.0f\n", NR }
+                    ' 2>/dev/null
+            ); then
                 status_count=${status_output##*$'\n'}
                 git_porcelain=${status_output%"$status_count"}
                 git_porcelain=${git_porcelain%$'\n'}
