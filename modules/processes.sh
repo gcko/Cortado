@@ -22,23 +22,26 @@ module_processes() {
     local total_procs=""
     local running_procs=""
 
-    if [ "$(uname)" = "Darwin" ]; then
-        # macOS
-        total_procs=$(ps aux 2>/dev/null | wc -l | tr -d ' ')
-        total_procs=$((total_procs - 1))  # Subtract header
-        running_procs=$(ps aux 2>/dev/null | awk '$8 ~ /R/ {count++} END {print count+0}')
+    if [ "$(uname)" != "Darwin" ] && [ -d /proc ]; then
+        total_procs=$(ls -d /proc/[0-9]* 2>/dev/null | wc -l)
+        running_procs=$(grep -lE '^State:[[:space:]]*R' /proc/*/status 2>/dev/null | wc -l)
     else
-        # Linux
-        if [ -d /proc ]; then
-            total_procs=$(ls -d /proc/[0-9]* 2>/dev/null | wc -l)
-            running_procs=$(grep -lE '^State:[[:space:]]*R' /proc/*/status 2>/dev/null | wc -l)
-        else
-            total_procs=$(ps aux 2>/dev/null | wc -l | tr -d ' ')
-            total_procs=$((total_procs - 1))
+        local snapshot counts
+        if ! snapshot=$(ps aux 2>/dev/null) || [ -z "$snapshot" ]; then
+            echo "$icon --"
+            return
         fi
+
+        # Count both readings from the same snapshot, skipping the header.
+        counts=$(printf '%s\n' "$snapshot" | awk '
+            NF && ++lines > 1 { total++; if ($8 ~ /R/) running++ }
+            END { if (lines) print total+0, running+0 }
+        ')
+        IFS=' ' read -r total_procs running_procs <<< "$counts"
     fi
 
     if [ -z "$total_procs" ]; then
+        echo "$icon --"
         return
     fi
 

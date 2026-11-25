@@ -152,5 +152,47 @@ lines=$(wc -l < "$sb/.usage_history" 2>/dev/null | tr -d ' ')
 assert_eq "a malformed reset time adds one history line, not several" "1" "${lines:-0}"
 
 echo ""
+echo "=== missing percentages leave the sibling reading visible ==="
+
+sb=$(sandbox missing-utilization)
+printf '%s\n' 'RATE_SHOW_TIME_REMAINING="false"' 'RATE_SHOW_PROGRESS_BAR="false"' \
+    >> "$sb/cortado.conf"
+out=$(render "$sb" '{"rate_limits":{"five_hour":{},"seven_day":{"used_percentage":42}}}')
+assert_eq "a missing payload percentage leaves the other window visible" "5h:-- 7d:42%" "$out"
+out=$(render "$sb" '{"rate_limits":{"five_hour":{"used_percentage":0},"seven_day":{"used_percentage":null}}}')
+assert_eq "payload zero stays zero while a null sibling shows absence" "5h:0% 7d:--" "$out"
+assert_eq "partial payloads do not invent history values" "" "$(cat "$sb/.usage_history" 2>/dev/null)"
+
+printf '%s\n' '{"five_hour":{},"seven_day":{"utilization":42}}' > "$sb/cortado-cache/rate_limits_usage"
+out=$(render "$sb" "$NO_LIMITS")
+assert_eq "cached API data with missing utilization shows absence" "5h:-- 7d:42%" "$out"
+printf '%s\n' '{"five_hour":{"utilization":0},"seven_day":{"utilization":null}}' > "$sb/cortado-cache/rate_limits_usage"
+out=$(render "$sb" "$NO_LIMITS")
+assert_eq "cached API zero stays zero while null utilization shows absence" "5h:0% 7d:--" "$out"
+
+echo ""
+echo "=== quota indicator spacing follows display mode ==="
+
+sb=$(sandbox indicator-spacing)
+printf '%s\n' 'COLOR_THEME="default"' 'RATE_SHOW_USAGE_STATUS="true"' \
+    'RATE_SHOW_TIME_REMAINING="false"' 'TERMINAL_WIDTH=200' >> "$sb/cortado.conf"
+
+low='{"rate_limits":{"five_hour":{"used_percentage":42},"seven_day":{"used_percentage":65}}}'
+high='{"rate_limits":{"five_hour":{"used_percentage":80},"seven_day":{"used_percentage":97}}}'
+assert_eq "normal emoji indicators have one space at the lower bands" "5h:42% 🟢 7d:65% 🟡" "$(render "$sb" "$low")"
+assert_eq "normal emoji indicators have one space at the upper bands" "5h:80% 🟠 7d:97% 🔴" "$(render "$sb" "$high")"
+
+printf '%s\n' 'STATUS_STYLE="ascii"' >> "$sb/cortado.conf"
+assert_eq "normal ASCII indicators have one space at the lower bands" "5h:42% [OK] 7d:65% [MED]" "$(render "$sb" "$low")"
+assert_eq "normal ASCII indicators have one space at the upper bands" "5h:80% [HIGH] 7d:97% [CRIT]" "$(render "$sb" "$high")"
+
+printf '%s\n' 'STATUS_STYLE="dots"' >> "$sb/cortado.conf"
+assert_eq "normal dots have one space" "5h:42% ● 7d:65% ●" "$(render "$sb" "$low")"
+
+printf '%s\n' 'STATUS_STYLE="emoji"' 'STATUS_GREEN="g"' 'STATUS_YELLOW="y"' \
+    'DISPLAY_MODE="compact"' >> "$sb/cortado.conf"
+assert_eq "compact custom indicators attach directly to percentages" "5h:42%g 7d:65%y" "$(render "$sb" "$low")"
+
+echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

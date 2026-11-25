@@ -2,36 +2,45 @@
 # =============================================================================
 # Version Module - Shows Cortado version briefly on startup
 # =============================================================================
-# Displays the current version for the first 2 minutes after Claude Code starts,
-# then automatically hides. Uses a session start marker file.
+# The display window starts when Cortado first sees a session ID.
 #
 # Configuration options:
-#   VERSION_SHOW_DURATION   - Seconds to show version after startup (default: 120)
+#   VERSION_SHOW_DURATION   - Seconds to show version for a new session (default: 120)
 #   VERSION_ICON            - Icon to display (default: coffee emoji)
 # =============================================================================
 
 module_version() {
+    # run_module currently keeps the payload in its local input_json and
+    # dispatches version without an argument. Bash exposes that caller local.
+    local payload="${1:-${input_json:-}}"
+    local session_key
+    session_key=$(printf '%s' "$payload" | jq -r '
+        .session_id | strings | select(length > 0) | @base64
+        | select(length <= 200) | gsub("/"; "_") | gsub("[+]"; "-")
+    ' 2>/dev/null)
+    [ -n "$session_key" ] || return 0
+
     local show_duration="${VERSION_SHOW_DURATION:-120}"
-    local session_file="$CACHE_DIR/cortado_session_start"
-    local now
+    case "$show_duration" in
+        *[!0-9]*) show_duration=120 ;;
+    esac
+    [ "$show_duration" -ge 0 ] 2>/dev/null || show_duration=120
+
+    local now session_start
     now=$(date +%s)
-
-    init_cache
-
-    # Create session marker on first invocation
-    if [ ! -f "$session_file" ]; then
-        echo "$now" > "$session_file" 2>/dev/null
-    fi
-
-    local session_start
-    session_start=$(cat "$session_file" 2>/dev/null || echo "$now")
+    local cache_key="version_session_${session_key}"
+    # Keep the first-seen time after the badge expires, including when
+    # multiple Claude Code sessions render against the same config directory.
+    session_start=$(cache_get "$cache_key" 2147483647)
+    case "$session_start" in
+        ''|*[!0-9]*|0*)
+            session_start="$now"
+            cache_set "$cache_key" "$session_start" || return 0
+            ;;
+    esac
 
     local elapsed=$((now - session_start))
-
-    # Only show version during startup window
-    if [ "$elapsed" -ge "$show_duration" ]; then
-        return
-    fi
+    [ "$elapsed" -lt "$show_duration" ] || return 0
 
     local version=""
     local version_file="$SCRIPT_DIR/VERSION"
