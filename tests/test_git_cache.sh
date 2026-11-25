@@ -1,5 +1,5 @@
 #!/bin/bash
-# ABOUTME: Regression-lock for modules/git.sh TTL cache helpers (#26)
+# ABOUTME: Regression tests for Git caching and large-repository rendering
 # ABOUTME: Run with: bash tests/test_git_cache.sh
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -32,12 +32,14 @@ assert_match() {
     fi
 }
 
+TEST_BASE="$(mktemp -d "${TMPDIR:-/tmp}/cortado-git-cache-test.XXXXXX")" || exit 1
+trap 'rm -rf "$TEST_BASE"' EXIT
+export CLAUDE_CONFIG_DIR="$TEST_BASE"
 # shellcheck source=/dev/null
 . "$SCRIPT_DIR/modules/utils.sh"
 # shellcheck source=/dev/null
 . "$SCRIPT_DIR/modules/git.sh"
 
-TEST_BASE="$(mktemp -d "${TMPDIR:-/tmp}/cortado-git-cache-test.XXXXXX")"
 CACHE_DIR="$TEST_BASE/cache"
 init_cache
 
@@ -74,7 +76,40 @@ assert_match "module_git renders with TTL disabled" 'GIT:|🌿' "$out"
 # Prefer GIT: fallback since USE_ICONS=false
 assert_match "module_git shows branch or git label" '.' "$out"
 
-rm -rf "$TEST_BASE"
+# A fresh render in a large repo reports the exact count with one status call.
+repo="$TEST_BASE/large-repo"
+real_git=$(command -v git) || exit 1
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+"$real_git" init -q "$repo" || exit 1
+"$real_git" -C "$repo" symbolic-ref HEAD refs/heads/fixture || exit 1
+for ((i=1; i<=501; i++)); do
+    : > "$repo/change-$i" || exit 1
+done
+
+render_config=$(mktemp -d "$TEST_BASE/render.XXXXXX") || exit 1
+mkdir "$TEST_BASE/bin" || exit 1
+cat > "$TEST_BASE/bin/git" <<'EOF'
+#!/bin/bash
+if [ "$1" = status ]; then
+    printf '%s\n' status >> "$GIT_STATUS_LOG"
+fi
+exec "$REAL_GIT" "$@"
+EOF
+chmod +x "$TEST_BASE/bin/git" || exit 1
+: > "$TEST_BASE/status.log"
+cat > "$render_config/cortado.conf" <<'EOF'
+MODULE_ORDER="git"
+MODULE_GIT="true"
+GIT_CACHE_TTL="60"
+EOF
+chmod 600 "$render_config/cortado.conf" || exit 1
+payload=$(jq -nc --arg dir "$repo" '{workspace:{current_dir:$dir}}') || exit 1
+out=$(printf '%s' "$payload" | PATH="$TEST_BASE/bin:$PATH" REAL_GIT="$real_git" \
+    GIT_STATUS_LOG="$TEST_BASE/status.log" CLAUDE_CONFIG_DIR="$render_config" \
+    /bin/bash "$SCRIPT_DIR/cortado.sh")
+assert_eq "a cache miss shows the exact count for 501 changes" "🌿 fixture [+] 📝 501" "$out"
+assert_eq "a cache miss with 501 changes runs git status once" "1" \
+    "$(awk 'END {print NR}' "$TEST_BASE/status.log")"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
