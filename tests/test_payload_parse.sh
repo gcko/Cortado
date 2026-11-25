@@ -74,6 +74,7 @@ assert_eq "the default startup render launches exactly one jq process" \
     '1' "$(awk 'END {print NR}' "$sandbox/jq.calls")"
 assert_contains "missing context usage reads as absent" '📊 --' "$rendered"
 assert_contains "missing quota readings read as absent" '5h:-- 7d:--' "$rendered"
+assert_not_contains "an absent spend limit adds no text" 'spend:' "$rendered"
 
 usage_seed='{"five_hour_opus":{"utilization":42},"seven_day_sonnet":{"utilization":10}}' render '{}'
 assert_eq "the default render with a fresh quota cache launches exactly one jq process" \
@@ -93,12 +94,35 @@ for credential_suffix in '{}' '\000'; do
 done
 unset credential_suffix
 
-render '{"model":{"display_name":"Claude Opus"},"cost":{"total_cost_usd":0.5234,"total_duration_ms":12345},"context_window":{"context_window_size":200000,"current_usage":{"input_tokens":50000},"total_input_tokens":150000,"total_output_tokens":25000},"rate_limits":{"five_hour":{"used_percentage":42},"seven_day":{"used_percentage":10}}}'
-assert_eq "the default post-turn render launches exactly one jq process" \
+render '{"model":{"display_name":"Claude Opus"},"cost":{"total_cost_usd":0.5234,"total_duration_ms":12345},"context_window":{"context_window_size":200000,"current_usage":{"input_tokens":50000},"total_input_tokens":150000,"total_output_tokens":25000},"rate_limits":{"five_hour":{"used_percentage":42},"seven_day":{"used_percentage":10},"spend_limit":{"used_percentage":25,"used_usd":12.4,"limit_usd":50,"period":"monthly","resets_at":1740787200}}}'
+assert_eq "the default post-turn render with a spend limit launches exactly one jq process" \
     '1' "$(awk 'END {print NR}' "$sandbox/jq.calls")"
 assert_eq "cost rendering launches no bc process" '0' "$(awk 'END {print NR}' "$sandbox/bc.calls" 2>/dev/null || printf 0)"
 assert_contains "fixed-point cost retains cent truncation and integer TPM" "\$0.52 @\$152.63/h ⚡850ktpm" "$rendered"
 assert_contains "the parsed context token count still drives the estimate" '25% 🟢 (110k→⚡)' "$rendered"
+assert_contains "spend shows estimated dollars against the budget next to the other quotas" \
+    "5h:42% 🟢 7d:10% 🟢 spend:\$12.40/\$50.00" "$rendered"
+
+spend_config=('MODULE_ORDER="rate-limits"' 'COLOR_THEME="monochrome"')
+render '{"rate_limits":{"spend_limit":{"used_percentage":124.6}}}' "${spend_config[@]}"
+assert_contains "spend above the limit stays above 100 percent when USD is missing" \
+    '5h:-- 7d:-- spend:125% [CRIT]' "$rendered"
+render '{"rate_limits":{"spend_limit":{"used_percentage":0,"used_usd":null,"limit_usd":50}}}' "${spend_config[@]}"
+assert_contains "a measured zero percentage survives null dollar usage" 'spend:0% [OK]' "$rendered"
+render '{"rate_limits":{"spend_limit":{"used_usd":0,"limit_usd":50}}}' "${spend_config[@]}" \
+    'RATE_SHOW_5H="false"' 'RATE_SHOW_7D="false"'
+assert_eq "spend has its own reading even when both quota windows are hidden" "spend:\$0.00/\$50.00" "$rendered"
+render '{"rate_limits":{"spend_limit":{"used_percentage":25,"used_usd":"12.4","limit_usd":50}}}' \
+    "${spend_config[@]}" 'RATE_SHOW_USAGE_STATUS="false"'
+assert_eq "non-numeric dollars fall back to the measured percentage with indicators off" \
+    '5h:-- 7d:-- spend:25%' "$rendered"
+
+for spend in null '{}' '"invalid"' '{"used_percentage":null}' '{"used_percentage":"25"}' \
+    '{"used_percentage":-1}' '{"used_usd":-1,"limit_usd":50}' \
+    '{"used_usd":12.4,"limit_usd":0}' '{"used_usd":12.4,"limit_usd":-50}'; do
+    render "{\"rate_limits\":{\"spend_limit\":$spend}}" "${spend_config[@]}"
+    assert_eq "unusable spend leaves just the quota placeholders ($spend)" '5h:-- 7d:--' "$rendered"
+done
 
 # shellcheck disable=SC2016
 render '{"model":{"display_name":"Model \u0027quoted\u0027 $(printf expanded)"},"context_window":{"used_percentage":0},"rate_limits":{"five_hour":{"used_percentage":0},"seven_day":{"used_percentage":null}}}'
@@ -130,7 +154,8 @@ inspect_context() {
     for variable in CTX_CURRENT_DIR CTX_CONTEXT_PERCENT CTX_CONTEXT_SIZE CTX_CURRENT_TOKENS \
         CTX_COST_USD CTX_DURATION_MS CTX_TOTAL_IN CTX_TOTAL_OUT CTX_MODEL_NAME \
         CTX_OUTPUT_STYLE CTX_THINKING CTX_EFFORT CTX_SESSION_ID CTX_HAS_RATES \
-        CTX_FIVE_HOUR CTX_SEVEN_DAY CTX_FIVE_RESET CTX_SEVEN_RESET; do
+        CTX_FIVE_HOUR CTX_SEVEN_DAY CTX_FIVE_RESET CTX_SEVEN_RESET \
+        CTX_SPEND_PERCENT CTX_SPEND_USED_USD CTX_SPEND_LIMIT_USD; do
         declaration=$(declare -p "$variable") || continue
         flags=${declaration#declare -}
         case "${flags%% *}" in *r*) readonly_count=$((readonly_count + 1));; esac
@@ -146,17 +171,18 @@ inspect_payload() (
         with_payload_context inspect_context <<< "$1"
 )
 
-readonly_missing='18 readonly fields, context: -, cost: -, quotas: -/-'
+readonly_missing='21 readonly fields, context: -, cost: -, quotas: -/-'
 assert_eq "empty payload freezes the absence sentinels" "$readonly_missing" "$(inspect_payload '{}')"
 assert_eq "malformed payload freezes the absence sentinels" "$readonly_missing" "$(inspect_payload 'invalid JSON')"
-assert_eq "measured zero is a readonly reading" '18 readonly fields, context: 0, cost: 0, quotas: 0/-' \
+assert_eq "measured zero is a readonly reading" '21 readonly fields, context: 0, cost: 0, quotas: 0/-' \
     "$(inspect_payload '{"cost":{"total_cost_usd":0},"context_window":{"used_percentage":0},"rate_limits":{"five_hour":{"used_percentage":0},"seven_day":{}}}')"
 
 export FAIL_JQ=true
 assert_eq "failed jq freezes the absence sentinels" "$readonly_missing" "$(inspect_payload '{}')"
-render '{"context_window":{"used_percentage":0}}'
+render '{"context_window":{"used_percentage":0},"rate_limits":{"spend_limit":{"used_percentage":12}}}'
 assert_contains "a failing jq does not turn unread context into zero" '📊 --' "$rendered"
 assert_contains "a failing jq does not turn unread quota into zero" '5h:-- 7d:--' "$rendered"
+assert_not_contains "a failing jq leaves unread spend hidden" 'spend:' "$rendered"
 
 printf 'Results: %s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

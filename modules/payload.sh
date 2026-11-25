@@ -132,6 +132,8 @@ _cortado_jq() {
             elif type == "object" then (.level // .name | strings) // ""
             else "" end;
         def utilization: numbers | select(. >= 0 and . <= 100) | if . == 0 then 0 else . end;
+        def spend_number:
+            numbers | select(. >= 0 and . <= 9007199254740991) | if . == 0 then 0 else . end;
         # Resets can be carried into the comma-separated history. Keep its UTC
         # format for epochs and accept only timestamp-shaped strings.
         def reset_time:
@@ -153,6 +155,7 @@ _cortado_jq() {
             | (.rate_limits | object_or_empty) as $rates
             | ($rates.five_hour | object_or_empty) as $five
             | ($rates.seven_day | object_or_empty) as $seven
+            | ($rates.spend_limit | object_or_empty) as $spend
             | (if (.thinking | type) == "object" then ($thinking.enabled // $thinking.on)
                else (.thinking // $model.thinking) end) as $think
             | {
@@ -180,7 +183,10 @@ _cortado_jq() {
                 CTX_FIVE_HOUR: (($five.used_percentage | utilization) // "-"),
                 CTX_SEVEN_DAY: (($seven.used_percentage | utilization) // "-"),
                 CTX_FIVE_RESET: ($five.resets_at | reset_time),
-                CTX_SEVEN_RESET: ($seven.resets_at | reset_time)
+                CTX_SEVEN_RESET: ($seven.resets_at | reset_time),
+                CTX_SPEND_PERCENT: (($spend.used_percentage | spend_number) // ""),
+                CTX_SPEND_USED_USD: (($spend.used_usd | spend_number) // ""),
+                CTX_SPEND_LIMIT_USD: (($spend.limit_usd | spend_number | select(. > 0)) // "")
             }
             | assignments;
         def usage:
@@ -274,11 +280,13 @@ _with_payload_fields() {
     local CTX_COST_USD='-' CTX_DURATION_MS='-' CTX_TOTAL_IN='-' CTX_TOTAL_OUT='-'
     local CTX_MODEL_NAME='' CTX_OUTPUT_STYLE='' CTX_THINKING='' CTX_EFFORT='' CTX_SESSION_ID=''
     local CTX_HAS_RATES=false CTX_FIVE_HOUR='-' CTX_SEVEN_DAY='-' CTX_FIVE_RESET='' CTX_SEVEN_RESET=''
+    local CTX_SPEND_PERCENT='' CTX_SPEND_USED_USD='' CTX_SPEND_LIMIT_USD=''
     local -r CTX_READY=true
     if [ -n "$assignments" ]; then eval "$assignments"; fi
     readonly CTX_CURRENT_DIR CTX_CONTEXT_PERCENT CTX_CONTEXT_SIZE CTX_CURRENT_TOKENS \
         CTX_COST_USD CTX_DURATION_MS CTX_TOTAL_IN CTX_TOTAL_OUT CTX_MODEL_NAME \
         CTX_OUTPUT_STYLE CTX_THINKING CTX_EFFORT CTX_SESSION_ID CTX_HAS_RATES \
-        CTX_FIVE_HOUR CTX_SEVEN_DAY CTX_FIVE_RESET CTX_SEVEN_RESET
+        CTX_FIVE_HOUR CTX_SEVEN_DAY CTX_FIVE_RESET CTX_SEVEN_RESET \
+        CTX_SPEND_PERCENT CTX_SPEND_USED_USD CTX_SPEND_LIMIT_USD
     "$@"
 }

@@ -91,7 +91,7 @@ A feature-rich, modular statusline for [Claude Code CLI](https://docs.anthropic.
 | **project** | Auto-detects Node.js, Nuxt, Next.js, Vite, Rust, Go, Python, Swift, and more |
 | **model** | Current Claude model, output style, and optional thinking/reasoning-effort state (`MODEL_SHOW_THINKING`) |
 | **cost** | Session cost with burn rate ($/hour) and tokens per minute (TPM) |
-| **rate-limits** | Real-time 5-hour and 7-day rate limit tracking with projections. A window with no reading shows `--` (for example `5h:42% 7d:--`). When a fetch fails and Cortado serves a cached reading older than `RATE_CACHE_TTL`, it shows the reading's age after the percentage (for example `5h:42%~6h0m`). |
+| **rate-limits** | Real-time 5-hour and 7-day rate limit tracking with projections. A window with no reading shows `--` (for example `5h:42% 7d:--`). When a fetch fails and Cortado serves a cached reading older than `RATE_CACHE_TTL`, it shows the reading's age after the percentage (for example `5h:42%~6h0m`). When Claude Code reports a gateway spend limit, this module shows estimated spend against the limit (for example `spend:$12.40/$50.00`) or the reported percentage if the dollar amounts are unavailable. |
 | **time** | Current date and time |
 | **battery** | Battery percentage (macOS) |
 | **sandbox** | Lock icon when running inside a macOS app sandbox |
