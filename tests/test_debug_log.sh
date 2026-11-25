@@ -68,24 +68,28 @@ else
     fail 'A later rotation replaces the older archive'
 fi
 
-# Two real statusline calls share a nearly-full log. Distinct config values
+# Two real statusline calls share a nearly-full log. Distinct marker values
 # identify the diagnostics so the test can detect either writer being lost.
+RUNTIME_TREE="$TEST_BASE/runtime"
+mkdir "$RUNTIME_TREE"
+cp "$PROJECT_ROOT/cortado.sh" "$PROJECT_ROOT/cortado.conf" "$RUNTIME_TREE/"
+cp -R "$PROJECT_ROOT/modules" "$RUNTIME_TREE/"
+cp "$SCRIPT_DIR/module-error-fixture.sh" "$RUNTIME_TREE/modules/zz-runtime-test.sh" || exit 1
 export CLAUDE_CONFIG_DIR="$(mktemp -d "$TEST_BASE/concurrent.XXXXXX")"
 export CACHE_DIR="$CLAUDE_CONFIG_DIR/cortado-cache"
 log="$CLAUDE_CONFIG_DIR/cortado.log"
 printf '%1048572s\n' 'previous generation' > "$log"
 cat > "$CLAUDE_CONFIG_DIR/cortado.conf" <<'EOF'
 DEBUG_MODE="true"
-MODULE_ORDER="version,model"
-MODULE_VERSION="true"
+MODULE_ORDER="uptime,model"
+MODULE_UPTIME="true"
 MODULE_MODEL="true"
-VERSION_SHOW_DURATION="${TEST_DURATION:-120}"
 LAYOUT_MODE="none"
 EOF
 chmod 600 "$CLAUDE_CONFIG_DIR/cortado.conf"
 payload='{"workspace":{"current_dir":"/tmp"},"model":{"display_name":"Opus"}}'
 for id in one two; do
-    printf '%s' "$payload" | TEST_DURATION="abc-$id" /bin/bash "$PROJECT_ROOT/cortado.sh" \
+    printf '%s' "$payload" | TEST_RUNTIME_DIAGNOSTIC="concurrent diagnostic $id" /bin/bash "$RUNTIME_TREE/cortado.sh" \
         > "$TEST_BASE/$id.out" 2> "$TEST_BASE/$id.err" &
     if [ "$id" = one ]; then first_pid=$!; else second_pid=$!; fi
 done
@@ -99,8 +103,8 @@ fi
 for id in one two; do
     out=$(cat "$TEST_BASE/$id.out")
     case "$out" in
-        '☕ v'*' | 🤖 Opus')
-            if [ ! -s "$TEST_BASE/$id.err" ] && [[ "$out" != *'integer expression expected'* ]]; then
+        'Fixture reading | 🤖 Opus')
+            if [ ! -s "$TEST_BASE/$id.err" ]; then
                 pass "Concurrent render $id keeps diagnostics out of the line"
             else
                 fail "Concurrent render $id keeps diagnostics out of the line"
@@ -108,7 +112,7 @@ for id in one two; do
             ;;
         *) fail "Concurrent render $id keeps both readings (got [$out])" ;;
     esac
-    if grep -q "version: .*abc-$id: integer expression expected" "$log"; then
+    if [ "$(grep -c "uptime: concurrent diagnostic $id$" "$log")" -eq 1 ]; then
         pass "Concurrent render $id appends its diagnostic to the current log"
     else
         fail "Concurrent render $id appends its diagnostic to the current log"

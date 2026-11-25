@@ -56,6 +56,7 @@ SOURCE_TREE="$TEST_BASE/source"
 mkdir "$SOURCE_TREE"
 cp "$PROJECT_ROOT/cortado.sh" "$PROJECT_ROOT/cortado.conf" "$SOURCE_TREE/"
 cp -R "$PROJECT_ROOT/modules" "$SOURCE_TREE/"
+cp "$SCRIPT_DIR/module-error-fixture.sh" "$SOURCE_TREE/modules/zz-runtime-test.sh" || exit 1
 cat > "$SOURCE_TREE/modules/zz-source-test.sh" <<'EOF'
 : > "$CLAUDE_CONFIG_DIR/source-ran"
 printf '%s\n' 'first source diagnostic' 'second source diagnostic' >&2
@@ -155,15 +156,17 @@ for debug in false true; do
     fi
 done
 
-render "$PROJECT_ROOT" "$PATH" blocked-cache 'MODULE_ORDER="version,model"' \
-    'MODULE_VERSION="true"' 'DEBUG_MODE="true"'
-case "$out" in
-    '☕ v'*' | 🤖 Opus') pass 'An unwritable cache leaves both readings intact' ;;
-    *) fail "An unwritable cache leaves both readings intact (got [$out])" ;;
-esac
+render "$SOURCE_TREE" "$PATH" clean 'MODULE_ORDER="uptime,model"' \
+    'MODULE_UPTIME=true' 'DEBUG_MODE=true' 'TEST_CACHE_WRITE=true'
+assert_eq 'The fixture writes its value through cache_set with a usable cache' \
+    'fixture value' "$(cat "$CACHE_DIR/routing-probe" 2>/dev/null)"
+
+render "$SOURCE_TREE" "$PATH" blocked-cache 'MODULE_ORDER="uptime,model"' \
+    'MODULE_UPTIME=true' 'DEBUG_MODE=true' 'TEST_CACHE_WRITE=true'
+assert_eq 'An unwritable cache leaves both readings intact' 'Fixture reading | 🤖 Opus' "$out"
 assert_eq 'An unwritable cache keeps process stderr quiet' '' "$err"
-assert_contains 'Debug logs the cache failure under version' 'version: ' "$log"
-assert_contains 'Debug retains the failing cache path' 'cortado-cache/cortado_session_start: Not a directory' "$log"
+assert_contains 'Debug logs the cache_set failure and path under the calling module' \
+    "uptime: cache_set failed for $CACHE_DIR/routing-probe" "$log"
 
 render "$PROJECT_ROOT" "$PATH" clean 'MODULE_ORDER="context,model"' \
     'MODULE_CONTEXT="true"' 'PROGRESS_BAR_WIDTH="abc"' 'DEBUG_MODE="true"'
@@ -189,18 +192,12 @@ assert_contains 'Noclobber logs the utility source error' 'utils: utils source d
 assert_contains 'Noclobber logs the module source error' 'zz-source-test: first source diagnostic' "$log"
 assert_contains 'Noclobber logs the module runtime error' 'model: model runtime diagnostic' "$log"
 
-render "$PROJECT_ROOT" "$PATH" bad-tmpdir 'MODULE_ORDER="version,model"' \
-    'MODULE_VERSION=true' 'DEBUG_MODE=true' 'VERSION_SHOW_DURATION=abc'
-case "$out" in
-    '☕ v'*' | 🤖 Opus') pass 'Unusable TMPDIR leaves version and model intact' ;;
-    *) fail "Unusable TMPDIR leaves version and model intact (got [$out])" ;;
-esac
+render "$SOURCE_TREE" "$PATH" bad-tmpdir 'MODULE_ORDER="uptime,model"' \
+    'MODULE_UPTIME=true' 'DEBUG_MODE=true' 'TEST_RUNTIME_DIAGNOSTIC="TMPDIR diagnostic"'
+assert_eq 'Unusable TMPDIR leaves both readings intact' 'Fixture reading | 🤖 Opus' "$out"
 assert_eq 'Unusable TMPDIR keeps process stderr quiet' '' "$err"
-if [[ "$log" == *'version: '*'abc: integer expression expected'* ]]; then
-    pass 'Unusable TMPDIR still logs the prefixed version diagnostic'
-else
-    fail 'Unusable TMPDIR still logs the prefixed version diagnostic'
-fi
+assert_contains 'Unusable TMPDIR still logs the prefixed runtime diagnostic' \
+    'uptime: TMPDIR diagnostic' "$log"
 
 check_capture_cleanup() (
     set -m
