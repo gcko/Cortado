@@ -25,18 +25,22 @@ module_disk() {
     # inject df options (e.g. DISK_PATH=-a). Prefer end-of-options on GNU df;
     # BSD df (macOS) ignores -- and still needs the leading-dash guard.
     case "$disk_path" in
-        -*) return ;;
+        -*) echo "$icon --"; return ;;
     esac
     local df_output
-    df_output=$(df -h -- "$disk_path" 2>/dev/null || df -h "$disk_path" 2>/dev/null)
-    df_output=$(echo "$df_output" | tail -1)
-
-    if [ -z "$df_output" ]; then
+    if ! df_output=$(df -h -- "$disk_path" 2>/dev/null) &&
+       ! df_output=$(df -h "$disk_path" 2>/dev/null); then
+        echo "$icon --"
         return
     fi
 
-    local used_pct=$(echo "$df_output" | awk '{print $5}' | tr -d '%')
-    local free_space=$(echo "$df_output" | awk '{print $4}')
+    local free_space capacity
+    IFS=' ' read -r free_space capacity <<< "$(printf '%s\n' "$df_output" | awk 'NR > 1 {print $4, $5}' | tail -1)"
+    if [[ ! "$capacity" =~ ^[0-9]+%$ ]]; then
+        echo "$icon --"
+        return
+    fi
+    local used_pct="${capacity%\%}"
 
     local result="$icon"
 

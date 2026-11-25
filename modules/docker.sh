@@ -17,21 +17,27 @@ module_docker() {
     local show_status="${DOCKER_SHOW_STATUS:-true}"
     local compact="${DOCKER_COMPACT:-false}"
 
-    # Check if docker is available
-    if ! command -v docker >/dev/null 2>&1; then
-        return
-    fi
-
-    # Check if docker daemon is running
     if ! docker info >/dev/null 2>&1; then
-        if [ "$show_status" = "true" ]; then
-            echo "$icon --"
-        fi
+        echo "$icon --"
         return
     fi
 
-    local running=$(docker ps -q 2>/dev/null | wc -l | tr -d ' ')
-    local total=$(docker ps -aq 2>/dev/null | wc -l | tr -d ' ')
+    local running=-- total=-- ids
+    if [ "$show_running" = "true" ] || [ "$show_status" = "true" ]; then
+        if ids=$(docker ps -q 2>/dev/null); then
+            running=$(printf '%s' "$ids" | awk 'NF {count++} END {print count+0}')
+        fi
+    fi
+    if [ "$show_total" = "true" ]; then
+        if ids=$(docker ps -aq 2>/dev/null); then
+            total=$(printf '%s' "$ids" | awk 'NF {count++} END {print count+0}')
+        fi
+    fi
+
+    if [ "$running" = "--" ] && [ "$total" = "--" ]; then
+        echo "$icon --"
+        return
+    fi
 
     local result="$icon"
 
@@ -51,7 +57,7 @@ module_docker() {
         result="$result $total"
     fi
 
-    if [ "$show_status" = "true" ]; then
+    if [ "$show_status" = "true" ] && [ "$running" != "--" ]; then
         if [ "$running" -gt 0 ]; then
             result="$result $(get_icon '🟢' '[OK]')"
         else

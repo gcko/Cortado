@@ -8,13 +8,16 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cat > "$TEST_BASE/bin/node" <<'STUB'
 #!/bin/bash
 [ "$*" = "--version" ] || exit 2
-[ "$TEST_SAMPLE" = normal ] || exit 1
-printf '%s\n' v22.14.0
+case "$TEST_SAMPLE" in
+    normal|partial) printf '%s\n' v22.14.0 ;;
+esac
+[ "$TEST_SAMPLE" = normal ]
 STUB
 chmod +x "$TEST_BASE/bin/node"
 
 check_render 'node shows the probed runtime version' 'NODE: 22.14.0' normal
-check_render_gap 'node shows absence when its version probe fails' 'NODE: --' '' failed
+check_render 'node shows absence when its version probe fails' 'NODE: --' failed
+check_render 'node ignores version output from a failed probe' 'NODE: --' partial
 
 printf '\nResults: %s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

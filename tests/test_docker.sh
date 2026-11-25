@@ -15,6 +15,10 @@ case "$*" in
                 printf '%s\n' a123 b456
                 if [ "$*" = 'ps -aq' ]; then printf '%s\n' c789; fi ;;
             zero) exit 0 ;;
+            total-only)
+                if [ "$*" = 'ps -aq' ]; then printf '%s\n' a123; else exit 1; fi ;;
+            running-only)
+                if [ "$*" = 'ps -q' ]; then printf '%s\n' a123; else exit 1; fi ;;
             *) exit 1 ;;
         esac ;;
     *) exit 2 ;;
@@ -28,8 +32,12 @@ check_render 'docker shows absence when the daemon is offline' 'DOCKER: --' \
     offline '' 'DOCKER_SHOW_TOTAL="true"'
 check_render 'docker preserves a measured zero count' 'DOCKER: 0 running / 0 total [-]' \
     zero '' 'DOCKER_SHOW_TOTAL="true"'
-check_render_gap 'docker shows absence when both listings fail' 'DOCKER: --' 'DOCKER: 0 running / 0 total [-]' \
+check_render 'docker shows absence when both listings fail' 'DOCKER: --' \
     failed '' 'DOCKER_SHOW_TOTAL="true"'
+check_render 'docker shows the total with no running reading or status' 'DOCKER: -- running / 1 total' \
+    total-only '' 'DOCKER_SHOW_TOTAL="true"'
+check_render 'docker shows the running count and status with no total' 'DOCKER: 1 running / -- total [OK]' \
+    running-only '' 'DOCKER_SHOW_TOTAL="true"'
 
 printf '\nResults: %s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

@@ -9,6 +9,7 @@ RENDER_OS=Darwin
 cat > "$TEST_BASE/bin/brightness" <<'STUB'
 #!/bin/bash
 # Force the built-in ioreg fallback even when Homebrew brightness is installed.
+if [ "$TEST_SAMPLE" = partial ]; then printf '%s\n' 'display 0: brightness 0.9'; fi
 exit 1
 STUB
 chmod +x "$TEST_BASE/bin/brightness"
@@ -26,7 +27,8 @@ chmod +x "$TEST_BASE/bin/ioreg"
 
 check_render 'brightness shows the measured percentage' 'BRT: 50%' normal
 check_render 'brightness preserves a measured zero' 'BRT: 0%' zero
-check_render_gap 'brightness shows absence when both probes fail' 'BRT: --' '' failed
+check_render 'brightness shows absence when both probes fail' 'BRT: --' failed
+check_render 'brightness ignores output from a failed probe' 'BRT: --' partial
 
 printf '\nResults: %s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

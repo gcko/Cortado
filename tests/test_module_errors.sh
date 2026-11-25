@@ -151,7 +151,7 @@ render() {
 for debug in false true; do
     render "$PROJECT_ROOT" "$TEST_BASE/no-grep" clean 'MODULE_ORDER="battery,model"' \
         'MODULE_BATTERY="true"' "DEBUG_MODE=$debug"
-    assert_eq "Missing grep leaves the model reading intact (debug $debug)" '🤖 Opus' "$out"
+    assert_eq "Missing grep shows battery as -- and keeps the model reading (debug $debug)" '🔋 -- | 🤖 Opus' "$out"
     assert_eq "Missing grep keeps process stderr quiet (debug $debug)" '' "$err"
     if [ "$debug" = true ]; then
         assert_contains 'Debug logs the missing grep error under battery' 'battery: ' "$log"

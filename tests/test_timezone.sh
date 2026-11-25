@@ -28,7 +28,9 @@ check_render 'a wildcard custom label stays literal' '*: 09:42 | Tokyo: 18:42' \
     normal "$PAYLOAD" 'TIMEZONE_ZONES="UTC, Asia/Tokyo"' 'TIMEZONE_LABELS="*,Tokyo"'
 check_render 'blank zones and omitted labels preserve clock order' 'UTC: 09:42 | Tokyo: 18:42' \
     normal "$PAYLOAD" 'TIMEZONE_ZONES=", UTC, , Asia/Tokyo, "' 'TIMEZONE_LABELS=",Tokyo"'
-check_render_gap 'timezone shows absence when its clock fails' 'UTC: --' '' failed "$PAYLOAD" 'TIMEZONE_ZONES="UTC"'
+check_render 'timezone shows absence when its clock fails' 'UTC: --' failed "$PAYLOAD" 'TIMEZONE_ZONES="UTC"'
+check_render 'timezone keeps labels aligned when the first clock fails' 'Local: -- | Tokyo: 18:42' \
+    normal "$PAYLOAD" 'TIMEZONE_ZONES="Missing, Asia/Tokyo"' 'TIMEZONE_LABELS="Local,Tokyo"'
 
 printf '\nResults: %s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

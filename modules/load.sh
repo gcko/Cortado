@@ -28,19 +28,24 @@ module_load() {
 
     # Get load averages
     # macOS prints "load averages:" (plural), Linux "load average:" — match both.
-    local load_output=$(uptime 2>/dev/null | awk -F'load averages?:' '{print $2}')
-
-    if [ -z "$load_output" ]; then
+    local uptime_output load_output load1 load5 load15
+    if ! uptime_output=$(uptime 2>/dev/null); then
+        echo "$icon --"
         return
     fi
-
-    local load1=$(echo "$load_output" | awk '{print $1}' | tr -d ',')
-    local load5=$(echo "$load_output" | awk '{print $2}' | tr -d ',')
-    local load15=$(echo "$load_output" | awk '{print $3}' | tr -d ',')
+    load_output=$(printf '%s\n' "$uptime_output" | awk -F'load averages?:' 'NF > 1 {print $2; exit}')
+    IFS=$' ,\t' read -r load1 load5 load15 <<< "$load_output"
+    local load_number='^[0-9]+([.][0-9]+)?$'
+    if [[ ! "$load1" =~ $load_number ]]; then
+        echo "$icon --"
+        return
+    fi
 
     local result="$icon"
 
     if [ "$show_all" = "true" ]; then
+        [[ "$load5" =~ $load_number ]] || load5=--
+        [[ "$load15" =~ $load_number ]] || load15=--
         result="$result $load1 $load5 $load15"
     else
         result="$result $load1"

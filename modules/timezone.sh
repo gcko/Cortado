@@ -32,16 +32,15 @@ module_timezone() {
             continue
         fi
 
-        time_str=$(TZ="$zone" date +"$format" 2>/dev/null)
-
-        if [ -z "$time_str" ]; then
-            continue
+        if ! time_str=$(TZ="$zone" date +"$format" 2>/dev/null) ||
+           [[ "$time_str" != *[![:space:]]* ]]; then
+            time_str=--
         fi
 
         label=""
         if [ "$show_label" = "true" ]; then
             if [ -n "$labels" ]; then
-                # Consume a label only for a zone that produced a reading.
+                # Consume one label for every configured nonblank zone.
                 label=$(echo "${labels%%,*}" | sed 's/^ *//;s/ *$//')
                 labels="${labels#*,}"
             fi

@@ -22,38 +22,42 @@ module_temperature() {
     local crit_thresh=$(safe_int "${TEMP_CRITICAL_THRESHOLD:-85}" 85)
     local show_status="${TEMP_SHOW_STATUS:-true}"
 
-    local temp=""
+    local temp="" reading
+    local temp_number='-?([0-9]+([.][0-9]+)?|[.][0-9]+)'
 
     if [ "${render_os-$(uname)}" = Darwin ]; then
         # Try osx-cpu-temp first (most common)
         if command -v osx-cpu-temp >/dev/null 2>&1; then
-            temp=$(osx-cpu-temp 2>/dev/null | grep -o '[0-9.]*' | head -1)
+            reading=$(osx-cpu-temp 2>/dev/null) || reading=""
+            temp=$(printf '%s\n' "$reading" | grep -oE -- "$temp_number" | head -1)
         # Try istats
         elif command -v istats >/dev/null 2>&1; then
-            temp=$(istats cpu temp 2>/dev/null | grep -o '[0-9.]*' | head -1)
+            reading=$(istats cpu temp 2>/dev/null) || reading=""
+            temp=$(printf '%s\n' "$reading" | grep -oE -- "$temp_number" | head -1)
         # Try smctemp
-        elif command -v smctemp >/dev/null 2>&1; then
-            temp=$(smctemp -c 2>/dev/null | head -1)
+        elif reading=$(smctemp -c 2>/dev/null); then
+            temp="${reading%%$'\n'*}"
         fi
     else
         # Linux: read from thermal zones
         if [ -f /sys/class/thermal/thermal_zone0/temp ]; then
-            local millideg=$(cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null)
-            if [ -n "$millideg" ]; then
+            local millideg
+            if millideg=$(cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null) &&
+               [[ "$millideg" =~ ^-?(0|[1-9][0-9]*)$ ]]; then
                 temp=$((millideg / 1000))
             fi
         # Try sensors command
-        elif command -v sensors >/dev/null 2>&1; then
-            temp=$(sensors 2>/dev/null | grep -i 'core 0' | grep -o '[0-9.]*' | head -1)
+        elif reading=$(sensors 2>/dev/null); then
+            temp=$(printf '%s\n' "$reading" | sed -nE 's/^[Cc]ore 0:[[:space:]]*\+?([^[:space:]]*).*/\1/p' |
+                grep -oE -- "^$temp_number" | head -1)
         fi
     fi
 
-    if [ -z "$temp" ]; then
+    local temp_int
+    if [[ ! "$temp" =~ ^$temp_number$ ]] || ! temp_int=$(printf "%.0f" "$temp" 2>/dev/null); then
+        echo "$icon --"
         return
     fi
-
-    # Convert to integer for comparison
-    local temp_int=$(printf "%.0f" "$temp" 2>/dev/null || echo "0")
 
     # Convert to Fahrenheit if requested
     local display_temp="$temp_int"
