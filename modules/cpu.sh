@@ -19,7 +19,7 @@ module_cpu() {
 
     # Get CPU usage
     local cpu_usage
-    if [ "$(uname)" = "Darwin" ]; then
+    if [ "${render_os-$(uname)}" = Darwin ]; then
         # macOS: top sample (user + sys; #51)
         cpu_usage=$(top -l 1 -n 0 2>/dev/null | grep "CPU usage" | awk '{u=$3; s=$5; sub(/%/,"",u); sub(/%/,"",s); print u+s}')
     else

@@ -1,0 +1,41 @@
+#!/bin/sh
+# Deterministic command responses for the golden renders.
+case "${0##*/}:$*" in
+    'date:+%s') printf '%s\n' 1769947200 ;;
+    'date:+%m/%d') printf '%s\n' '02/01' ;;
+    'date:+%I:%M %p') printf '%s\n' '12:00 PM' ;;
+    'date:+%m/%d %I:%M %p') printf '%s\n' '02/01 12:00 PM' ;;
+    'date:+%H:%M') printf '%s\n' '12:00' ;;
+    'git:rev-parse --git-dir') printf '%s\n' '.git' ;;
+    'git:symbolic-ref --short HEAD') printf '%s\n' golden ;;
+    'git:status --porcelain') printf '%s\n' ' M tracked' '?? new' ;;
+    pgrep:*) exit 1 ;;
+    'pmset:-g batt')
+        printf '%s\n' "Now drawing from 'AC Power'" ' -InternalBattery-0 73%; charging;' ;;
+    'top:-l 1 -n 0') printf '%s\n' 'CPU usage: 10.00% user, 15.00% sys, 75.00% idle' ;;
+    'vm_stat:') printf '%s\n' 'Pages free: 1000.' 'Pages active: 400000.' 'Pages wired down: 124288.' ;;
+    'sysctl:-n hw.pagesize') printf '%s\n' 4096 ;;
+    'sysctl:-n hw.memsize') printf '%s\n' 8589934592 ;;
+    'sysctl:-n hw.ncpu') printf '%s\n' 8 ;;
+    'sysctl:-n kern.boottime') printf '%s\n' '{ sec = 1769857200, usec = 0 }' ;;
+    df:-h*) printf '%s\n' 'Filesystem Size Used Avail Capacity Mounted on' '/dev/disk 80G 40G 40G 50% /' ;;
+    'ipconfig:getifaddr en0') printf '%s\n' '192.0.2.4' ;;
+    'networksetup:-listallhardwareports') printf '%s\n' 'Hardware Port: Wi-Fi' 'Device: en0' ;;
+    'networksetup:-getairportnetwork en0') printf '%s\n' 'Current Wi-Fi Network: Golden Wi-Fi' ;;
+    'uptime:') printf '%s\n' '12:00  up 1 day, 1:00, 1 user, load averages: 0.50 0.35 0.20' ;;
+    'osx-cpu-temp:') printf '%s\n' '62.0°C' ;;
+    'brightness:-l') printf '%s\n' 'display 0: brightness 0.50' ;;
+    'ps:aux') printf '%s\n' 'USER PID %CPU %MEM VSZ RSS TT STAT' 'test 42 0 0 0 0 ?? R' ;;
+    'docker:info') ;;
+    'docker:ps -q'|'docker:ps -aq') printf '%s\n' 'test-container' ;;
+    'node:--version') printf '%s\n' 'v20.0.0' ;;
+    curl:*wttr.in/*) printf '%s\n' '☀️+42°F' ;;
+    curl:*) exit 1 ;;
+    uname:*)
+        if [ "${CORTADO_GOLDEN_DARWIN:-}" = true ]; then
+            printf '%s\n' Darwin
+        else
+            exec "$CORTADO_GOLDEN_UNAME" "$@"
+        fi ;;
+    *) exit 1 ;;
+esac

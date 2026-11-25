@@ -22,7 +22,7 @@ module_brightness() {
 
     local brightness=""
 
-    if [ "$(uname)" = "Darwin" ]; then
+    if [ "${render_os-$(uname)}" = Darwin ]; then
         # Prefer brew brightness CLI when present (fast, direct)
         if command -v brightness >/dev/null 2>&1; then
             brightness=$(brightness -l 2>/dev/null | grep -o 'brightness [0-9.]*' | awk '{print $2}' | head -1)
