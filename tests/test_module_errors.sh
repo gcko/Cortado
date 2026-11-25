@@ -12,14 +12,18 @@ trap 'rm -rf "$TEST_BASE"' EXIT
 . "$PROJECT_ROOT/tests/lib/assert.sh" plain-comma
 # A controlled PATH keeps the system tools available and omits the selected one.
 without_tool() {
-    local dest="$1" omit="$2" tool name
+    local dest="$1" omit="$2" tool name names=:
+    local links=()
     mkdir "$dest"
     for tool in "$(command -v jq)" "$(command -v bc)" /bin/* /usr/bin/* /sbin/* /usr/sbin/*; do
         [ -f "$tool" ] && [ -x "$tool" ] || continue
         name="${tool##*/}"
-        [ "$name" != "$omit" ] && [ ! -e "$dest/$name" ] || continue
-        ln -s "$tool" "$dest/$name"
+        [ "$name" != "$omit" ] || continue
+        case "$names" in *":$name:"*) continue ;; esac
+        names="$names$name:"
+        links+=("$tool")
     done
+    ln -s "${links[@]}" "$dest"
 }
 
 without_tool "$TEST_BASE/no-grep" grep
@@ -50,15 +54,62 @@ if [ "${TEST_MODEL_WAIT:-false}" = true ]; then
     module_model() {
         printf '%s\n' 'diagnostic before interruption' >&2
         : > "$CLAUDE_CONFIG_DIR/module-entered"
-        sleep 30
+        # The test holds the FIFO open without sending data.
+        local release
+        read -r -t 30 release <&8
     }
 fi
 if [ "${TEST_MODEL_FLOOD:-false}" = true ]; then
     module_model() {
         local i
-        for ((i = 0; i < 128; i++)); do printf '%16383s\n' 'flood diagnostic' >&2; done
+        printf '%16383s\n' 'first flood diagnostic' >&2
+        for ((i = 1; i < 128; i++)); do printf '%16383s\n' 'flood diagnostic' >&2; done
         find "$TMPDIR" -type f -exec wc -c {} \; |
             awk '$1>largest { largest=$1 } END { print largest+0 }' > "$CLAUDE_CONFIG_DIR/capture-size"
+        printf '%s\n' '🤖 Opus'
+    }
+fi
+if [ -n "${TEST_OMITTED_BYTES:-}" ]; then
+    module_model() {
+        # Write 4097 bytes first, including a two-byte character and a newline.
+        printf '%4094s%s\n' 'first uneven diagnostic' 'é' >&2
+        # Wait for the short write to drain from this module's FIFO. The reused
+        # data file can still contain old diagnostics or be awaiting a flush.
+        python3 - "$CORTADO_STDERR_CAPTURE/pipe" "$TEST_OMITTED_BYTES" <<'FIFO' || return 1
+import array
+import fcntl
+import os
+import sys
+import termios
+import time
+
+# On macOS FIONREAD must query the read end. Opening it here does not read data.
+fd = os.open(sys.argv[1], os.O_RDONLY | os.O_NONBLOCK)
+if not os.path.samestat(os.fstat(fd), os.fstat(2)):
+    raise SystemExit("uneven stderr fixture did not open the module's FIFO")
+
+def wait_until_drained():
+    unread = array.array("i", [0])
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        fcntl.ioctl(fd, termios.FIONREAD, unread, True)
+        if unread[0] == 0:
+            return
+        time.sleep(0.005)
+    raise SystemExit("uneven stderr fixture timed out waiting for the FIFO to drain")
+
+omitted = int(sys.argv[2])
+wait_until_drained()
+with os.fdopen(os.dup(2), "wb") as stderr:
+    # Fill through byte 65,535, then deliver the cutoff newline and the first
+    # omitted byte together. This forces the faulty reader to see both bytes.
+    stderr.write(b"last retained diagnostic".rjust(61438))
+    stderr.flush()
+    wait_until_drained()
+    os.write(2, b"\nX" if omitted else b"\n")
+    if omitted > 1:
+        stderr.write(b"omitted tail".rjust(omitted - 2) + b"\n")
+FIFO
         printf '%s\n' '🤖 Opus'
     }
 fi
@@ -181,26 +232,47 @@ assert_contains 'Unusable TMPDIR still logs the prefixed runtime diagnostic' \
 
 check_capture_cleanup() (
     set -m
-    local signal="$1" location="$2" expected="$3" dir config tmp pid retry rc=0
+    local signal="$1" location="$2" expected="$3" dir config tmp capture_root pid retry rc=0
     dir=$(mktemp -d "$TEST_BASE/signals.XXXXXX") || return 1
     config=$(mktemp -d "$dir/config.XXXXXX") || return 1
     tmp="$dir/tmp"
-    if [ "$location" = tmp ]; then mkdir "$tmp"; else : > "$tmp"; fi
+    if [ "$location" = tmp ]; then
+        mkdir "$tmp" || return 1
+        capture_root="$tmp"
+    else
+        : > "$tmp"
+        capture_root="$config"
+    fi
+    mkfifo "$dir/module-hold" || return 1
     printf '%s\n' MODULE_ORDER=model MODULE_MODEL=true DEBUG_MODE=true TEST_MODEL_WAIT=true \
         > "$config/cortado.conf"
+    chmod 600 "$config/cortado.conf" || return 1
     printf '%s' "$PAYLOAD" > "$dir/payload"
     CLAUDE_CONFIG_DIR="$config" CACHE_DIR="$config/cache" TMPDIR="$tmp" \
-        /bin/bash "$SOURCE_TREE/cortado.sh" < "$dir/payload" > "$dir/stdout" 2> "$dir/stderr" &
+        /bin/bash "$SOURCE_TREE/cortado.sh" < "$dir/payload" > "$dir/stdout" 2> "$dir/stderr" \
+        8<> "$dir/module-hold" &
     pid=$!
     trap 'kill -KILL -- "-$pid" 2>/dev/null || :' EXIT
     for ((retry = 0; retry < 250; retry++)); do
         [ ! -f "$config/module-entered" ] || break
         /bin/sleep 0.02
     done
-    [ -f "$config/module-entered" ] || return 1
+    if [ ! -f "$config/module-entered" ]; then
+        printf '  model did not enter the signal fixture\n'
+        return 1
+    fi
+    set -- "$capture_root"/cortado-stderr.*
+    if [ "$#" -ne 1 ] || [ ! -p "$1/pipe" ]; then
+        printf '  expected one live capture in %s before %s\n' "$location" "$signal"
+        return 1
+    fi
     kill "-$signal" -- "-$pid" || return 1
+    # Cortado's EXIT trap removes the capture before this child can be reaped.
     wait "$pid" 2>/dev/null || rc=$?
-    [ "$rc" -eq "$expected" ] || return 1
+    if [ "$rc" -ne "$expected" ]; then
+        printf '  expected exit status %s, got %s\n' "$expected" "$rc"
+        return 1
+    fi
     local captures
     captures=$(find "$dir" -name 'cortado-stderr.*' -print)
     if [ -n "$captures" ]; then
@@ -226,21 +298,48 @@ if [ "$capture_size" -gt 0 ] && [ "$capture_size" -le 65536 ]; then
 else
     fail "The live temporary capture fits in 64 KiB (got $capture_size bytes)"
 fi
-if grep -qFx 'model: [truncated 2031616 bytes]' "$sb/cortado.log" &&
-    grep -qF 'flood diagnostic' "$sb/cortado.log"; then
-    pass 'The log keeps the start and reports the exact omitted byte count'
-else
-    fail 'The log keeps the start and reports the exact omitted byte count'
-fi
+marker_count=0
+first_line_kept=false
 for generation in "$sb/cortado.log" "$sb/cortado.log.1"; do
-    size=$(wc -c < "$generation")
+    size=0
+    if [ -f "$generation" ]; then
+        size=$(wc -c < "$generation")
+        matches=$(grep -cFx 'model: [truncated 2031616 bytes]' "$generation")
+        marker_count=$((marker_count + matches))
+        if [ "$matches" -gt 0 ] &&
+            grep -qE 'model: +first flood diagnostic$' "$generation"; then
+            first_line_kept=true
+        fi
+    fi
     if [ "$size" -gt 0 ] && [ "$size" -le 1048576 ]; then
         pass "${generation##*/} fits in 1 MiB after the flood"
     else
         fail "${generation##*/} fits in 1 MiB after the flood (got $size bytes)"
     fi
 done
+if [ "$marker_count" -eq 1 ] && [ "$first_line_kept" = true ]; then
+    pass 'The log keeps the start and reports the exact omitted byte count'
+else
+    fail "The log keeps the start and reports the exact omitted byte count (markers: $marker_count, first line kept with marker: $first_line_kept)"
+fi
 assert_eq 'A completed render removes all temporary captures' '' "$(ls -A "$sb/tmp")"
+
+for omitted in 2031616 0 1; do
+    bytes=$((65536 + omitted))
+    render "$SOURCE_TREE" "$PATH" clean 'MODULE_ORDER=model' 'DEBUG_MODE=true' "TEST_OMITTED_BYTES=$omitted"
+    assert_eq "$bytes stderr bytes leave the model reading intact" '🤖 Opus' "$out"
+    assert_eq "$bytes stderr bytes leave process stderr quiet" '' "$err"
+    if grep -qE 'model: +first uneven diagnosticé$' "$sb/cortado.log" &&
+        grep -qE 'model: +last retained diagnostic$' "$sb/cortado.log"; then
+        pass "$bytes stderr bytes retain the start and the cap boundary"
+    else
+        fail "$bytes stderr bytes retain the start and the cap boundary"
+    fi
+    expected_marker=''
+    if [ "$omitted" -gt 0 ]; then expected_marker="model: [truncated $omitted bytes]"; fi
+    assert_eq "$bytes stderr bytes report the exact omitted byte count" "$expected_marker" \
+        "$(sed -n '/^model: \[truncated .* bytes\]$/p' "$sb/cortado.log")"
+done
 
 render "$SOURCE_TREE" "$PATH" clean 'MODULE_ORDER=version' 'MODULE_VERSION=true' 'TEST_VERSION_PAYLOAD=true'
 assert_eq 'Version receives the original payload as its only argument' "payload=$PAYLOAD" "$out"
