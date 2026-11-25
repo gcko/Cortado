@@ -47,7 +47,9 @@ curl() {
     if [ "$(cat)" = "$expected_config" ]; then
         : > "$CURL_AUTH_OK"
     fi
-    printf '%s' synthetic-usage > "$output"
+    if [ "${CURL_OMIT_BODY:-false}" != true ]; then
+        printf '%s' synthetic-usage > "$output"
+    fi
     : > "$headers"
     printf '%s' 200
 }
@@ -85,6 +87,11 @@ assert_accepted() {
 }
 echo '=== Credential Parser and Request Tests ==='
 assert_accepted "normal token" '{"claudeAiOauth":{"accessToken":"test-token-REDACTED"}}' "test-token-REDACTED"
+: > "$CURL_CALLS"
+usage=$(CURL_OMIT_BODY=true _get_claude_usage); rc=$?
+assert_eq "HTTP 200 without a body file fails" yes "$([ "$rc" -ne 0 ] && echo yes)"
+assert_eq "HTTP 200 without a body file returns no usage" "" "$usage"
+assert_eq "HTTP 200 without a body file reached curl" "call" "$(cat "$CURL_CALLS")"
 assert_accepted "MCP token is not selected" '{"mcpOAuth":{"server":{"accessToken":"test-token-REDACTED-mcp"}},"claudeAiOauth":{"accessToken":"test-token-REDACTED"}}' "test-token-REDACTED"
 assert_accepted "bearer punctuation is preserved" '{"claudeAiOauth":{"accessToken":"test-token-REDACTED._~+/="}}' "test-token-REDACTED._~+/="
 assert_rejected "empty file" ''

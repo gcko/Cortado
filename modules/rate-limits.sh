@@ -145,6 +145,20 @@ _usage_from_payload() {
     ' 2>/dev/null
 }
 
+# Older versions briefly wrote the bearer config to a fixed path. Remove a
+# leftover only after the five-minute grace period for an older render.
+_cleanup_legacy_curl_config() {
+    local legacy_config="$CACHE_DIR/rate_limits_curlcfg"
+    if [ -f "$legacy_config" ]; then
+        local mtime now
+        now=$(date +%s)
+        mtime=$(_file_mtime "$legacy_config")
+        if [ "$mtime" -gt 0 ] && [ "$((now - mtime))" -gt 300 ]; then
+            rm -f -- "$legacy_config" 2>/dev/null
+        fi
+    fi
+}
+
 # Fetch usage from Anthropic API
 _get_claude_usage() (
     # Check if we're in backoff period from a previous 429. Callers that have
@@ -246,6 +260,22 @@ _write_usage_history() {
     printf '%s\n' "$entry"
 }
 
+# Serialize the whole read/trim/append/rename sequence. Keep the lock file
+# so waiters always lock the same inode. The descriptor closes on exit,
+# including when the writer is killed.
+_record_usage_history() (
+    local history_file="$1" now="$2" entry="$3"
+    umask 077
+    exec 9>>"${history_file}-lock" || return 1
+    if command -v flock >/dev/null 2>&1; then
+        flock -w 5 9
+    else
+        # macOS and Git Bash ship Perl, which can lock the inherited descriptor.
+        perl -MFcntl=:flock -e 'open(my $lock, ">&=9") or exit 1; alarm 5; exit(!flock($lock, LOCK_EX))'
+    fi || return 1
+    _atomic_write_file "$history_file" _write_usage_history "$history_file" "$now" "$entry"
+) 2>/dev/null
+
 # Get projection status indicator (only shown at warning/critical levels)
 _get_projection_status() {
     local projected=$1
@@ -299,6 +329,8 @@ module_rate_limits() {
     local compact="${RATE_COMPACT:-false}"
     local label_5h="${RATE_5H_LABEL:-5h}"
     local label_7d="${RATE_7D_LABEL:-7d}"
+
+    _cleanup_legacy_curl_config
 
     # 4-level usage thresholds: green -> yellow -> orange -> red
     local low_thresh="${RATE_LOW_THRESHOLD:-50}"
@@ -384,7 +416,7 @@ module_rate_limits() {
     # Only record data point when fresh data was fetched (not from cache)
     # This prevents unbounded file growth from frequent statusline invocations
     if [ "$fresh_fetch" = "true" ]; then
-        _atomic_write_file "$history_file" _write_usage_history "$history_file" "$now" \
+        _record_usage_history "$history_file" "$now" \
             "$now,$five_hour,$seven_day,$five_hour_reset,$seven_day_reset"
     fi
 

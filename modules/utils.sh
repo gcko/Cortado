@@ -114,9 +114,11 @@ _atomic_write_file() {
     (
         # mv would move the staging file into an existing directory.
         [ ! -d "$target" ] || return 1
+        umask 077
         staging=$(mktemp "${target}.XXXXXX" 2>/dev/null) || return 1
         trap 'rm -f -- "$staging" 2>/dev/null' EXIT
-        "$@" > "$staging" && mv -f -- "$staging" "$target"
+        trap 'exit 143' TERM
+        "$@" >| "$staging" && mv -f -- "$staging" "$target"
     ) 2>/dev/null
 }
 

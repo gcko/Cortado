@@ -113,10 +113,10 @@ BACKOFF_FILE="$CACHE_DIR/rate_limits_backoff"
 # After a 429 the module writes $CACHE_DIR/rate_limits_backoff: line 1 is the
 # retry-after duration in seconds, the file mtime is when the 429 happened. While
 # now-mtime < duration it prints the seconds remaining and returns 0 (still in
-# cooldown); once the window elapses it deletes the stale file and returns 1; a
-# missing file returns 1 with no output. The duration falls back to
-# RATE_BACKOFF_SECONDS (default 300) when the file's first line is empty. We age
-# the file with `touch -t` rather than mocking the clock, and assert on the
+# cooldown). Once the window elapses it returns 1 and leaves the marker for
+# a later 429 to replace. A missing file returns 1 with no output. The
+# duration falls back to RATE_BACKOFF_SECONDS (default 300) when the first
+# line is empty. We age the file with `touch -t` and assert on the
 # return code / side-effect (not the exact remaining seconds, which drifts ~1s).
 # -----------------------------------------------------------------------------
 echo "=== _check_backoff Tests ==="
@@ -133,7 +133,7 @@ assert_eq "active backoff returns zero"                       "0" "$rc"
 assert_eq "active backoff prints a numeric remaining"         "1" "$(printf '%s' "$out" | grep -qE '^[0-9]+$' && echo 1 || echo 0)"
 assert_eq "active backoff keeps the file"                     "1" "$([ -f "$BACKOFF_FILE" ] && echo 1 || echo 0)"
 
-# Expired cooldown: short duration, file aged far past it -> stale file deleted.
+# An expired cooldown leaves its marker until a later 429 replaces it.
 printf '1\n' > "$BACKOFF_FILE"
 touch -t 200001010000 "$BACKOFF_FILE"
 out="$(_check_backoff)"; rc=$?
