@@ -24,7 +24,7 @@ module_temperature() {
 
     local temp=""
 
-    if [[ "${OSTYPE:-}" == darwin* ]]; then
+    if [ "${render_os-$(uname)}" = Darwin ]; then
         # Try osx-cpu-temp first (most common)
         if command -v osx-cpu-temp >/dev/null 2>&1; then
             temp=$(osx-cpu-temp 2>/dev/null | grep -o '[0-9.]*' | head -1)

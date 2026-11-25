@@ -23,7 +23,7 @@ module_memory() {
     local mem_used=""
     local mem_total=""
 
-    if [ "$(uname)" = "Darwin" ]; then
+    if [ "${render_os-$(uname)}" = Darwin ]; then
         # macOS: call vm_stat once and parse all values from the cached output
         local vm_output
         vm_output=$(vm_stat 2>/dev/null)

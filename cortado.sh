@@ -666,6 +666,16 @@ main() {
         validate_module_order "$module_order"
     fi
 
+    # Issue #31 will replace render_os with CORTADO_OS.
+    local render_os
+    if [[ "${OSTYPE:-}" == darwin* && "${BASH_VERSINFO[5]}" == *-darwin* ]]; then
+        render_os=Darwin
+    elif [[ "${OSTYPE:-}" == linux* && "${BASH_VERSINFO[5]}" == *-linux* ]]; then
+        render_os=Linux
+    else
+        render_os=$(uname -s 2>/dev/null)
+    fi
+
     # Build status line sections
     local sections=""
 

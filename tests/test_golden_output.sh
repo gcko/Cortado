@@ -9,11 +9,8 @@ GOLDEN="$TEST_DIR/golden"
 TEST_BASE=$(mktemp -d) || exit 1
 trap 'rm -rf "$TEST_BASE"' EXIT
 
-export LC_ALL=C.UTF-8 TZ=UTC
-unset BASH_ENV IN_CLAUDE_CODE APP_SANDBOX_CONTAINER_ID CORTADO_GOLDEN_DARWIN NVM_DIR OSTYPE
-export CORTADO_GOLDEN_UNAME
-CORTADO_GOLDEN_UNAME=$(command -v uname)
-mkdir -p "$TEST_BASE/bin" "$TEST_BASE/workspace"
+host_uname=$(command -v uname)
+mkdir -p "$TEST_BASE/bin" "$TEST_BASE/home" "$TEST_BASE/workspace"
 printf '{"name":"golden-output"}\n' > "$TEST_BASE/workspace/package.json"
 cp "$GOLDEN/tool" "$TEST_BASE/bin/stub"
 chmod +x "$TEST_BASE/bin/stub"
@@ -22,6 +19,9 @@ for tool in brightness curl date df docker git ipconfig networksetup node \
     ln -s stub "$TEST_BASE/bin/$tool"
 done
 export PATH="$TEST_BASE/bin:$PATH"
+
+# Supported caller overrides must not change a render's fixture settings.
+export PROJECT_ICON_NODE=CUSTOM SANDBOX_ICON=CUSTOM RATE_SHOW_USAGE_STATUS=false
 
 payload=$(jq -cn --arg cwd "$TEST_BASE/workspace" '{
     workspace: {current_dir: $cwd},
@@ -40,25 +40,107 @@ version=$(tr -d '[:space:]' < "$PROJECT_ROOT/VERSION")
 PASS=0
 FAIL=0
 
+make_sandbox() {
+    local sb
+    sb=$(mktemp -d "$TEST_BASE/render.XXXXXX") || return 1
+    mkdir -m 700 "$sb/cortado-cache" &&
+        printf '%s\n' "$@" > "$sb/cortado.conf" &&
+        chmod 600 "$sb/cortado.conf" &&
+        printf '%s\n' "$sb"
+}
+
+render() {
+    local sb="$1"
+    shift
+    printf '%s' "$payload" | env -i PATH="$PATH" HOME="$TEST_BASE/home" TMPDIR="$sb" \
+        LC_ALL=C.UTF-8 TZ=UTC CORTADO_GOLDEN_UNAME="$host_uname" \
+        CLAUDE_CONFIG_DIR="$sb" CACHE_DIR="$sb/cortado-cache" "$@" \
+        /bin/bash "$PROJECT_ROOT/cortado.sh" > "$sb/actual" 2> "$sb/stderr"
+}
+
+assert_output() {
+    local label="$1" sb="$2" status=0
+    shift 2
+    render "$sb" "$@" || status=$?
+    if [ "$status" -eq 0 ] && cmp -s "$sb/expected" "$sb/actual" && [ ! -s "$sb/stderr" ]; then
+        PASS=$((PASS + 1))
+        printf 'PASS: %s\n' "$label"
+    else
+        FAIL=$((FAIL + 1))
+        printf 'FAIL: %s (render exit %d)\n' "$label" "$status"
+        diff -u "$sb/expected" "$sb/actual"
+        cat "$sb/stderr"
+    fi
+}
+
 assert_render() {
     local fixture="$1" sb
     shift
-    sb=$(mktemp -d "$TEST_BASE/render.XXXXXX") || exit 1
-    mkdir -m 700 "$sb/cortado-cache"
-    printf '%s\n' "$@" > "$sb/cortado.conf"
-    chmod 600 "$sb/cortado.conf"
+    sb=$(make_sandbox "$@") || exit 1
     # Expand the fixture's version and ANSI markers for a raw stdout comparison.
     sed -e "s/@VERSION@/$version/" -e $'s/@ESC@/\033/g' "$GOLDEN/$fixture.out" > "$sb/expected"
-    if printf '%s' "$payload" | CLAUDE_CONFIG_DIR="$sb" CACHE_DIR="$sb/cortado-cache" \
-        /bin/bash "$PROJECT_ROOT/cortado.sh" > "$sb/actual" 2> "$sb/stderr" &&
-        cmp -s "$sb/expected" "$sb/actual" && [ ! -s "$sb/stderr" ]; then
+    assert_output "$fixture renders the golden stdout" "$sb"
+}
+
+assert_mac_cpu_uptime() {
+    local label="$1" sb
+    shift
+    sb=$(make_sandbox 'TERMINAL_WIDTH=200' 'MODULE_ORDER=cpu,uptime' 'MODULE_CPU=true' 'MODULE_UPTIME=true') || exit 1
+    printf '%s\n' '💻 25% 🟢 | ⏱️ 1d 1h' > "$sb/expected"
+    assert_output "macOS renders CPU and uptime with $label" "$sb" "$@"
+}
+
+assert_mac_memory() {
+    local off on off_calls on_calls
+    mkdir "$TEST_BASE/count-bin"
+    cat > "$TEST_BASE/count-bin/uname" <<'STUB'
+#!/bin/sh
+printf '%s\n' "$*" >> "$CLAUDE_CONFIG_DIR/uname.calls"
+exec "${0%/*}/../bin/uname" "$@"
+STUB
+    chmod +x "$TEST_BASE/count-bin/uname"
+
+    off=$(make_sandbox 'MODULE_ORDER=memory' 'MODULE_MEMORY=false' 'TERMINAL_WIDTH=200') || exit 1
+    on=$(make_sandbox 'MODULE_ORDER=memory' 'MODULE_MEMORY=true' 'TERMINAL_WIDTH=200') || exit 1
+    : > "$off/uname.calls"
+    : > "$on/uname.calls"
+    printf '\n' > "$off/expected"
+    printf '%s\n' '🧠 25% 🟢' > "$on/expected"
+    PATH="$TEST_BASE/count-bin:$PATH" assert_output 'macOS omits disabled memory' "$off"
+    PATH="$TEST_BASE/count-bin:$PATH" assert_output 'macOS renders the memory reading' "$on"
+
+    off_calls=$(wc -l < "$off/uname.calls")
+    on_calls=$(wc -l < "$on/uname.calls")
+    if [ "$on_calls" -eq "$off_calls" ]; then
         PASS=$((PASS + 1))
-        printf 'PASS: %s renders the golden stdout\n' "$fixture"
+        printf 'PASS: memory adds no uname calls (%d with memory off and on)\n' "$on_calls"
     else
         FAIL=$((FAIL + 1))
-        printf 'FAIL: %s differs from the golden stdout\n' "$fixture"
-        diff -u "$sb/expected" "$sb/actual"
-        cat "$sb/stderr"
+        printf 'FAIL: memory adds uname calls (%d off, %d on)\n' "$off_calls" "$on_calls"
+    fi
+}
+
+assert_debug_warning() {
+    local order='MODULE_ORDER=" unknown_mod , model "' on off warning_count=0
+    on=$(make_sandbox "$order" 'DEBUG_MODE=true' 'TERMINAL_WIDTH=200') || exit 1
+    off=$(make_sandbox "$order" 'DEBUG_MODE=false' 'TERMINAL_WIDTH=200') || exit 1
+    printf '%s\n' '🤖 Opus[1m] (concise)' > "$on/expected"
+    cp "$on/expected" "$off/expected"
+    assert_output 'debug mode renders the model beside an unknown module' "$on"
+    assert_output 'normal mode renders the model beside an unknown module' "$off"
+
+    if [ -f "$on/cortado.log" ]; then
+        warning_count=$(grep -c 'Warning: Unknown module in MODULE_ORDER: unknown_mod$' "$on/cortado.log")
+    fi
+    if [ "$warning_count" -eq 1 ] && [ ! -e "$off/cortado.log" ]; then
+        PASS=$((PASS + 1))
+        printf 'PASS: only debug mode logs one unknown module warning\n'
+    else
+        FAIL=$((FAIL + 1))
+        printf 'FAIL: expected one unknown module warning in debug mode, found %d\n' "$warning_count"
+        if [ -e "$off/cortado.log" ]; then
+            printf 'FAIL: normal mode created a log\n'
+        fi
     fi
 }
 
@@ -74,6 +156,14 @@ assert_render all-modules \
     'MODULE_CPU=true MODULE_MEMORY=true MODULE_DISK=true MODULE_NETWORK=true' \
     'MODULE_UPTIME=true MODULE_LOAD=true MODULE_TEMPERATURE=true MODULE_BRIGHTNESS=true' \
     'MODULE_PROCESSES=true MODULE_DOCKER=true MODULE_NODE=true MODULE_WEATHER=true MODULE_TIMEZONE=true'
+
+if [ "$("$host_uname" -s)" = Darwin ]; then
+    assert_mac_cpu_uptime 'native OSTYPE'
+    assert_mac_cpu_uptime 'empty OSTYPE' OSTYPE=
+    assert_mac_cpu_uptime 'Linux OSTYPE' OSTYPE=linux-gnu
+    assert_mac_memory
+fi
+assert_debug_warning
 
 printf '\nResults: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
