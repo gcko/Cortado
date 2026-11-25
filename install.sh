@@ -109,11 +109,15 @@ check_remote_version() {
         return 1
     fi
 
-    local response http_code body tag
+    local response http_code body tag curl_status
     response=$(curl -s --connect-timeout 5 --max-time 8 --max-redirs 3 --proto =https \
         -w "\n%{http_code}" \
         -H "Accept: application/vnd.github+json" \
         "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" 2>/dev/null)
+    curl_status=$?
+    if [ "$INSTALL_MODE" = "check-update" ] && [ "$curl_status" -ne 0 ]; then
+        return 1
+    fi
 
     http_code=$(echo "$response" | tail -1)
     body=$(echo "$response" | sed '$d')
@@ -122,7 +126,11 @@ check_remote_version() {
         return 1
     fi
 
-    if command -v jq &>/dev/null; then
+    if [ "$INSTALL_MODE" = "check-update" ]; then
+        local release_pattern='^v?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?([+][0-9A-Za-z.-]+)?$'
+        tag=$(printf '%s\n' "$body" | jq -er '.tag_name | strings' 2>/dev/null) || return 1
+        [[ "$tag" =~ $release_pattern ]] || return 1
+    elif command -v jq &>/dev/null; then
         tag=$(echo "$body" | jq -r '.tag_name // empty' 2>/dev/null)
     else
         tag=$(echo "$body" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
@@ -171,13 +179,13 @@ version_lt() {
     return 1
 }
 
-# Check for updates
+# Check for updates: 0 = newer, 1 = no newer release, 2 = could not check.
 check_for_updates() {
     local local_ver=$(get_local_version)
     local remote_ver=$(check_remote_version)
 
     if [ -z "$remote_ver" ]; then
-        return 1  # Could not check
+        return 2
     fi
 
     if version_lt "$local_ver" "$remote_ver"; then
@@ -2224,6 +2232,9 @@ main() {
         print_info "Checking for updates..."
         if check_for_updates; then
             prompt_update "$@"
+        elif [ "$?" -eq 2 ]; then
+            print_warning "Could not determine the latest version"
+            exit 1
         else
             local ver=$(get_local_version)
             print_success "You have the latest version ($ver)"

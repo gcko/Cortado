@@ -6,6 +6,10 @@
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT_DIR="$REPO_ROOT"
 INSTALL="$SCRIPT_DIR/install.sh"
+CLAUDE_CONFIG_DIR=$(mktemp -d)
+export CLAUDE_CONFIG_DIR
+export CACHE_DIR="$CLAUDE_CONFIG_DIR/cortado-cache"
+trap 'rm -rf "$CLAUDE_CONFIG_DIR"' EXIT
 PASS=0
 FAIL=0
 
@@ -47,6 +51,57 @@ assert_eq "parse_args SKIP_UPDATE_CHECK=true" "true" "$SKIP_UPDATE_CHECK"
 INSTALL_MODE="interactive"
 parse_args --check-update
 assert_eq "parse_args --check-update" "check-update" "$INSTALL_MODE"
+
+# --- explicit update checks against a stubbed release API ---
+mkdir -p "$CLAUDE_CONFIG_DIR/bin"
+cat > "$CLAUDE_CONFIG_DIR/bin/curl" <<'STUB'
+#!/bin/bash
+printf '%s\n%s\n' "$RELEASE_BODY" "$RELEASE_HTTP"
+exit "$RELEASE_CURL_STATUS"
+STUB
+chmod +x "$CLAUDE_CONFIG_DIR/bin/curl"
+
+run_update_check() {
+    local flag="$1" http="$2" body="$3" curl_status="${4:-0}"
+    update_output=$(printf 'n\n' |
+        PATH="$CLAUDE_CONFIG_DIR/bin:$PATH" RELEASE_HTTP="$http" RELEASE_BODY="$body" \
+        RELEASE_CURL_STATUS="$curl_status" /bin/bash "$INSTALL" "$flag" --no-color 2>&1)
+    update_status=$?
+}
+
+assert_check_failed() {
+    local desc="$1"
+    shift
+    run_update_check "$@"
+    assert_eq "$desc exits 1" "1" "$update_status"
+    assert_eq "$desc reports an indeterminate version" "Could not determine the latest version" \
+        "$(printf '%s\n' "$update_output" | sed -n 's/^.*\(Could not determine the latest version\)$/\1/p')"
+    assert_eq "$desc makes no version claim" "" \
+        "$(printf '%s\n' "$update_output" | sed -n -e '/You have the latest version/p' -e '/Update Available!/p')"
+}
+
+assert_check_failed "--check-update with HTTP 404" --check-update 404 '{"message":"Not Found"}'
+assert_check_failed "--check with an empty body" --check 200 ''
+assert_check_failed "--check-update with no tag" --check-update 200 '{}'
+assert_check_failed "--check-update with a null tag" --check-update 200 '{"tag_name":null}'
+assert_check_failed "--check-update with a zero tag" --check-update 200 '{"tag_name":0}'
+assert_check_failed "--check-update with malformed JSON" --check-update 200 '{"tag_name":"v9.9.9"'
+assert_check_failed "--check-update with an invalid tag" --check-update 200 '{"tag_name":"v9.9.9invalid"}'
+assert_check_failed "--check-update when curl fails" --check-update 000 '' 28
+assert_check_failed "--check-update when curl fails with partial output" \
+    --check-update 200 '{"tag_name":"v9.9.9"}' 28
+
+installed_version=$(tr -d '[:space:]' < "$REPO_ROOT/VERSION")
+run_update_check --check-update 200 "{\"tag_name\":\"v$installed_version\"}"
+assert_eq "a successful current check exits 0" "0" "$update_status"
+assert_eq "a successful current check reports the installed version" \
+    "You have the latest version ($installed_version)" \
+    "$(printf '%s\n' "$update_output" | sed -n 's/^.*\(You have the latest version.*\)$/\1/p')"
+
+run_update_check --check-update 200 '{"tag_name":"v9.9.9"}'
+assert_eq "a successful newer check exits 0 when declining the update" "0" "$update_status"
+assert_eq "a successful newer check reports the available version" "9.9.9" \
+    "$(printf '%s\n' "$update_output" | sed -n 's/^  Latest version:  //p')"
 
 # --- version_lt (numeric + prerelease sanitizing) ---
 assert_rc "version_lt 1.9.0 < 1.10.0" 0 version_lt "1.9.0" "1.10.0"

@@ -2,11 +2,11 @@
 # =============================================================================
 # Update Module - Daily check for Cortado updates
 # =============================================================================
-# Checks GitHub once per day for a newer release. If found, shows a brief
-# notification on the statusline. Respects rate limits and caches aggressively.
+# Checks GitHub for a newer release and shows a notice if one is found.
+# Unavailable checks show "--" and are cached for at most one hour.
 #
 # Configuration options:
-#   UPDATE_CHECK_INTERVAL   - Seconds between checks (default: 86400 = 24h)
+#   UPDATE_CHECK_INTERVAL   - Cache lifetime in seconds (default: 86400 = 24h)
 #   UPDATE_REPO             - GitHub repo to check (default: gcko/Cortado)
 #   UPDATE_ICON             - Icon for update notification (default: arrow up)
 # =============================================================================
@@ -24,13 +24,21 @@ _check_cortado_update() {
             ;;
     esac
 
-    # Check cache first (default: 24 hours)
+    # Older "current" entries could represent a failed check. Refresh them.
     local cached
     cached=$(cache_get "$cache_key" "$check_interval")
-    if [ -n "$cached" ]; then
-        echo "$cached"
-        return
-    fi
+    case "$cached" in
+        checked-current|available:*)
+            printf '%s\n' "$cached"
+            return
+            ;;
+        unknown)
+            if [ "$(cache_get "$cache_key" 3600)" = "unknown" ]; then
+                printf '%s\n' "$cached"
+                return
+            fi
+            ;;
+    esac
 
     # Read local version
     local local_version=""
@@ -39,47 +47,42 @@ _check_cortado_update() {
         local_version=$(cat "$version_file" 2>/dev/null | tr -d '[:space:]')
     fi
 
-    if [ -z "$local_version" ]; then
-        cache_set "$cache_key" "unknown"
-        return
+    local remote_version result="unknown"
+    if [ -n "$local_version" ] && remote_version=$(_fetch_cortado_release "$repo"); then
+        result="checked-current"
+        if [ "$remote_version" != "$local_version" ] && _version_gt "$remote_version" "$local_version"; then
+            result="available:$remote_version"
+        fi
     fi
 
-    # Fetch latest release tag from GitHub API (unauthenticated, low rate limit)
-    local response
-    response=$(curl -s --max-time 5 --proto =https --max-redirs 3 -w "\n%{http_code}" \
-        "https://api.github.com/repos/${repo}/releases/latest" \
-        -H "Accept: application/vnd.github+json" 2>/dev/null)
+    cache_set "$cache_key" "$result"
+    printf '%s\n' "$result"
+}
 
-    local http_code
-    http_code=$(echo "$response" | tail -1)
-    local body
-    body=$(echo "$response" | sed '$d')
+_fetch_cortado_release() {
+    local repo="$1"
+
+    # Fetch latest release tag from GitHub API (unauthenticated, low rate limit)
+    local response http_code body tag
+    if ! response=$(curl -s --max-time 5 --proto =https --max-redirs 3 -w "\n%{http_code}" \
+        "https://api.github.com/repos/${repo}/releases/latest" \
+        -H "Accept: application/vnd.github+json" 2>/dev/null); then
+        log_debug "update: GitHub API request failed"
+        return 1
+    fi
+
+    http_code=$(printf '%s\n' "$response" | tail -1)
+    body=$(printf '%s\n' "$response" | sed '$d')
 
     if [ "$http_code" != "200" ]; then
         log_debug "update: GitHub API returned HTTP $http_code"
-        # Cache the failure so we don't retry for a while (1 hour)
-        cache_set "$cache_key" "current"
-        return
+        return 1
     fi
 
-    local remote_version
-    remote_version=$(echo "$body" | jq -r '.tag_name // empty' 2>/dev/null)
-    # Strip leading 'v' if present
-    remote_version="${remote_version#v}"
-
-    if [ -z "$remote_version" ]; then
-        cache_set "$cache_key" "current"
-        return
-    fi
-
-    # Compare versions (simple string comparison works for semver)
-    if [ "$remote_version" != "$local_version" ] && _version_gt "$remote_version" "$local_version"; then
-        cache_set "$cache_key" "available:${remote_version}"
-        echo "available:${remote_version}"
-    else
-        cache_set "$cache_key" "current"
-        echo "current"
-    fi
+    local release_pattern='^v?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?([+][0-9A-Za-z.-]+)?$'
+    tag=$(printf '%s\n' "$body" | jq -er '.tag_name | strings' 2>/dev/null) || return 1
+    [[ "$tag" =~ $release_pattern ]] || return 1
+    printf '%s\n' "${tag#v}"
 }
 
 # Return the leading numeric portion of a semantic-version component.
@@ -116,16 +119,15 @@ _version_gt() {
 }
 
 module_update() {
-    local result
+    local result reading icon
     result=$(_check_cortado_update)
 
     case "$result" in
-        available:*)
-            local new_version="${result#available:}"
-            local icon
-            icon=$(get_icon "${UPDATE_ICON:-⬆}" "UPD:")
-            echo "${icon} v${new_version}"
-            ;;
+        available:*) reading="v${result#available:}" ;;
+        unknown) reading="--" ;;
+        *) return 0 ;;
     esac
-    # Output nothing if current or unknown — module stays silent
+
+    icon=$(get_icon "${UPDATE_ICON:-⬆}" "UPD:")
+    printf '%s %s\n' "$icon" "$reading"
 }
