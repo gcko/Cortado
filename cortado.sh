@@ -258,33 +258,50 @@ load_config "$USER_CONFIG"
 # LOAD MODULES
 # =============================================================================
 
-# Load utility functions first (required by all other modules)
-if [ -f "$MODULES_DIR/utils.sh" ]; then
-    # shellcheck source=/dev/null
-    . "$MODULES_DIR/utils.sh"
-else
-    # Minimal fallback if utils.sh is missing
-    get_icon() { echo "$1"; }
-    get_status() { echo ""; }
-    progress_bar() { echo ""; }
-    format_number() { echo "$1"; }
-    safe_int() { echo "${1:-0}"; }
-    safe_percent() { echo "0"; }
-    json_get() { echo "${3:-}"; }
-    json_get_int() { echo "${3:-0}"; }
-    log_debug() { :; }
-fi
+log_module_stderr() {
+    local stderr_file="$1" module_name="$2"
+    [ "$stderr_file" != /dev/null ] && [ -s "$stderr_file" ] || return 0
 
-# Load all other module files
-for module_file in "$MODULES_DIR"/*.sh; do
-    if [ -f "$module_file" ]; then
-        basename_file=$(basename "$module_file")
-        if [ "$basename_file" != "utils.sh" ]; then
-            # shellcheck source=/dev/null
-            . "$module_file"
-        fi
+    local line diagnostics
+    diagnostics=$(
+        while IFS= read -r line || [ -n "$line" ]; do
+            printf '%s: %s\n' "$module_name" "$line"
+        done < "$stderr_file"
+    )
+    log_debug "$diagnostics"
+}
+
+# The fallback helpers are invoked by the sourced modules.
+# shellcheck disable=SC2329
+load_modules() {
+    local stderr_file="$1" module_file module_name
+
+    # Fallbacks for incomplete installations. utils.sh normally defines these.
+    log_debug() { :; }
+    if [ -f "$MODULES_DIR/utils.sh" ]; then
+        # shellcheck source=/dev/null
+        . "$MODULES_DIR/utils.sh" 2>"$stderr_file"
+        log_module_stderr "$stderr_file" utils
+    else
+        get_icon() { echo "$1"; }
+        get_status() { echo ""; }
+        progress_bar() { echo ""; }
+        format_number() { echo "$1"; }
+        safe_int() { echo "${1:-0}"; }
+        safe_percent() { echo "0"; }
+        json_get() { echo "${3:-}"; }
+        json_get_int() { echo "${3:-0}"; }
     fi
-done
+
+    for module_file in "$MODULES_DIR"/*.sh; do
+        [ -f "$module_file" ] || continue
+        module_name="${module_file##*/}"
+        [ "$module_name" != utils.sh ] || continue
+        # shellcheck source=/dev/null
+        . "$module_file" 2>"$stderr_file"
+        log_module_stderr "$stderr_file" "${module_name%.sh}"
+    done
+}
 
 # =============================================================================
 # MODULE REGISTRY
@@ -506,6 +523,19 @@ wrap_at_separators() {
 # =============================================================================
 
 main() {
+    if ! command -v jq >/dev/null 2>&1; then
+        printf '%s\n' 'cortado: jq missing'
+        return 0
+    fi
+
+    # Keep a private capture for sequential source and run calls. Flush it in
+    # the caller after each call so log entries are available when main returns.
+    local module_stderr=/dev/null
+    if [ "${DEBUG_MODE:-false}" = "true" ]; then
+        module_stderr=$(mktemp "${TMPDIR:-/tmp}/cortado-stderr.XXXXXX" 2>/dev/null) || module_stderr=/dev/null
+    fi
+    load_modules "$module_stderr"
+
     # Read input JSON from Claude Code
     local input
     input=$(cat)
@@ -584,10 +614,11 @@ main() {
             # Wrap module execution in a subshell with error handling.
             # This prevents a single module crash from killing the entire statusline.
             local output
-            output=$(run_module "$module" "$current_dir" "$input" 2>&1) || {
+            output=$(run_module "$module" "$current_dir" "$input" 2>"$module_stderr") || {
                 log_debug "Module $module failed with exit code $?"
                 output=""
             }
+            log_module_stderr "$module_stderr" "$module"
 
             if [ -n "$output" ]; then
                 if [ -n "$sections" ]; then
@@ -598,6 +629,9 @@ main() {
             fi
         fi
     done
+    if [ "$module_stderr" != /dev/null ]; then
+        rm -f -- "$module_stderr" 2>/dev/null
+    fi
 
     # =============================================================================
     # TERMINAL-WIDTH-AWARE OUTPUT

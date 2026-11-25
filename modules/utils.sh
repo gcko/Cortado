@@ -687,12 +687,43 @@ format_number() {
 # LOGGING
 # =============================================================================
 
-# Debug logging
+# Best-effort debug logging. The lock covers both the size check and append so
+# concurrent refreshes cannot each rotate the same log.
 log_debug() {
-    if [ "${DEBUG_MODE:-false}" = "true" ]; then
-        local log_file="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/cortado.log"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$log_file" 2>/dev/null
-    fi
+    [ "${DEBUG_MODE:-false}" = "true" ] || return 0
+    local log_file="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/cortado.log"
+    local lock="$log_file.lock" limit=1048576 attempts=0
+    local LC_ALL=C  # Count bytes, including for messages that contain Unicode.
+    local entry size
+
+    (
+        umask 077
+        # A single unusually large diagnostic still fits in one generation.
+        entry="[$(date '+%Y-%m-%d %H:%M:%S')] $1"
+        entry="${entry:0:$((limit - 1))}"$'\n'
+
+        until mkdir -- "$lock"; do
+            attempts=$((attempts + 1))
+            [ "$attempts" -lt 25 ] || return 1
+            sleep 0.01 || return 1
+        done
+        trap 'rmdir -- "$lock"' EXIT
+        trap 'exit 143' TERM
+        trap 'exit 130' INT
+        trap 'exit 129' HUP
+
+        # Only append to a regular log. Protect logs left by older versions
+        # before we append or move them into the previous generation.
+        [ ! -L "$log_file" ] || return 1
+        if [ -e "$log_file" ]; then
+            [ -f "$log_file" ] && chmod 600 "$log_file" || return 1
+            size=$(_file_stat %z %s "$log_file")
+            if [ "$((size + ${#entry}))" -gt "$limit" ]; then
+                [ ! -d "$log_file.1" ] && mv -f -- "$log_file" "$log_file.1" || return 1
+            fi
+        fi
+        printf '%s' "$entry" >> "$log_file"
+    ) 2>/dev/null || :
 }
 
 # =============================================================================
