@@ -3,6 +3,7 @@
 # Rate Limits Module - Shows 5-hour and 7-day usage with projections
 # Prefers the rate limits Claude Code puts in the statusline payload; otherwise
 # reads an owner-only Claude Code credential file. Never accesses macOS Keychain.
+# Stale fallback percentages show their cache age (for example, 42%~6h0m).
 # =============================================================================
 # Configuration options:
 #   RATE_SHOW_5H            - Show 5-hour rate limit (default: true)
@@ -350,6 +351,7 @@ module_rate_limits() {
     local fresh_fetch=false
     local in_backoff=false
     local backoff_remaining=0
+    local age_marker=""
 
     # Prefer the payload: it is current, needs no credential, and costs no
     # request. It is deliberately not written to the shared usage cache, which is
@@ -378,7 +380,20 @@ module_rate_limits() {
                 fresh_fetch=true
             else
                 # API failed (429/error/timeout) — serve stale cache if available
+                local cache_file="$CACHE_DIR/$cache_key" cache_time cache_age
+                cache_time=$(_file_mtime "$cache_file")
                 usage_data=$(cache_get "$cache_key" 86400)
+                if [ -n "$usage_data" ]; then
+                    if [ "$cache_time" -eq 0 ] || [ "$cache_time" -ne "$(_file_mtime "$cache_file")" ]; then
+                        # A concurrent fetch replaced the file. Try its fresh reading.
+                        usage_data=$(cache_get "$cache_key" "$cache_ttl")
+                    else
+                        cache_age=$(($(date +%s) - cache_time))
+                        if [ "$cache_age" -gt "$cache_ttl" ]; then
+                            age_marker="~$(format_cooldown "$cache_age")"
+                        fi
+                    fi
+                fi
             fi
         fi
     fi
@@ -402,8 +417,9 @@ module_rate_limits() {
         return
     fi
 
-    local five_hour=$(echo "$five_hour_obj" | jq -r '.utilization | numbers' 2>/dev/null)
-    local seven_day=$(echo "$seven_day_obj" | jq -r '.utilization | numbers' 2>/dev/null)
+    local utilization_filter='.utilization | numbers | select(. >= 0 and . <= 100) | if . == 0 then 0 else . end'
+    local five_hour=$(printf '%s' "$five_hour_obj" | jq -r "$utilization_filter" 2>/dev/null)
+    local seven_day=$(printf '%s' "$seven_day_obj" | jq -r "$utilization_filter" 2>/dev/null)
     local five_hour_reset=$(echo "$five_hour_obj" | jq -r '.resets_at // empty' 2>/dev/null)
     local seven_day_reset=$(echo "$seven_day_obj" | jq -r '.resets_at // empty' 2>/dev/null)
 
@@ -506,7 +522,7 @@ module_rate_limits() {
     local five_hour_part="--"
     local seven_day_part="--"
     if [ -n "$five_hour" ] && [ -n "$five_hour_int" ]; then
-        five_hour_part="${five_hour_int}%"
+        five_hour_part="${five_hour_int}%${age_marker}"
         if [ "$show_bar" = "true" ]; then
             five_hour_part="$(progress_bar "$five_hour_int" "$bar_width") $five_hour_part"
         fi
@@ -516,7 +532,7 @@ module_rate_limits() {
         five_hour_part="$five_hour_part$five_hour_status"
     fi
     if [ -n "$seven_day" ] && [ -n "$seven_day_int" ]; then
-        seven_day_part="${seven_day_int}%"
+        seven_day_part="${seven_day_int}%${age_marker}"
         if [ "$show_bar" = "true" ]; then
             seven_day_part="$(progress_bar "$seven_day_int" "$bar_width") $seven_day_part"
         fi
@@ -529,10 +545,10 @@ module_rate_limits() {
     # Build output
     local result=""
 
-    # Add stale/backoff indicator when showing cached data during API cooldown
-    local stale_marker=""
+    # Add a cooldown indicator when showing cached data during API backoff.
+    local backoff_marker=""
     if [ "$in_backoff" = "true" ] && [ "$fresh_fetch" != "true" ]; then
-        stale_marker=" $(get_icon '⏸' 'WAIT')$(format_cooldown "$backoff_remaining")"
+        backoff_marker=" $(get_icon '⏸' 'WAIT')$(format_cooldown "$backoff_remaining")"
     fi
 
     if [ "$show_5h" = "true" ]; then
@@ -550,7 +566,7 @@ module_rate_limits() {
     fi
 
     # Append backoff indicator at the end
-    result="${result}${stale_marker}"
+    result="${result}${backoff_marker}"
 
     echo "$result"
 }
