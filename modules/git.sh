@@ -89,6 +89,7 @@ module_git() {
     local from_cache=false
     local max_lines=500
     local status_count=0
+    local status_available=true
 
     # Numeric TTL > 0 enables cache (non-numeric → treat as disabled)
     case "$git_ttl" in
@@ -143,18 +144,21 @@ module_git() {
         if [ "$show_status" = "true" ] || [ "$show_count" = "true" ]; then
             # Keep the sample bounded while counting the same stream when needed.
             local status_output
-            status_output=$(git status --porcelain 2>/dev/null |
+            if status_output=$(git status --porcelain 2>/dev/null |
                 awk -v limit="$max_lines" -v count_all="$show_file_count" '
                     NR <= limit { print }
                     count_all == "false" && NR == limit { exit }
                     END { printf "%.0f\n", NR }
-                ')
-            status_count=${status_output##*$'\n'}
-            git_porcelain=${status_output%"$status_count"}
-            git_porcelain=${git_porcelain%$'\n'}
+                ' 2>/dev/null); then
+                status_count=${status_output##*$'\n'}
+                git_porcelain=${status_output%"$status_count"}
+                git_porcelain=${git_porcelain%$'\n'}
+            else
+                status_available=false
+            fi
         fi
 
-        if [ "$use_cache" = "true" ]; then
+        if [ "$use_cache" = "true" ] && [ "$status_available" = "true" ]; then
             # Store branch + porcelain for next render within TTL
             cache_set "$cache_key" "${git_branch}
 ---CORTADO_GIT---
@@ -169,7 +173,9 @@ ${git_porcelain}"
         result="$result $git_branch"
     fi
 
-    if [ "$show_status" = "true" ] || [ "$show_count" = "true" ]; then
+    if [ "$status_available" = "false" ]; then
+        result="$result [--]"
+    elif [ "$show_status" = "true" ] || [ "$show_count" = "true" ]; then
 
         if [ "$show_status" = "true" ]; then
             local has_modified=false
@@ -219,16 +225,18 @@ ${git_porcelain}"
 
         # File count (skip in compact mode)
         if [ "$show_file_count" = "true" ]; then
-            if [ "$from_cache" = "true" ] && [ -n "$git_porcelain" ]; then
-                status_count=$(printf '%s\n' "$git_porcelain" | grep -c '^')
-            fi
-
-            if [ "$status_count" -gt 0 ] 2>/dev/null; then
-                local count_display="$status_count"
+            local count_display=""
+            if [ "$from_cache" = "true" ] && [ -n "$git_porcelain" ] \
+                && ! status_count=$(printf '%s\n' "$git_porcelain" | grep -c '^' 2>/dev/null); then
+                count_display="--"
+            elif [ "$status_count" -gt 0 ] 2>/dev/null; then
+                count_display="$status_count"
                 # A full cached sample may have been truncated.
                 if [ "$from_cache" = "true" ] && [ "$status_count" -ge "$max_lines" ]; then
                     count_display="${status_count}+"
                 fi
+            fi
+            if [ -n "$count_display" ]; then
                 if [ -n "$file_icon" ]; then
                     result="$result $file_icon $count_display"
                 else
