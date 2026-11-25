@@ -1,54 +1,34 @@
 #!/bin/bash
-# =============================================================================
-# Timezone Render Tests
-# Usage: bash tests/test_timezone.sh
-# =============================================================================
-
+# Render timezone clocks from controlled date output.
 set -u
-set -o pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-TEST_BASE="$(mktemp -d)"
-trap 'rm -rf "$TEST_BASE"' EXIT
+# shellcheck source=tests/lib/render.sh
+. "$PROJECT_ROOT/tests/lib/render.sh" timezone
 
-mkdir -p "$TEST_BASE/project"
-touch "$TEST_BASE/project/AAA" "$TEST_BASE/project/BBB"
-PAYLOAD=$(jq -cn --arg dir "$TEST_BASE/project" '{workspace:{current_dir:$dir}}')
+touch "$TEST_BASE/AAA" "$TEST_BASE/BBB"
+PAYLOAD=$(jq -cn --arg dir "$TEST_BASE" '{workspace:{current_dir:$dir}}') || exit 1
+cat > "$TEST_BASE/bin/date" <<'STUB'
+#!/bin/bash
+[ "$*" = '+%H:%M' ] || exec /bin/date "$@"
+[ "$TEST_SAMPLE" != failed ] || exit 1
+case "$TZ" in
+    UTC|'*') printf '%s\n' '09:42' ;;
+    Asia/Tokyo) printf '%s\n' '18:42' ;;
+    *) exit 2 ;;
+esac
+STUB
+chmod +x "$TEST_BASE/bin/date"
 
-# shellcheck source=tests/lib/assert.sh
-. "$PROJECT_ROOT/tests/lib/assert.sh" plain-comma
-
-render() (
-    local sb
-    sb=$(mktemp -d "$TEST_BASE/config.XXXXXX") || exit 1
-    mkdir -m 700 "$sb/cortado-cache"
-    printf '%s\n' 'MODULE_ORDER="timezone"' 'MODULE_TIMEZONE="true"' "$@" > "$sb/cortado.conf"
-    chmod 600 "$sb/cortado.conf"
-    cd "$TEST_BASE/project" || exit 1
-    printf '%s' "$PAYLOAD" |
-        CLAUDE_CONFIG_DIR="$sb" CACHE_DIR="$sb/cortado-cache" /bin/bash "$PROJECT_ROOT/cortado.sh" |
-        sed $'s/\x1b\\[[0-9;]*m//g; s/[0-9][0-9]:[0-9][0-9]/HH:MM/g'
-)
-
-desc="a wildcard zone does not render filenames from the working directory"
-if out=$(render 'TIMEZONE_ZONES="UTC,*"'); then
-    case "$out" in
-        *AAA*|*BBB*) fail "$desc (got [$out])" ;;
-        'UTC: HH:MM'*) pass "$desc" ;;
-        *) fail "$desc (missing UTC clock in [$out])" ;;
-    esac
-else
-    fail "$desc (render failed)"
-fi
-
-out=$(render 'TIMEZONE_ZONES="UTC, Asia/Tokyo"')
-assert_eq "two named zones render in order" 'UTC: HH:MM | TOK: HH:MM' "$out"
-
-out=$(render 'TIMEZONE_ZONES="UTC, Asia/Tokyo"' 'TIMEZONE_LABELS="*,Tokyo"')
-assert_eq "a wildcard custom label stays literal" '*: HH:MM | Tokyo: HH:MM' "$out"
-
-out=$(render 'TIMEZONE_ZONES=", UTC, , Asia/Tokyo, "' 'TIMEZONE_LABELS=",Tokyo"')
-assert_eq "blank zones and omitted labels preserve clock order" 'UTC: HH:MM | Tokyo: HH:MM' "$out"
+check_render 'a wildcard zone renders literally without expanding filenames' 'UTC: 09:42 | *: 09:42' \
+    normal "$PAYLOAD" 'TIMEZONE_ZONES="UTC,*"'
+check_render 'two named zones render their measured clocks in order' 'UTC: 09:42 | TOK: 18:42' \
+    normal "$PAYLOAD" 'TIMEZONE_ZONES="UTC, Asia/Tokyo"'
+check_render 'a wildcard custom label stays literal' '*: 09:42 | Tokyo: 18:42' \
+    normal "$PAYLOAD" 'TIMEZONE_ZONES="UTC, Asia/Tokyo"' 'TIMEZONE_LABELS="*,Tokyo"'
+check_render 'blank zones and omitted labels preserve clock order' 'UTC: 09:42 | Tokyo: 18:42' \
+    normal "$PAYLOAD" 'TIMEZONE_ZONES=", UTC, , Asia/Tokyo, "' 'TIMEZONE_LABELS=",Tokyo"'
+check_render_gap 'timezone shows absence when its clock fails' 'UTC: --' '' failed "$PAYLOAD" 'TIMEZONE_ZONES="UTC"'
 
 printf '\nResults: %s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

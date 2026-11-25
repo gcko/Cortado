@@ -7,13 +7,15 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "$PROJECT_ROOT/tests/lib/assert.sh" plain
 
 render() (
-    sb=$(mktemp -d)
+    sb=$(mktemp -d) || exit 1
     trap 'rm -rf "$sb"' EXIT
     payload="$1"
     shift
     printf '%s\n' 'MODULE_ORDER="context"' 'MODULE_CONTEXT="true"' \
         'COLOR_THEME="monochrome"' 'TERMINAL_WIDTH=200' "$@" > "$sb/cortado.conf"
-    printf '%s' "$payload" | CLAUDE_CONFIG_DIR="$sb" /bin/bash "$PROJECT_ROOT/cortado.sh" 2>&1
+    chmod 600 "$sb/cortado.conf" || exit 1
+    printf '%s' "$payload" | CLAUDE_CONFIG_DIR="$sb" CACHE_DIR="$sb/cortado-cache" \
+        /bin/bash "$PROJECT_ROOT/cortado.sh" 2>&1
 )
 
 check() {

@@ -25,6 +25,7 @@ new_sandbox() {
     sb=$(mktemp -d "$TEST_BASE/render.XXXXXX") || exit 1
     printf '%s\n' 'MODULE_ORDER="version"' 'MODULE_VERSION="true"' \
         'COLOR_THEME="monochrome"' 'TERMINAL_WIDTH=200' "VERSION_SHOW_DURATION=$1" > "$sb/cortado.conf"
+    chmod 600 "$sb/cortado.conf" || exit 1
 }
 
 new_sandbox 10
@@ -33,7 +34,7 @@ now=$(/bin/date +%s)
 
 render() {
     printf '%s' "$1" | PATH="$TEST_BASE/bin:$PATH" TEST_NOW="$((now + $2))" \
-        CLAUDE_CONFIG_DIR="$sb" /bin/bash "$PROJECT_ROOT/cortado.sh" 2>&1
+        CLAUDE_CONFIG_DIR="$sb" CACHE_DIR="$sb/cortado-cache" /bin/bash "$PROJECT_ROOT/cortado.sh" 2>&1
 }
 
 check() {
