@@ -2,6 +2,7 @@
 # ABOUTME: Exercise the command saved by the installer through sh, with a
 # ABOUTME: sandboxed config, and verify backup and restore preserve it.
 
+umask 077
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TEST_BASE=$(mktemp -d) || exit 1
 trap 'rm -rf "$TEST_BASE"' EXIT
@@ -27,6 +28,7 @@ install_minimal() {
     if ! run_installer "$config_dir" --minimal > "$TEST_BASE/install.log" 2>&1; then
         fail "install completes in ${config_dir##*/}"
         cat "$TEST_BASE/install.log"
+        return 1
     fi
 }
 
@@ -38,7 +40,7 @@ assert_statusline_runs() {
         return
     fi
     render_dir=$(mktemp -d "$TEST_BASE/render.XXXXXX") || exit 1
-    if output=$(printf '%s' "$payload" | CLAUDE_CONFIG_DIR="$render_dir" \
+    if output=$(cd / && printf '%s' "$payload" | CLAUDE_CONFIG_DIR="$render_dir" \
         CACHE_DIR="$render_dir/cortado-cache" TERMINAL_WIDTH=200 /bin/sh -c "$cmd" 2>"$render_dir/stderr"); then
         case "$output" in
             *"25%"*"MODEL: Opus[1m]"*)
@@ -63,6 +65,213 @@ for name in 'with space' "apostrophe's" 'double"quote' "literal\$CORTADO_PATH_TE
         "$(jq -r '.statusLine.type' "$config_dir/settings.json")"
     assert_statusline_runs "fresh install renders through sh [$name]" "$config_dir/settings.json"
 done
+
+relative_dir='rel space'
+if (cd "$TEST_BASE" && install_minimal "$relative_dir"); then
+    assert_statusline_runs 'relative config saves a statusline command runnable from /' \
+        "$TEST_BASE/$relative_dir/settings.json"
+else
+    fail 'relative config installs successfully'
+fi
+
+quoted_home="$TEST_BASE/quote\"home"
+mkdir -p "$quoted_home" || exit 1
+HOME="$quoted_home" install_minimal "$TEST_BASE/quoted home"
+assert_file_contains 'self-test renders the quoted HOME directory' 'DIR: quote"home' "$TEST_BASE/install.log"
+assert_file_contains 'self-test renders the sample model with a quoted HOME' 'MODEL: Test' "$TEST_BASE/install.log"
+
+assert_install_failure() {
+    local desc="$1" config_dir="$2" diagnostic="$3" output
+    if output=$(run_installer "$config_dir" --minimal 2>&1); then
+        fail "$desc exits non-zero"
+    else
+        pass "$desc exits non-zero"
+    fi
+    assert_contains "$desc explains the failure" "$diagnostic" "$output"
+    assert_not_contains "$desc does not report a settings update" 'Updated settings.json' "$output"
+    assert_not_contains "$desc does not report settings creation" 'Created settings.json' "$output"
+    assert_not_contains "$desc does not report installation complete" 'Installation Complete!' "$output"
+    assert_empty "$desc cleans up staged settings" "$(find "$config_dir" -name '.settings.*')"
+}
+
+for invalid in empty whitespace null zero multiple; do
+    case "$invalid" in
+        empty) content='' ;;
+        whitespace) content=$' \n\t' ;;
+        null) content='null' ;;
+        zero) content='0' ;;
+        multiple) content=$'{}\n{}' ;;
+    esac
+    config_dir=$(mktemp -d "$TEST_BASE/invalid.XXXXXX") || exit 1
+    printf '%s' "$content" > "$config_dir/settings.json" || exit 1
+    cp "$config_dir/settings.json" "$TEST_BASE/previous-settings" || exit 1
+    assert_install_failure "$invalid settings" "$config_dir" 'Could not prepare settings.json'
+    assert_rc "$invalid settings stay byte-identical" 0 cmp -s \
+        "$TEST_BASE/previous-settings" "$config_dir/settings.json"
+done
+
+config_dir="$TEST_BASE/dangling-settings"
+mkdir "$config_dir" || exit 1
+ln -s "$TEST_BASE/missing-settings.json" "$config_dir/settings.json" || exit 1
+assert_install_failure 'settings path with a missing symlink target' "$config_dir" 'Could not prepare settings.json'
+assert_eq 'failed install keeps the original settings symlink' "$TEST_BASE/missing-settings.json" \
+    "$(readlink "$config_dir/settings.json")"
+
+config_dir="$TEST_BASE/fifo-settings"
+mkdir "$config_dir" || exit 1
+mkfifo "$config_dir/settings.json" || exit 1
+assert_install_failure 'settings path is a FIFO' "$config_dir" 'Could not prepare settings.json'
+assert_rc 'failed install keeps the original settings FIFO' 0 test -p "$config_dir/settings.json"
+
+old_settings='{"statusLine":{"type":"command","command":"old-command","padding":4},"other":true}'
+config_dir="$TEST_BASE/read-only"
+mkdir -p "$config_dir/cortado" "$config_dir/.cortado-backup" || exit 1
+printf '%s\n' "$old_settings" > "$config_dir/settings.json" || exit 1
+cp "$config_dir/settings.json" "$TEST_BASE/previous-settings" || exit 1
+chmod 500 "$config_dir" || exit 1
+if [ ! -w "$config_dir" ]; then
+    assert_install_failure 'read-only config directory' "$config_dir" 'Could not stage settings.json'
+    assert_rc 'read-only config keeps the original settings bytes' 0 cmp -s \
+        "$TEST_BASE/previous-settings" "$config_dir/settings.json"
+    assert_eq 'read-only config keeps the complete statusLine backup' \
+        '{"type":"command","command":"old-command","padding":4}' \
+        "$(jq -c '.settings_statusline' "$config_dir/.cortado-backup/manifest.json")"
+else
+    printf '  SKIP: current user can write to a chmod 500 directory\n'
+fi
+chmod 700 "$config_dir" || exit 1
+
+# Inject failures at the tool boundary so the real installer handles the
+# exit status, empty output or bad candidate file.
+fault_bin="$TEST_BASE/fault-bin"
+mkdir "$fault_bin" || exit 1
+FAULT_REAL_JQ=$(type -P jq) || exit 1
+FAULT_STAGE_DIR=$(mktemp -d "$TEST_BASE/stage-fault.XXXXXX") || exit 1
+export FAULT_REAL_JQ FAULT_STAGE_DIR
+cat > "$fault_bin/jq" <<'SH'
+#!/bin/bash
+case "$1 ${2:-} ${3:-}" in
+    '-nc --arg dir')
+        case "$INSTALLER_TEST_FAULT:$4" in
+            payload:*|probe-payload:*/cortado\"test)
+                "$FAULT_REAL_JQ" "$@"
+                exit 1
+                ;;
+        esac
+        ;;
+    '-nr --arg path')
+        if [ "$INSTALLER_TEST_FAULT" = quote ]; then
+            "$FAULT_REAL_JQ" "$@"
+            exit 1
+        fi
+        ;;
+    '-s --arg command')
+        case "$INSTALLER_TEST_FAULT" in
+            incomplete) printf '%s\n' '{"other":true}'; exit 0 ;;
+            wrong-command) printf '%s\n' '{"statusLine":{"type":"command","command":"other"}}'; exit 0 ;;
+            multiple-candidates) "$FAULT_REAL_JQ" "$@"; exec "$FAULT_REAL_JQ" "$@" ;;
+            writer) "$FAULT_REAL_JQ" "$@"; exit 1 ;;
+        esac
+        ;;
+esac
+exec "$FAULT_REAL_JQ" "$@"
+SH
+cat > "$fault_bin/mv" <<'SH'
+#!/bin/bash
+if [ "$INSTALLER_TEST_FAULT" = rename ]; then
+    exit 1
+fi
+exec /bin/mv "$@"
+SH
+cat > "$fault_bin/basename" <<'SH'
+#!/bin/bash
+if [ "$INSTALLER_TEST_FAULT" = directory ]; then
+    case "$1" in
+        *'"'*) exit 1 ;;
+    esac
+fi
+exec /usr/bin/basename "$@"
+SH
+cat > "$fault_bin/mktemp" <<'SH'
+#!/bin/bash
+if [ "$#" -eq 1 ] && [ "$1" = -d ]; then
+    case "$INSTALLER_TEST_FAULT" in
+        probe-temp) printf '%s\n' "$FAULT_PROBE_DIR"; exit 1 ;;
+        probe-renderer) printf '%s\n' "$FAULT_PROBE_DIR"; exit 0 ;;
+    esac
+fi
+case "${2:-}" in
+    */.settings.*)
+        if [ "$INSTALLER_TEST_FAULT" = stage ]; then
+            printf '%s\n' "$FAULT_STAGE_DIR"
+            exit 1
+        fi
+        ;;
+esac
+exec /usr/bin/mktemp "$@"
+SH
+chmod +x "$fault_bin/"* || exit 1
+
+# Bash reads this hook only in the fault cases below. Preserve valid output
+# while failing the operation so each exit-status check has its own regression.
+cat > "$TEST_BASE/fault-env" <<'SH'
+case "$INSTALLER_TEST_FAULT" in
+    probe-config)
+        printf() {
+            builtin printf "$@" || return
+            [ "${2:-}" != 'MODULE_ORDER="directory"' ]
+        }
+        ;;
+    probe-renderer)
+        if [ "$CLAUDE_CONFIG_DIR" = "$FAULT_PROBE_DIR" ]; then
+            printf '%s\n' 'Dir: cortado"test'
+            exit 7
+        fi
+        ;;
+esac
+SH
+
+for fault in stage writer incomplete wrong-command multiple-candidates rename payload quote \
+    directory probe-temp probe-config probe-payload probe-renderer; do
+    config_dir="$TEST_BASE/fault-$fault"
+    mkdir "$config_dir" || exit 1
+    printf '%s\n' "$old_settings" > "$config_dir/settings.json" || exit 1
+    cp "$config_dir/settings.json" "$TEST_BASE/previous-settings" || exit 1
+    case "$fault" in
+        stage) diagnostic='Could not stage settings.json' ;;
+        writer) diagnostic='Could not prepare settings.json' ;;
+        incomplete|wrong-command|multiple-candidates) diagnostic='Could not verify statusLine' ;;
+        rename) diagnostic='Could not replace settings.json' ;;
+        payload|quote) diagnostic='Could not prepare statusline test' ;;
+        directory|probe-*) diagnostic='Statusline test FAILED - sample directory missing' ;;
+    esac
+    FAULT_PROBE_DIR=$(mktemp -d "$TEST_BASE/probe-fault.XXXXXX") || exit 1
+    export FAULT_PROBE_DIR
+    PATH="$fault_bin:$PATH" HOME="$quoted_home" INSTALLER_TEST_FAULT="$fault" \
+        BASH_ENV="$TEST_BASE/fault-env" assert_install_failure "$fault failure" "$config_dir" "$diagnostic"
+    assert_rc "$fault failure keeps original settings bytes" 0 cmp -s \
+        "$TEST_BASE/previous-settings" "$config_dir/settings.json"
+    assert_eq "$fault failure keeps the complete statusLine backup" \
+        '{"type":"command","command":"old-command","padding":4}' \
+        "$(jq -c '.settings_statusline' "$config_dir/.cortado-backup/manifest.json")"
+    if [ "$fault" = probe-renderer ]; then
+        assert_rc 'failed directory probe cleans up its sandbox' 1 test -e "$FAULT_PROBE_DIR"
+    fi
+done
+
+config_dir="$TEST_BASE/renderer-error"
+mkdir "$config_dir" || exit 1
+printf '%s\n' 'printf "%s\n" "DIR: home | MODEL: Test"' 'exit 7' > "$config_dir/cortado.conf" || exit 1
+chmod 600 "$config_dir/cortado.conf" || exit 1
+assert_install_failure 'nonzero renderer with output' "$config_dir" 'Statusline test FAILED'
+
+config_dir="$TEST_BASE/directory-disabled"
+mkdir "$config_dir" || exit 1
+printf '%s\n' 'MODULE_DIRECTORY="false"' > "$config_dir/cortado.conf" || exit 1
+chmod 600 "$config_dir/cortado.conf" || exit 1
+install_minimal "$config_dir"
+assert_file_contains 'user config can hide the directory in the sample' 'MODEL: Test' "$TEST_BASE/install.log"
+assert_not_contains 'sample honors the disabled directory' 'DIR: home' "$(cat "$TEST_BASE/install.log")"
 
 # Simulate a settings edit made between installs. Reinstall should detect the
 # saved command, back it up and update the settings while preserving other keys.

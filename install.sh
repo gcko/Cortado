@@ -63,6 +63,10 @@ setup_colors() {
 # =============================================================================
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+case "$CLAUDE_DIR" in
+    /*) ;;
+    *) CLAUDE_DIR="$PWD/$CLAUDE_DIR" ;;
+esac
 CORTADO_DIR="$CLAUDE_DIR/cortado"
 SETTINGS_FILE="$CLAUDE_DIR/settings.json"
 BACKUP_DIR="$CLAUDE_DIR/.cortado-backup"
@@ -1787,6 +1791,75 @@ copy_runtime_files() {
     return 0
 }
 
+statusline_test_payload() {
+    # shellcheck disable=SC2016 # $dir is a jq variable.
+    jq -nc --arg dir "$1" '{
+        workspace: {current_dir: $dir},
+        model: {display_name: "Test"},
+        output_style: {name: "default"},
+        context_window: {context_window_size: 200000, current_usage: {input_tokens: 1000}}
+    }'
+}
+
+test_statusline_directory() (
+    local script="$1" probe_dir payload output directory='cortado"test'
+    probe_dir=$(mktemp -d) || return 1
+    trap 'rm -rf "$probe_dir"' EXIT
+    umask 077
+
+    # Verify the directory with a known input even if the user's config hides it.
+    printf '%s\n' 'MODULE_ORDER="directory"' 'MODULE_DIRECTORY="true"' \
+        'DIRECTORY_STYLE="text"' > "$probe_dir/cortado.conf" &&
+        payload=$(statusline_test_payload "$probe_dir/$directory") &&
+        output=$(CLAUDE_CONFIG_DIR="$probe_dir" CACHE_DIR="$probe_dir/cortado-cache" \
+            "$script" <<< "$payload" 2>/dev/null) &&
+        [ "$output" = "Dir: $directory" ]
+)
+
+write_statusline_settings() (
+    local command="$1" result="Created" stage_dir staged_settings
+    local input=()
+    if [ -f "$SETTINGS_FILE" ]; then
+        input=("$SETTINGS_FILE")
+        result="Updated"
+    elif [ -e "$SETTINGS_FILE" ] || [ -L "$SETTINGS_FILE" ]; then
+        print_error "Could not prepare settings.json: expected a regular file" >&2
+        return 1
+    fi
+
+    stage_dir=$(mktemp -d "$CLAUDE_DIR/.settings.XXXXXX") || {
+        print_error "Could not stage settings.json in $CLAUDE_DIR" >&2
+        return 1
+    }
+    trap 'rm -rf "$stage_dir"' EXIT
+    umask 077
+    staged_settings="$stage_dir/settings.json"
+
+    # With no settings file, jq reads the empty object from stdin.
+    if ! jq -s --arg command "$command" '
+        if length == 1 and (.[0] | type == "object") then
+            .[0] | .statusLine = {type: "command", command: $command}
+        else
+            error("expected one settings object")
+        end
+    ' "${input[@]}" <<< '{}' > "$staged_settings" 2>/dev/null; then
+        print_error "Could not prepare settings.json: expected one readable JSON object" >&2
+        return 1
+    fi
+    if ! jq -es --arg command "$command" '
+        length == 1 and (.[0].statusLine == {type: "command", command: $command})
+    ' "$staged_settings" >/dev/null 2>&1; then
+        print_error "Could not verify statusLine in staged settings.json" >&2
+        return 1
+    fi
+    # Use the parent as the destination so mv cannot move inside a settings.json directory.
+    if ! mv -f "$staged_settings" "$CLAUDE_DIR/"; then
+        print_error "Could not replace settings.json in $CLAUDE_DIR" >&2
+        return 1
+    fi
+    print_success "$result settings.json"
+)
+
 # =============================================================================
 # MAIN INSTALLATION
 # =============================================================================
@@ -1980,30 +2053,36 @@ do_install() {
     # Validate generated config
     validate_config "$CORTADO_DIR/cortado.conf"
 
-    print_success "Installed statusline to $CORTADO_DIR"
+    print_success "Copied statusline files to $CORTADO_DIR"
 
     # Test installation BEFORE applying to settings.json
     echo ""
     print_info "Testing statusline before applying..."
 
-    local test_json='{"workspace":{"current_dir":"'"$HOME"'"},"model":{"display_name":"Test"},"output_style":{"name":"default"},"context_window":{"context_window_size":200000,"current_usage":{"input_tokens":1000}}}'
+    local test_json quoted_path test_output
+    # Claude Code runs the command through a shell. Quote its absolute path.
     # shellcheck disable=SC2016 # $path is a jq variable.
-    local quoted_path=$(jq -nr --arg path "$CORTADO_DIR/cortado.sh" '$path | @sh')
-    local test_output
-    local test_errors
+    if ! test_json=$(statusline_test_payload "$HOME") ||
+       ! quoted_path=$(jq -nr --arg path "$CORTADO_DIR/cortado.sh" '$path | @sh'); then
+        print_error "Could not prepare statusline test. Settings not modified." >&2
+        exit 1
+    fi
 
-    # Capture both stdout and stderr
-    test_output=$("$CORTADO_DIR/cortado.sh" <<< "$test_json" 2>&1)
-    local test_exit_code=$?
-
-    # Check for bash errors in output
-    if echo "$test_output" | grep -q "declare: -A: invalid option\|syntax error\|command not found"; then
+    # Capture stdout and stderr and catch script errors printed with a zero exit status.
+    if ! test_output=$("$CORTADO_DIR/cortado.sh" <<< "$test_json" 2>&1) ||
+       printf '%s\n' "$test_output" | grep -Eq "declare: -A: invalid option|syntax error|command not found"; then
         print_error "Statusline test FAILED - script errors detected:"
         echo ""
         echo "  $test_output"
         echo ""
         print_error "Installation aborted. Settings not modified."
         print_info "Fix the errors above and try again."
+        exit 1
+    fi
+
+    if ! test_statusline_directory "$CORTADO_DIR/cortado.sh"; then
+        print_error "Statusline test FAILED - sample directory missing or could not be checked" >&2
+        print_error "Installation aborted. Settings not modified." >&2
         exit 1
     fi
 
@@ -2027,29 +2106,7 @@ do_install() {
     # Update settings.json only after successful test
     print_info "Applying configuration to settings.json..."
 
-    # Claude Code passes the command to a shell, so quote the path before JSON encoding it.
-    # shellcheck disable=SC2016 # $path is a jq variable.
-    local statusline_filter='.statusLine = {"type": "command", "command": ($path | @sh)}'
-
-    if [ -f "$SETTINGS_FILE" ]; then
-        local tmp_file=$(mktemp)
-        if jq --arg path "$CORTADO_DIR/cortado.sh" "$statusline_filter" "$SETTINGS_FILE" > "$tmp_file" 2>/dev/null; then
-            mv "$tmp_file" "$SETTINGS_FILE"
-            print_success "Updated settings.json"
-        else
-            rm -f "$tmp_file"
-            print_warning "Could not update settings.json - you may need to configure manually"
-        fi
-    else
-        local tmp_file=$(mktemp)
-        if jq -n --arg path "$CORTADO_DIR/cortado.sh" "$statusline_filter" > "$tmp_file" 2>/dev/null; then
-            mv "$tmp_file" "$SETTINGS_FILE"
-            print_success "Created settings.json"
-        else
-            rm -f "$tmp_file"
-            print_warning "Could not create settings.json - you may need to configure manually"
-        fi
-    fi
+    write_statusline_settings "$quoted_path" || exit 1
 
     # Final message
     echo ""
