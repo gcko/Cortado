@@ -109,27 +109,32 @@ check_remote_version() {
         return 1
     fi
 
+    local explicit_lookup="false"
+    case "$INSTALL_MODE" in
+        check-update|update) explicit_lookup="true" ;;
+    esac
+
     local response http_code body tag curl_status
     response=$(curl -s --connect-timeout 5 --max-time 8 --max-redirs 3 --proto =https \
         -w "\n%{http_code}" \
         -H "Accept: application/vnd.github+json" \
         "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" 2>/dev/null)
     curl_status=$?
-    if [ "$INSTALL_MODE" = "check-update" ] && [ "$curl_status" -ne 0 ]; then
+    if [ "$explicit_lookup" = "true" ] && [ "$curl_status" -ne 0 ]; then
         return 1
     fi
 
-    http_code=$(echo "$response" | tail -1)
-    body=$(echo "$response" | sed '$d')
+    http_code=$(printf '%s\n' "$response" | tail -1)
+    body=$(printf '%s\n' "$response" | sed '$d')
 
     if [ "$http_code" != "200" ] || [ -z "$body" ]; then
         return 1
     fi
 
-    if [ "$INSTALL_MODE" = "check-update" ]; then
-        local release_pattern='^v?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?([+][0-9A-Za-z.-]+)?$'
-        tag=$(printf '%s\n' "$body" | jq -er '.tag_name | strings' 2>/dev/null) || return 1
-        [[ "$tag" =~ $release_pattern ]] || return 1
+    if [ "$explicit_lookup" = "true" ]; then
+        local release_pattern='\Av?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?([+][0-9A-Za-z.-]+)?\z'
+        tag=$(printf '%s\n' "$body" | jq -ers --arg pattern "$release_pattern" \
+            'select(length == 1) | .[0] | objects | .tag_name | strings | select(test($pattern))' 2>/dev/null) || return 1
     elif command -v jq &>/dev/null; then
         tag=$(echo "$body" | jq -r '.tag_name // empty' 2>/dev/null)
     else
@@ -2226,31 +2231,30 @@ main() {
         exit 0
     fi
 
-    # Handle update check only
-    if [ "$INSTALL_MODE" = "check-update" ]; then
+    # Handle explicit release checks and updates
+    if [[ "$INSTALL_MODE" = "check-update" || "$INSTALL_MODE" = "update" ]]; then
+        if ! command -v jq >/dev/null 2>&1; then
+            print_error "jq is required to check for Cortado updates" >&2
+            exit 1
+        fi
         show_banner
         print_info "Checking for updates..."
         if check_for_updates; then
-            prompt_update "$@"
+            if [ "$INSTALL_MODE" = "update" ]; then
+                do_update "$@"
+            else
+                prompt_update "$@"
+            fi
         elif [ "$?" -eq 2 ]; then
             print_warning "Could not determine the latest version"
             exit 1
         else
             local ver=$(get_local_version)
-            print_success "You have the latest version ($ver)"
-        fi
-        exit 0
-    fi
-
-    # Handle forced update
-    if [ "$INSTALL_MODE" = "update" ]; then
-        show_banner
-        print_info "Checking for updates..."
-        if check_for_updates; then
-            do_update "$@"
-        else
-            local ver=$(get_local_version)
-            print_success "Already up to date ($ver)"
+            if [ "$INSTALL_MODE" = "update" ]; then
+                print_success "Already up to date ($ver)"
+            else
+                print_success "You have the latest version ($ver)"
+            fi
         fi
         exit 0
     fi

@@ -54,6 +54,7 @@ assert_gt "nonnumeric patch is treated as zero"                   "1.8.x"     "1
 mkdir -p "$TEST_DIR/bin"
 cat > "$TEST_DIR/bin/curl" <<'STUB'
 #!/bin/bash
+printf 'call\n' >> "$RELEASE_CALL_LOG"
 printf '%s\n%s\n' "$RELEASE_BODY" "$RELEASE_HTTP"
 exit "$RELEASE_CURL_STATUS"
 STUB
@@ -61,19 +62,27 @@ chmod +x "$TEST_DIR/bin/curl"
 
 render_update() {
     local http="$1" body="$2" curl_status="${3:-0}"
-    render_output=$(printf '%s\n' '{"workspace":{"current_dir":"/tmp"},"model":{"display_name":"Fixture"}}' |
+    render_output=$(printf '%s\n' "$payload" |
         CLAUDE_CONFIG_DIR="$sandbox" CACHE_DIR="$cache_dir" PATH="$TEST_DIR/bin:$PATH" \
+        RELEASE_CALL_LOG="$call_log" \
         RELEASE_HTTP="$http" RELEASE_BODY="$body" RELEASE_CURL_STATUS="$curl_status" \
         /bin/bash "$SCRIPT_DIR/cortado.sh")
 }
 
 new_sandbox() {
     sandbox=$(mktemp -d "$TEST_DIR/config.XXXXXX")
+    payload=$(jq -n --arg dir "$sandbox" '{workspace:{current_dir:$dir},model:{display_name:"Fixture"}}')
     cache_dir="$sandbox/cortado-cache"
     cache_file="$cache_dir/update_check"
+    call_log="$sandbox/curl-calls"
+    : > "$call_log"
     printf '%s\n' 'MODULE_ORDER="model,update"' 'MODULE_MODEL="true"' 'MODULE_UPDATE="true"' \
         'COLOR_THEME="monochrome"' > "$sandbox/cortado.conf"
     chmod 600 "$sandbox/cortado.conf"
+}
+
+release_calls() {
+    awk 'END {print NR}' "$call_log"
 }
 
 assert_unavailable() {
@@ -85,12 +94,17 @@ assert_unavailable() {
     assert_eq "$desc caches an unknown result" 'unknown' "$(cat "$cache_file" 2>/dev/null)"
 }
 
+installed_version=$(tr -d '[:space:]' < "$SCRIPT_DIR/VERSION")
+installed_release="{\"tag_name\":\"v$installed_version\"}"
 assert_unavailable "HTTP 404" 404 '{"message":"Not Found"}'
+assert_unavailable "HTTP 404 carrying the installed tag" 404 "$installed_release"
 assert_unavailable "an empty body" 200 ''
 assert_unavailable "a missing tag" 200 '{}'
 assert_unavailable "a null tag" 200 '{"tag_name":null}'
 assert_unavailable "a zero tag" 200 '{"tag_name":0}'
 assert_unavailable "malformed JSON" 200 '{"tag_name":"v9.9.9"'
+assert_unavailable "two JSON documents" 200 "{} $installed_release"
+assert_unavailable "an escaped trailing newline in the tag" 200 "{\"tag_name\":\"v$installed_version\\n\"}"
 assert_unavailable "an invalid release tag" 200 '{"tag_name":"v9.9.9invalid"}'
 assert_unavailable "a failed curl" 000 '' 28
 assert_unavailable "a failed curl with partial output" 200 '{"tag_name":"v9.9.9"}' 28
@@ -115,8 +129,7 @@ render_update 404 '{"message":"Not Found"}'
 assert_eq "a successful newer notice stays cached after two hours" "$new_notice" "$render_output"
 
 new_sandbox
-installed_version=$(tr -d '[:space:]' < "$SCRIPT_DIR/VERSION")
-render_update 200 "{\"tag_name\":\"v$installed_version\"}"
+render_update 200 "$installed_release"
 assert_eq "a successful current check has no update notice" 'MODEL: Fixture' "$render_output"
 assert_eq "a successful current check has its own cache result" 'checked-current' \
     "$(cat "$cache_file" 2>/dev/null)"
@@ -131,11 +144,58 @@ touch -t "$thirty_minutes_ago" "$cache_file"
 render_update 200 "$new_release"
 assert_eq "a custom shorter interval also allows retrying the failed check" "$new_notice" "$render_output"
 
+twenty_nine_minutes_ago=$(date -v-29M +%Y%m%d%H%M.%S 2>/dev/null || date -d '29 minutes ago' +%Y%m%d%H%M.%S)
+new_sandbox
+printf '%s\n' 'UPDATE_CHECK_INTERVAL=1800' >> "$sandbox/cortado.conf"
+render_update 404 '{"message":"Not Found"}'
+touch -t "$twenty_nine_minutes_ago" "$cache_file"
+render_update 200 "$new_release"
+assert_eq "a 29-minute-old failure retries with a 30-minute interval" '2' "$(release_calls)"
+assert_eq "the retry shows the newly available release" "$new_notice" "$render_output"
+
+new_sandbox
+printf '%s\n' 'UPDATE_CHECK_INTERVAL=1800' >> "$sandbox/cortado.conf"
+render_update 200 "$installed_release"
+touch -t "$twenty_nine_minutes_ago" "$cache_file"
+render_update 200 "$new_release"
+assert_eq "a 29-minute-old successful check keeps its 30-minute interval" '1' "$(release_calls)"
+assert_eq "the cached current check stays silent" 'MODEL: Fixture' "$render_output"
+
+new_sandbox
+printf '%s\n' 'UPDATE_CHECK_INTERVAL=abc' > "$sandbox/.cortado.conf"
+for attempt in 1 2 3; do
+    render_update 404 '{"message":"Not Found"}'
+done
+assert_eq "a malformed project interval still caches a failed check" '1' "$(release_calls)"
+assert_eq "the cached failure shows an unavailable reading" 'MODEL: Fixture | UPD: --' "$render_output"
+
 new_sandbox
 mkdir -p "$cache_dir"
 printf '%s\n' current > "$cache_file"
 render_update 404 '{"message":"Not Found"}'
 assert_eq "an ambiguous cache from an older install is checked again" 'MODEL: Fixture | UPD: --' "$render_output"
+
+new_sandbox
+mkdir -p "$cache_dir"
+printf '%s\n' 'available:9.9.9invalid' > "$cache_file"
+render_update 404 '{"message":"Not Found"}'
+assert_eq "a malformed legacy update notice is checked again" '1' "$(release_calls)"
+assert_eq "a malformed legacy notice is replaced by an unavailable reading" 'MODEL: Fixture | UPD: --' "$render_output"
+assert_eq "a failed refresh replaces the malformed cache entry" 'unknown' "$(cat "$cache_file")"
+
+new_sandbox
+mkdir -p "$cache_dir"
+printf '%s\n' 'available:9.9.9' > "$cache_file"
+render_update 404 '{"message":"Not Found"}'
+assert_eq "a valid legacy update notice is reused without a fetch" '0' "$(release_calls)"
+assert_eq "a valid legacy update notice stays visible" "$new_notice" "$render_output"
+
+new_sandbox
+printf '%s\n' 'UPDATE_REPO="bad repo"' >> "$sandbox/cortado.conf"
+render_update 200 "$new_release"
+assert_eq "a rejected repository shows an unavailable reading" 'MODEL: Fixture | UPD: --' "$render_output"
+assert_eq "a rejected repository makes no request" '0' "$(release_calls)"
+assert_eq "a rejected repository creates no cache entry" '1' "$([ -e "$cache_file" ]; printf '%s' "$?")"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

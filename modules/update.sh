@@ -1,12 +1,13 @@
 # shellcheck shell=bash
 # =============================================================================
-# Update Module - Daily check for Cortado updates
+# Update Module - Check for Cortado releases
 # =============================================================================
 # Checks GitHub for a newer release and shows a notice if one is found.
-# Unavailable checks show "--" and are cached for at most one hour.
+# Unavailable checks show "--" and are cached for half the successful interval,
+# capped at one hour.
 #
 # Configuration options:
-#   UPDATE_CHECK_INTERVAL   - Cache lifetime in seconds (default: 86400 = 24h)
+#   UPDATE_CHECK_INTERVAL   - Successful cache lifetime in seconds (default: 86400 = 24h)
 #   UPDATE_REPO             - GitHub repo to check (default: gcko/Cortado)
 #   UPDATE_ICON             - Icon for update notification (default: arrow up)
 # =============================================================================
@@ -15,25 +16,43 @@ _check_cortado_update() {
     local repo="${UPDATE_REPO:-gcko/Cortado}"
     local cache_key="update_check"
     local check_interval="${UPDATE_CHECK_INTERVAL:-86400}"
+    local version_pattern='[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?([+][0-9A-Za-z.-]+)?'
 
     # Validate repo format (owner/name) to prevent URL injection
     case "$repo" in
         *[!A-Za-z0-9_./-]*)
             log_debug "update: rejected unsafe UPDATE_REPO value"
+            printf '%s\n' unknown
             return
             ;;
     esac
 
-    # Older "current" entries could represent a failed check. Refresh them.
+    # Require decimal seconds in Bash's integer range before using arithmetic.
+    if [[ ! "$check_interval" =~ ^[0-9]+$ ]] || ! [ "$check_interval" -ge 0 ] 2>/dev/null; then
+        check_interval=86400
+    fi
+    local failure_interval=$((10#$check_interval / 2))
+    if [ "$failure_interval" -gt 3600 ]; then
+        failure_interval=3600
+    fi
+
+    # Older "current" entries could represent failed checks, and older
+    # "available:" entries could contain malformed versions.
     local cached
     cached=$(cache_get "$cache_key" "$check_interval")
     case "$cached" in
-        checked-current|available:*)
+        checked-current)
             printf '%s\n' "$cached"
             return
             ;;
+        available:*)
+            if [[ "${cached#available:}" =~ ^${version_pattern}$ ]]; then
+                printf '%s\n' "$cached"
+                return
+            fi
+            ;;
         unknown)
-            if [ "$(cache_get "$cache_key" 3600)" = "unknown" ]; then
+            if [ "$(cache_get "$cache_key" "$failure_interval")" = "unknown" ]; then
                 printf '%s\n' "$cached"
                 return
             fi
@@ -48,7 +67,7 @@ _check_cortado_update() {
     fi
 
     local remote_version result="unknown"
-    if [ -n "$local_version" ] && remote_version=$(_fetch_cortado_release "$repo"); then
+    if [ -n "$local_version" ] && remote_version=$(_fetch_cortado_release "$repo" "$version_pattern"); then
         result="checked-current"
         if [ "$remote_version" != "$local_version" ] && _version_gt "$remote_version" "$local_version"; then
             result="available:$remote_version"
@@ -60,7 +79,7 @@ _check_cortado_update() {
 }
 
 _fetch_cortado_release() {
-    local repo="$1"
+    local repo="$1" version_pattern="$2"
 
     # Fetch latest release tag from GitHub API (unauthenticated, low rate limit)
     local response http_code body tag
@@ -79,9 +98,9 @@ _fetch_cortado_release() {
         return 1
     fi
 
-    local release_pattern='^v?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?([+][0-9A-Za-z.-]+)?$'
-    tag=$(printf '%s\n' "$body" | jq -er '.tag_name | strings' 2>/dev/null) || return 1
-    [[ "$tag" =~ $release_pattern ]] || return 1
+    local release_pattern="\Av?${version_pattern}\z"
+    tag=$(printf '%s\n' "$body" | jq -ers --arg pattern "$release_pattern" \
+        'select(length == 1) | .[0] | objects | .tag_name | strings | select(test($pattern))' 2>/dev/null) || return 1
     printf '%s\n' "${tag#v}"
 }
 
