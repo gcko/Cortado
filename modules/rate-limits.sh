@@ -76,7 +76,8 @@ _get_claude_token() {
 }
 
 # Check if currently in backoff from a 429
-# Returns 0 if in backoff (with remaining seconds on stdout), 1 if not
+# Returns 0 for active or unknown cooldown, 1 for expired or absent.
+# stdout carries the remaining seconds only when the age is known.
 _check_backoff() {
     local backoff_file="$CACHE_DIR/rate_limits_backoff"
     local default_duration="${RATE_BACKOFF_SECONDS:-300}"
@@ -103,7 +104,11 @@ _check_backoff() {
     backoff_time=$(_file_mtime "$backoff_file")
 
     local now
-    now=$(date +%s)
+    now=$(date +%s 2>/dev/null) || return 0
+    case "$now" in
+        ''|0*|*[!0-9]*) return 0 ;;
+    esac
+    [ "$backoff_time" -gt 0 ] && [ "$now" -ge "$backoff_time" ] || return 0
     local backoff_age=$((now - backoff_time))
 
     if [ "$backoff_age" -lt "$duration" ]; then
@@ -168,13 +173,13 @@ _get_claude_usage() (
     # already probed the backoff state export RATE_BACKOFF_PROBED to reuse it.
     if [ "${RATE_BACKOFF_PROBED:-false}" = "true" ]; then
         if [ "${RATE_BACKOFF_ACTIVE:-false}" = "true" ]; then
-            log_debug "rate-limits: in backoff period (${RATE_BACKOFF_REMAINING:-0}s remaining), skipping API call"
+            log_debug "rate-limits: backoff marker blocks API call${RATE_BACKOFF_REMAINING:+ (${RATE_BACKOFF_REMAINING}s remaining)}"
             return 1
         fi
     else
         local backoff_remaining
         if backoff_remaining=$(_check_backoff); then
-            log_debug "rate-limits: in backoff period (${backoff_remaining}s remaining), skipping API call"
+            log_debug "rate-limits: backoff marker blocks API call${backoff_remaining:+ (${backoff_remaining}s remaining)}"
             return 1
         fi
     fi
@@ -303,27 +308,43 @@ _get_projection_status() {
 # entries can contain it too. Keep ordinary decimal strings as written.
 _projection_decimal() {
     case "$1" in
-        *[eE]*) LC_ALL=C printf '%.20f' "$1" 2>/dev/null ;;
+        *[eE]*)
+            local decimal
+            decimal=$(
+                LC_ALL=C
+                printf '%.20f' "$1" 2>/dev/null
+            ) || return 1
+            printf '%s' "$decimal"
+            ;;
         *) printf '%s' "$1" ;;
     esac
 }
 
-# Emit the verified age followed by the cached JSON.
+# Emit the verified age followed by the cached JSON. When a stale read races
+# with a writer, retry once using the fresh TTL.
 _read_usage_cache() {
-    local file="$1" max_age="$2" mtime now age data
-    [ -f "$file" ] || return 1
-    mtime=$(_file_mtime "$file")
-    now=$(date +%s 2>/dev/null) || return 1
-    case "$now" in
-        ''|0*|*[!0-9]*) return 1 ;;
-    esac
-    [ "$mtime" -gt 0 ] && [ "$now" -ge "$mtime" ] || return 1
-    age=$((now - mtime))
-    [ "$age" -le "$max_age" ] 2>/dev/null || return 1
-    data=$(cat "$file" 2>/dev/null) || return 1
-    # A concurrent fetch can publish a new file while this reader checks it.
-    [ -n "$data" ] && [ "$mtime" = "$(_file_mtime "$file")" ] || return 1
-    printf '%s\n%s\n' "$age" "$data"
+    local file="$1" max_age="$2" retry_max_age="${3:-}"
+    local mtime now age data
+    while [ -f "$file" ]; do
+        mtime=$(_file_mtime "$file")
+        now=$(date +%s 2>/dev/null) || return 1
+        case "$now" in
+            ''|0*|*[!0-9]*) return 1 ;;
+        esac
+        [ "$mtime" -gt 0 ] && [ "$now" -ge "$mtime" ] || return 1
+        age=$((now - mtime))
+        [ "$age" -le "$max_age" ] 2>/dev/null || return 1
+        data=$(cat "$file" 2>/dev/null) || return 1
+        if [ "$mtime" = "$(_file_mtime "$file")" ]; then
+            [ -n "$data" ] || return 1
+            printf '%s\n%s\n' "$age" "$data"
+            return 0
+        fi
+        [ -n "$retry_max_age" ] || return 1
+        max_age="$retry_max_age"
+        retry_max_age=""
+    done
+    return 1
 }
 
 # Parse an ISO-8601 resets_at timestamp (UTC, fractional seconds stripped by the
@@ -378,7 +399,7 @@ module_rate_limits() {
     local from_payload=false
     local fresh_fetch=false
     local in_backoff=false
-    local backoff_remaining=0
+    local backoff_remaining=""
     local age_marker=""
 
     # Prefer the payload: it is current, needs no credential, and costs no
@@ -408,7 +429,7 @@ module_rate_limits() {
             if [ -n "$usage_data" ]; then
                 cache_set "$cache_key" "$usage_data"
                 fresh_fetch=true
-            elif cached_usage=$(_read_usage_cache "$cache_file" 86400); then
+            elif cached_usage=$(_read_usage_cache "$cache_file" 86400 "$cache_ttl"); then
                 # API failed — serve the bounded fallback with its age.
                 usage_data=${cached_usage#*$'\n'}
                 cache_age=${cached_usage%%$'\n'*}
@@ -421,7 +442,7 @@ module_rate_limits() {
 
     if [ -z "$usage_data" ]; then
         # No data at all - show backoff countdown if applicable
-        if [ "$in_backoff" = "true" ]; then
+        if [ "$in_backoff" = "true" ] && [ -n "$backoff_remaining" ]; then
             local pause_icon=$(get_icon "⏸" "WAIT:")
             echo "${pause_icon} API cooldown $(format_cooldown "$backoff_remaining")"
         else
@@ -443,8 +464,8 @@ module_rate_limits() {
     local seven_day=$(printf '%s' "$seven_day_obj" | jq -r "$utilization_filter" 2>/dev/null)
     case "$five_hour,$seven_day" in
         *[eE]*)
-            five_hour=$(_projection_decimal "$five_hour")
-            seven_day=$(_projection_decimal "$seven_day")
+            five_hour=$(_projection_decimal "$five_hour") || five_hour=""
+            seven_day=$(_projection_decimal "$seven_day") || seven_day=""
             ;;
     esac
     local five_hour_reset=$(echo "$five_hour_obj" | jq -r '.resets_at // empty' 2>/dev/null)
@@ -493,9 +514,13 @@ module_rate_limits() {
                     local rate=$(echo "scale=10; $usage_delta / $elapsed" | bc -l 2>/dev/null || echo "0")
                     local projected_additional=$(echo "scale=2; $rate * $five_hour_remaining" | bc -l 2>/dev/null || echo "0")
                     local projected_total=$(echo "scale=2; $five_hour + $projected_additional" | bc -l 2>/dev/null || echo "$five_hour")
-                    local projected_int=$(printf "%.0f" "$projected_total" 2>/dev/null || echo "0")
-
-                    five_hour_status=$(_get_projection_status "$projected_int")
+                    local projected_int
+                    if projected_int=$(
+                        LC_ALL=C
+                        printf "%.0f" "$projected_total" 2>/dev/null
+                    ); then
+                        five_hour_status=$(_get_projection_status "$projected_int")
+                    fi
                 fi
             fi
         fi
@@ -526,9 +551,13 @@ module_rate_limits() {
                     local rate=$(echo "scale=10; $usage_delta / $elapsed" | bc -l 2>/dev/null || echo "0")
                     local projected_additional=$(echo "scale=2; $rate * $seven_day_remaining" | bc -l 2>/dev/null || echo "0")
                     local projected_total=$(echo "scale=2; $seven_day + $projected_additional" | bc -l 2>/dev/null || echo "$seven_day")
-                    local projected_int=$(printf "%.0f" "$projected_total" 2>/dev/null || echo "0")
-
-                    seven_day_status=$(_get_projection_status "$projected_int")
+                    local projected_int
+                    if projected_int=$(
+                        LC_ALL=C
+                        printf "%.0f" "$projected_total" 2>/dev/null
+                    ); then
+                        seven_day_status=$(_get_projection_status "$projected_int")
+                    fi
                 fi
             fi
         fi
@@ -574,7 +603,7 @@ module_rate_limits() {
 
     # Add a cooldown indicator when showing cached data during API backoff.
     local backoff_marker=""
-    if [ "$in_backoff" = "true" ] && [ "$fresh_fetch" != "true" ]; then
+    if [ "$in_backoff" = "true" ] && [ -n "$backoff_remaining" ] && [ "$fresh_fetch" != "true" ]; then
         backoff_marker=" $(get_icon '⏸' 'WAIT')$(format_cooldown "$backoff_remaining")"
     fi
 

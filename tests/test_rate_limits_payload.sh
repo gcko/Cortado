@@ -226,6 +226,40 @@ sb=$(sandbox stale-cache)
 assert_eq "a failed fetch shows the age on both stale readings" "5h:42%~6h0m 7d:10%~6h0m" "$(render_cache "$sb" 21600)"
 assert_eq "the stale fallback follows a curl attempt" "attempt" "$(cat "$sb/curl.log" 2>/dev/null)"
 
+for replacement in fresh stale unstable; do
+    sb=$(sandbox "cache-replacement-$replacement")
+    cat >> "$sb/cortado.conf" <<'CONFIG'
+cat() {
+    command cat "$@" || return
+    if [ "$1" = "$CACHE_DIR/rate_limits_usage" ] && [ -f "$1.new" ]; then
+        mv "$1.new" "$1"
+        if [ -f "$1.newer" ]; then mv "$1.newer" "$1.new"; fi
+    fi
+}
+CONFIG
+    cache_file="$sb/cortado-cache/rate_limits_usage"
+    printf '%s\n' '{"five_hour":{"utilization":12},"seven_day":{"utilization":15}}' > "$cache_file.new"
+    if [ "$replacement" = stale ]; then
+        TZ=UTC touch -t 202001010500 "$cache_file.new"
+    else
+        TZ=UTC touch -t 202001010600 "$cache_file.new"
+    fi
+    if [ "$replacement" = unstable ]; then
+        printf '%s\n' '{"five_hour":{"utilization":20},"seven_day":{"utilization":25}}' > "$cache_file.newer"
+        TZ=UTC touch -t 202001010559 "$cache_file.newer"
+    fi
+    out=$(render_cache "$sb" 21600)
+    case "$replacement" in
+        fresh) assert_eq "a fresh replacement after stale bytes were read is used" "5h:12% 7d:15%" "$out" ;;
+        stale) assert_eq "a replacement outside the fresh TTL shows absence" "5h:-- 7d:--" "$out" ;;
+        unstable)
+            assert_eq "a second change during the cache read shows absence" "5h:-- 7d:--" "$out"
+            assert_eq "the second change occurred during the retry" "absent" \
+                "$([ -e "$cache_file.new" ] && printf present || printf absent)"
+            ;;
+    esac
+done
+
 sb=$(sandbox expired-cache)
 assert_eq "a reading older than 24 hours is absent" "5h:-- 7d:--" "$(render_cache "$sb" 86401)"
 
@@ -242,6 +276,27 @@ printf '300\n' > "$sb/cortado-cache/rate_limits_backoff"
 TZ=UTC touch -t 202001010600 "$sb/cortado-cache/rate_limits_backoff"
 assert_eq "an active cooldown shows cache age and remaining wait" "5h:42%~6h0m 7d:10%~6h0m WAIT5m" "$(render_cache "$sb" 21600)"
 assert_eq "backoff skips curl" "" "$(cat "$sb/curl.log" 2>/dev/null)"
+
+for contents in marker-only marker-and-cache; do
+    sb=$(sandbox "unknown-backoff-$contents")
+    marker="$sb/cortado-cache/rate_limits_backoff"
+    printf '300\n' > "$marker"
+    TZ=UTC touch -t 202001010000 "$marker"
+    printf '%s\n' '{"claudeAiOauth":{"accessToken":"test-token-REDACTED"}}' > "$sb/.credentials.json"
+    chmod 600 "$sb/.credentials.json"
+    if [ "$contents" = marker-and-cache ]; then
+        printf '%s\n' '{"five_hour":{"utilization":2},"seven_day":{"utilization":3}}' \
+            > "$sb/cortado-cache/rate_limits_usage"
+        TZ=UTC touch -t 202001010000 "$sb/cortado-cache/rate_limits_usage"
+    fi
+    out=$(TEST_NOW=unavailable PATH="$TEST_BASE/fallback-bin:$PATH" render "$sb" "$NO_LIMITS")
+    assert_eq "an unmeasurable cooldown shows quota absence ($contents)" "5h:-- 7d:--" "$out"
+    assert_eq "an unmeasurable cooldown skips curl ($contents)" "" "$(cat "$sb/curl.log" 2>/dev/null)"
+    assert_eq "an unmeasurable cooldown keeps the marker ($contents)" "300" "$(cat "$marker" 2>/dev/null)"
+    TEST_NOW=1577923201 PATH="$TEST_BASE/fallback-bin:$PATH" render "$sb" "$NO_LIMITS" >/dev/null
+    assert_eq "an expired cooldown permits a fetch once the clock recovers ($contents)" "attempt" \
+        "$(cat "$sb/curl.log" 2>/dev/null)"
+done
 
 sb=$(sandbox payload-over-stale-cache)
 live_payload='{"rate_limits":{"five_hour":{"used_percentage":0},"seven_day":{"used_percentage":100}}}'
@@ -296,6 +351,8 @@ printf '%s\n' '{"five_hour":{"utilization":97.5},"seven_day":{"utilization":82.4
 rounded='5h:98% [CRIT] 7d:82% [HIGH]'
 assert_eq "C locale rounds decimal payload readings" "$rounded" "$(LC_ALL=C render "$sb" "$decimal_payload")"
 assert_eq "C locale rounds decimal cached readings" "$rounded" "$(LC_ALL=C render "$sb" "$NO_LIMITS")"
+assert_contains "history keeps the unrounded payload percentages" ",97.5,82.4," \
+    "$(cat "$sb/.usage_history" 2>/dev/null)"
 comma_locale=$(
     locale -a | while IFS= read -r candidate; do
         if [ "$(LC_ALL="$candidate" locale decimal_point 2>/dev/null)" = "," ]; then
@@ -309,9 +366,36 @@ if [ -n "$comma_locale" ]; then
         "$(LC_ALL="$comma_locale" render "$sb" "$decimal_payload")"
     assert_eq "comma-decimal locale rounds cached readings" "$rounded" \
         "$(LC_ALL="$comma_locale" render "$sb" "$NO_LIMITS")"
+
+    for utilization in 1e2 100.00000000000000000000; do
+        for window in five_hour seven_day; do
+            sb=$(sandbox "comma-$window-$utilization")
+            printf '%s\n' 'RATE_SHOW_TIME_REMAINING="false"' 'RATE_SHOW_PROJECTION="true"' >> "$sb/cortado.conf"
+            # A single, old history point gives a zero slope in either window.
+            printf '%s,100,100,%s,%s\n' "$((NOW - 86400))" "$reset" "$reset" > "$sb/.usage_history"
+            case "$window" in
+                five_hour) sibling=seven_day; expected='5h:100% [CRIT] 7d:10%' ;;
+                seven_day) sibling=five_hour; expected='5h:10% 7d:100% [CRIT]' ;;
+            esac
+            printf '{"%s":{"utilization":%s,"resets_at":"%s"},"%s":{"utilization":10}}\n' \
+                "$window" "$utilization" "$reset" "$sibling" > "$sb/cortado-cache/rate_limits_usage"
+            assert_eq "a comma locale keeps the $window critical projection for $utilization" "$expected" \
+                "$(LC_ALL="$comma_locale" render "$sb" "$NO_LIMITS")"
+        done
+    done
+
+    sb=$(sandbox comma-exponent-payload)
+    exponent_payload='{"rate_limits":{"five_hour":{"used_percentage":1e2},"seven_day":{"used_percentage":10}}}'
+    assert_eq "a fresh exponent payload keeps both readings in a comma locale" "5h:100% 7d:10%" \
+        "$(LC_ALL="$comma_locale" render "$sb" "$exponent_payload")"
+    assert_eq "an exponent history row keeps five fields and its seven-day percentage" "5 10" \
+        "$(awk -F, '{print NF, $3}' "$sb/.usage_history")"
+
+    sb=$(sandbox comma-seven-day-exponent)
+    exponent_payload='{"rate_limits":{"five_hour":{"used_percentage":10},"seven_day":{"used_percentage":5e1}}}'
+    assert_eq "a fresh seven-day exponent payload keeps both readings in a comma locale" "5h:10% 7d:50%" \
+        "$(LC_ALL="$comma_locale" render "$sb" "$exponent_payload")"
 fi
-assert_contains "history keeps the unrounded payload percentages" ",97.5,82.4," \
-    "$(cat "$sb/.usage_history" 2>/dev/null)"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

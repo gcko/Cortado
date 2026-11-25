@@ -23,21 +23,41 @@ module_processes() {
     local running_procs=""
 
     if [ "$(uname)" != "Darwin" ] && [ -d /proc ]; then
-        total_procs=$(ls -d /proc/[0-9]* 2>/dev/null | wc -l)
-        if [ "$show_running" = "true" ]; then
-            local status_counts statuses_read running_count
+        local pid_dir restore_noglob=false restore_failglob=false
+        local pid_dirs=() status_paths=()
+        # Snapshot in this shell so counting does not create transient PIDs.
+        case "$-" in
+            *f*) restore_noglob=true; set +f ;;
+        esac
+        if shopt -q failglob; then
+            restore_failglob=true
+            shopt -u failglob
+        fi
+        pid_dirs=(/proc/[0-9]*/)
+        if [[ "$restore_noglob" = true ]]; then set -f; fi
+        if [[ "$restore_failglob" = true ]]; then shopt -s failglob; fi
+
+        total_procs=0
+        for pid_dir in "${pid_dirs[@]+"${pid_dirs[@]}"}"; do
+            pid_dir=${pid_dir%/}
+            case "${pid_dir##*/}" in
+                *[!0-9]*) continue ;;
+            esac
+            total_procs=$((total_procs + 1))
+            if [ "$show_running" = "true" ]; then
+                status_paths+=("$pid_dir/status")
+            fi
+        done
+
+        if [ "$show_running" = "true" ] && [ "$total_procs" -gt 0 ]; then
+            local status_counts
             running_procs="--"
+            # Unlike a second glob, explicit paths preserve missing members.
             # grep exits 1 for a complete scan with no running processes.
-            # A read error or a PID vanishing before the glob makes it partial.
-            if status_counts=$(grep -cE '^State:[[:space:]]*R' /proc/[0-9]*/status 2>/dev/null) \
+            if status_counts=$(grep -cE '^State:[[:space:]]*R' "${status_paths[@]}" 2>/dev/null) \
                 || [ "$?" -eq 1 ]; then
-                IFS=' ' read -r statuses_read running_count <<< "$(awk -F: '
-                    NF { read_count++; if ($NF > 0) running++ }
-                    END { print read_count+0, running+0 }
-                ' <<< "$status_counts")"
-                if [ "$statuses_read" -eq "$total_procs" ] 2>/dev/null; then
-                    running_procs="$running_count"
-                fi
+                running_procs=$(awk -F: '$NF > 0 { running++ } END { print running+0 }' <<< "$status_counts") \
+                    || running_procs="--"
             fi
         fi
     else
@@ -70,7 +90,7 @@ module_processes() {
         result="$result $total_procs"
     fi
 
-    if [ "$show_status" = "true" ]; then
+    if [ "$show_status" = "true" ] && { [ "$show_total" = "true" ] || [ "$running_procs" != "--" ]; }; then
         local status_ind=$(get_status "$total_procs" "$warn_thresh" "$crit_thresh")
         result="$result${status_ind}"
     fi
