@@ -121,13 +121,24 @@ run_archive_update() {
     : > "$request_log"
     unzip_log="$sandbox/unzip"
     : > "$unzip_log"
-    local temp_parent="$sandbox/tmp"
-    [ "$download_case" = no-temp ] && temp_parent="$sandbox/missing"
+    local temp_parent="$sandbox/tmp" stub_path=""
+    if [ "$download_case" = no-temp ]; then
+        # BSD mktemp falls back to the system temp dir when TMPDIR is unusable,
+        # so force the failure: only a bare `mktemp -d` (the update path) fails.
+        stub_path="$sandbox/no-temp-bin"
+        mkdir -p "$stub_path"
+        cat > "$stub_path/mktemp" <<STUB
+#!/bin/bash
+if [ "\$#" -eq 1 ] && [ "\$1" = -d ]; then exit 1; fi
+exec "$(command -v mktemp)" "\$@"
+STUB
+        chmod +x "$stub_path/mktemp"
+    fi
     local args=(--no-color --no-emoji)
     [ "$flag" != interactive ] && args=("$flag" "${args[@]}")
     update_output=$(printf '\n\n' |
         CLAUDE_CONFIG_DIR="$sandbox/config" CACHE_DIR="$sandbox/config/cortado-cache" TMPDIR="$temp_parent" \
-        PATH="$TEST_BASE/bin:${UPDATE_PATH:-$PATH}" FIXTURE="$fixture" REQUEST_LOG="$request_log" \
+        PATH="${stub_path:+$stub_path:}$TEST_BASE/bin:${UPDATE_PATH:-$PATH}" FIXTURE="$fixture" REQUEST_LOG="$request_log" \
         UNZIP_BIN="$unzip_bin" UNZIP_LOG="$unzip_log" \
         RELEASE_BODY="{\"tag_name\":\"$fixture_tag\"}" DOWNLOAD_CASE="$download_case" \
         /bin/bash "$sandbox/source/install.sh" "${args[@]}" 2>&1)
