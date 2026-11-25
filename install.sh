@@ -63,6 +63,10 @@ setup_colors() {
 # =============================================================================
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+case "$CLAUDE_DIR" in
+    /*) ;;
+    *) CLAUDE_DIR="$PWD/$CLAUDE_DIR" ;;
+esac
 CORTADO_DIR="$CLAUDE_DIR/cortado"
 SETTINGS_FILE="$CLAUDE_DIR/settings.json"
 BACKUP_DIR="$CLAUDE_DIR/.cortado-backup"
@@ -1584,9 +1588,8 @@ detect_existing_statusline() {
 }
 
 backup_existing_statusline() {
+    local snapshot="$1"
     print_info "Backing up existing statusline configuration..."
-
-    mkdir -p "$BACKUP_DIR"
 
     local timestamp=$(date +%Y%m%d_%H%M%S)
     # Keep JSON backslashes literal even when Bash enables xpg_echo.
@@ -1595,39 +1598,28 @@ backup_existing_statusline() {
     if [ -f "$SETTINGS_FILE" ]; then
         local statusline_config=$(jq '.statusLine // null' "$SETTINGS_FILE" 2>/dev/null)
         if [ "$statusline_config" != "null" ] && [ -n "$statusline_config" ]; then
-            manifest=$(printf '%s\n' "$manifest" | jq --argjson config "$statusline_config" '.settings_statusline = $config' 2>/dev/null) || {
-                print_warning "Could not backup statusLine config"
-            }
+            manifest=$(printf '%s\n' "$manifest" | jq --argjson config "$statusline_config" '.settings_statusline = $config' 2>/dev/null) || return 1
             print_success "Backed up statusLine config from settings.json"
         fi
     fi
 
     if [ -d "$CORTADO_DIR" ]; then
-        local backup_modular="$BACKUP_DIR/cortado-modular-$timestamp"
-        cp -r "$CORTADO_DIR" "$backup_modular" && {
-            manifest=$(printf '%s\n' "$manifest" | jq --arg path "$backup_modular" --arg orig "$CORTADO_DIR" \
-                '.files += [{"original": $orig, "backup": $path, "type": "directory"}]' 2>/dev/null)
-            print_success "Backed up Cortado directory"
-        }
+        local backup_modular="$snapshot/cortado"
+        cp -r "$CORTADO_DIR" "$backup_modular" || return 1
+        manifest=$(printf '%s\n' "$manifest" | jq --arg path "$backup_modular" --arg orig "$CORTADO_DIR" \
+            '.files += [{"original": $orig, "backup": $path, "type": "directory"}]' 2>/dev/null) || return 1
+        print_success "Backed up Cortado directory"
     fi
 
     if [ -f "$CLAUDE_DIR/cortado.sh" ]; then
-        local backup_single="$BACKUP_DIR/cortado.sh.$timestamp"
-        cp "$CLAUDE_DIR/cortado.sh" "$backup_single" && {
-            manifest=$(printf '%s\n' "$manifest" | jq --arg path "$backup_single" --arg orig "$CLAUDE_DIR/cortado.sh" \
-                '.files += [{"original": $orig, "backup": $path, "type": "file"}]' 2>/dev/null)
-            print_success "Backed up single-file cortado.sh"
-        }
+        local backup_single="$snapshot/cortado.sh"
+        cp "$CLAUDE_DIR/cortado.sh" "$backup_single" || return 1
+        manifest=$(printf '%s\n' "$manifest" | jq --arg path "$backup_single" --arg orig "$CLAUDE_DIR/cortado.sh" \
+            '.files += [{"original": $orig, "backup": $path, "type": "file"}]' 2>/dev/null) || return 1
+        print_success "Backed up single-file cortado.sh"
     fi
 
-    # Save manifest
-    printf '%s\n' "$manifest" > "$BACKUP_MANIFEST" 2>/dev/null || {
-        print_warning "Could not save backup manifest"
-    }
-
-    echo ""
-    print_info "Backup location: $BACKUP_DIR"
-    echo ""
+    printf '%s\n' "$manifest" > "$snapshot/manifest.json"
 }
 
 restore_from_backup() {
@@ -1787,10 +1779,101 @@ copy_runtime_files() {
     return 0
 }
 
+statusline_test_payload() {
+    # shellcheck disable=SC2016 # $dir is a jq variable.
+    jq -nc --arg dir "$1" '{
+        workspace: {current_dir: $dir},
+        model: {display_name: "Test"},
+        output_style: {name: "default"},
+        context_window: {context_window_size: 200000, current_usage: {input_tokens: 1000}}
+    }'
+}
+
+render_statusline_sample() (
+    local script="$1" payload="$2" output errors
+    errors=$(mktemp "${TMPDIR:-/tmp}/cortado-test.XXXXXX") || {
+        print_error "Could not capture statusline test diagnostics" >&2
+        return 1
+    }
+    trap 'rm -f "$errors"' EXIT
+
+    if ! output=$(CLAUDE_CONFIG_DIR="$CLAUDE_DIR" "$script" <<< "$payload" 2>"$errors") ||
+       grep -Eq 'declare: -A: invalid option|syntax error|command not found' "$errors"; then
+        print_error "Statusline test FAILED - script errors detected:" >&2
+        printf '  %s\n' "$output" >&2
+        cat "$errors" >&2
+        return 1
+    fi
+    printf '%s' "$output"
+)
+
+test_statusline_directory() (
+    local script="$1" payload="$2" sample_dir="$3" probe_dir output directory
+    local probe_settings=(
+        MODULE_ORDER=directory MODULE_DIRECTORY=true DIRECTORY_STYLE=text
+        DIRECTORY_SHOW_FULL_PATH=false DIRECTORY_MAX_LENGTH=0 LAYOUT_MODE=none
+    )
+    probe_dir=$(mktemp -d) || return 1
+    trap 'rm -rf "$probe_dir"' EXIT
+    umask 077
+
+    # Check the sample before display preferences can hide or clip its directory.
+    printf '%s\n' "${probe_settings[@]}" > "$probe_dir/cortado.conf" || return 1
+    # Inherited settings take precedence over any project config in the sample directory.
+    output=$(env "${probe_settings[@]}" CLAUDE_CONFIG_DIR="$probe_dir" CACHE_DIR="$probe_dir/cortado-cache" \
+        "$script" <<< "$payload" 2>/dev/null) || return 1
+    directory=$(basename -- "$sample_dir") || return 1
+    [ -n "$directory" ] && [ "$output" = "Dir: $directory" ]
+)
+
+write_statusline_settings() (
+    local command="$1" result="Created" stage_dir staged_settings
+    local input=()
+    if [ -f "$SETTINGS_FILE" ]; then
+        input=("$SETTINGS_FILE")
+        result="Updated"
+    elif [ -e "$SETTINGS_FILE" ] || [ -L "$SETTINGS_FILE" ]; then
+        print_error "Could not prepare settings.json: expected a regular file" >&2
+        return 1
+    fi
+
+    stage_dir=$(mktemp -d "$CLAUDE_DIR/.settings.XXXXXX") || {
+        print_error "Could not stage settings.json in $CLAUDE_DIR" >&2
+        return 1
+    }
+    trap 'rm -rf "$stage_dir"' EXIT
+    umask 077
+    staged_settings="$stage_dir/settings.json"
+
+    # With no settings file, jq reads the empty object from stdin.
+    if ! jq -s --arg command "$command" '
+        if length == 1 and (.[0] | type == "object") then
+            .[0] | .statusLine = {type: "command", command: $command}
+        else
+            error("expected one settings object")
+        end
+    ' "${input[@]}" <<< '{}' > "$staged_settings" 2>/dev/null; then
+        print_error "Could not prepare settings.json: expected one readable JSON object" >&2
+        return 1
+    fi
+    if ! jq -es --arg command "$command" '
+        length == 1 and (.[0].statusLine == {type: "command", command: $command})
+    ' "$staged_settings" >/dev/null 2>&1; then
+        print_error "Could not verify statusLine in staged settings.json" >&2
+        return 1
+    fi
+    # Use the parent as the destination so mv cannot move inside a settings.json directory.
+    if ! mv -f "$staged_settings" "$CLAUDE_DIR/"; then
+        print_error "Could not replace settings.json in $CLAUDE_DIR" >&2
+        return 1
+    fi
+    print_success "$result settings.json"
+)
+
 # =============================================================================
 # MAIN INSTALLATION
 # =============================================================================
-do_install() {
+do_install() (
     local mode="$1"
     # Banner already shown in interactive mode during update check
     if [ "$mode" != "interactive" ]; then
@@ -1853,9 +1936,6 @@ do_install() {
                 exit 0
             fi
         fi
-
-        echo ""
-        backup_existing_statusline
     fi
 
     # Module selection based on mode
@@ -1941,6 +2021,29 @@ do_install() {
         exit 1
     }
 
+    local pending_backup=""
+    if [ "$first_line" = "detected" ]; then
+        if ! mkdir -p "$BACKUP_DIR" || ! pending_backup=$(mktemp -d "$BACKUP_DIR/snapshot.XXXXXX"); then
+            print_error "Could not stage a statusline backup in $BACKUP_DIR" >&2
+            exit 1
+        fi
+        trap 'rm -rf -- "$pending_backup"' EXIT
+        if ! backup_existing_statusline "$pending_backup"; then
+            print_error "Could not prepare a statusline backup in $BACKUP_DIR" >&2
+            exit 1
+        fi
+        # Publish the first restore point before replacing any runtime files.
+        # During a reinstall, keep the existing restore point until settings commit.
+        if [ ! -f "$BACKUP_MANIFEST" ]; then
+            if ! mv -f "$pending_backup/manifest.json" "$BACKUP_DIR/"; then
+                print_error "Could not save backup manifest in $BACKUP_DIR" >&2
+                exit 1
+            fi
+            trap - EXIT
+            pending_backup=""
+        fi
+    fi
+
     # Remove existing installation
     [ -d "$CORTADO_DIR" ] && rm -rf "$CORTADO_DIR"
     [ -f "$CLAUDE_DIR/cortado.sh" ] && rm "$CLAUDE_DIR/cortado.sh"
@@ -1952,6 +2055,12 @@ do_install() {
         print_error "Could not create $CORTADO_DIR"
         exit 1
     }
+
+    local installed_dir
+    if ! installed_dir=$(CDPATH='' cd -- "$CORTADO_DIR" && pwd -P); then
+        print_error "Could not resolve the installed directory: $CORTADO_DIR" >&2
+        exit 1
+    fi
 
     if ! copy_runtime_files "$SCRIPT_DIR" "$CORTADO_DIR"; then
         print_error "Could not copy Cortado runtime files (need cortado.sh, modules/, lib/config-tui.sh)"
@@ -1980,30 +2089,34 @@ do_install() {
     # Validate generated config
     validate_config "$CORTADO_DIR/cortado.conf"
 
-    print_success "Installed statusline to $CORTADO_DIR"
+    print_success "Copied statusline files to $CORTADO_DIR"
 
     # Test installation BEFORE applying to settings.json
     echo ""
     print_info "Testing statusline before applying..."
 
-    local test_json='{"workspace":{"current_dir":"'"$HOME"'"},"model":{"display_name":"Test"},"output_style":{"name":"default"},"context_window":{"context_window_size":200000,"current_usage":{"input_tokens":1000}}}'
+    local test_json quoted_path test_output
+    if [ -z "$HOME" ]; then
+        print_error "Could not prepare statusline test: HOME is empty. Settings not modified." >&2
+        exit 1
+    fi
+    # Claude Code runs the command through a shell. Quote its absolute path.
     # shellcheck disable=SC2016 # $path is a jq variable.
-    local quoted_path=$(jq -nr --arg path "$CORTADO_DIR/cortado.sh" '$path | @sh')
-    local test_output
-    local test_errors
+    if ! test_json=$(statusline_test_payload "$HOME") ||
+       ! quoted_path=$(jq -nr --arg path "$installed_dir/cortado.sh" '$path | @sh'); then
+        print_error "Could not prepare statusline test. Settings not modified." >&2
+        exit 1
+    fi
 
-    # Capture both stdout and stderr
-    test_output=$("$CORTADO_DIR/cortado.sh" <<< "$test_json" 2>&1)
-    local test_exit_code=$?
-
-    # Check for bash errors in output
-    if echo "$test_output" | grep -q "declare: -A: invalid option\|syntax error\|command not found"; then
-        print_error "Statusline test FAILED - script errors detected:"
-        echo ""
-        echo "  $test_output"
-        echo ""
+    if ! test_output=$(render_statusline_sample "$installed_dir/cortado.sh" "$test_json"); then
         print_error "Installation aborted. Settings not modified."
         print_info "Fix the errors above and try again."
+        exit 1
+    fi
+
+    if ! test_statusline_directory "$installed_dir/cortado.sh" "$test_json" "$HOME"; then
+        print_error "Statusline test FAILED - sample directory missing or could not be checked" >&2
+        print_error "Installation aborted. Settings not modified." >&2
         exit 1
     fi
 
@@ -2027,27 +2140,12 @@ do_install() {
     # Update settings.json only after successful test
     print_info "Applying configuration to settings.json..."
 
-    # Claude Code passes the command to a shell, so quote the path before JSON encoding it.
-    # shellcheck disable=SC2016 # $path is a jq variable.
-    local statusline_filter='.statusLine = {"type": "command", "command": ($path | @sh)}'
+    write_statusline_settings "$quoted_path" || exit 1
 
-    if [ -f "$SETTINGS_FILE" ]; then
-        local tmp_file=$(mktemp)
-        if jq --arg path "$CORTADO_DIR/cortado.sh" "$statusline_filter" "$SETTINGS_FILE" > "$tmp_file" 2>/dev/null; then
-            mv "$tmp_file" "$SETTINGS_FILE"
-            print_success "Updated settings.json"
-        else
-            rm -f "$tmp_file"
-            print_warning "Could not update settings.json - you may need to configure manually"
-        fi
-    else
-        local tmp_file=$(mktemp)
-        if jq -n --arg path "$CORTADO_DIR/cortado.sh" "$statusline_filter" > "$tmp_file" 2>/dev/null; then
-            mv "$tmp_file" "$SETTINGS_FILE"
-            print_success "Created settings.json"
-        else
-            rm -f "$tmp_file"
-            print_warning "Could not create settings.json - you may need to configure manually"
+    if [ -n "$pending_backup" ]; then
+        trap - EXIT
+        if ! mv -f "$pending_backup/manifest.json" "$BACKUP_DIR/"; then
+            print_warning "Could not replace the backup manifest. The new backup is in $pending_backup."
         fi
     fi
 
@@ -2082,7 +2180,7 @@ do_install() {
         echo -e "To restore it, run: ${CYAN}$0 --uninstall${NC}"
         echo ""
     fi
-}
+)
 
 # =============================================================================
 # HELP
