@@ -25,30 +25,48 @@ module_disk() {
     # inject df options (e.g. DISK_PATH=-a). Prefer end-of-options on GNU df;
     # BSD df (macOS) ignores -- and still needs the leading-dash guard.
     case "$disk_path" in
-        -*) return ;;
+        -*) echo "$icon --"; return ;;
     esac
     local df_output
-    df_output=$(df -h -- "$disk_path" 2>/dev/null || df -h "$disk_path" 2>/dev/null)
-    df_output=$(echo "$df_output" | tail -1)
-
-    if [ -z "$df_output" ]; then
+    if ! df_output=$(df -h -- "$disk_path" 2>/dev/null) &&
+       ! df_output=$(df -h "$disk_path" 2>/dev/null); then
+        echo "$icon --"
         return
     fi
 
-    local used_pct=$(echo "$df_output" | awk '{print $5}' | tr -d '%')
-    local free_space=$(echo "$df_output" | awk '{print $4}')
+    local free_space capacity used_pct=""
+    IFS=' ' read -r free_space capacity <<< "$(printf '%s\n' "$df_output" | awk 'NR > 1 && NF >= 5 {print $4, $5}' | tail -1)"
+    if [ -z "$free_space" ] && [ -z "$capacity" ]; then
+        echo "$icon --"
+        return
+    fi
+    if [[ "$capacity" =~ ^[0-9]+%$ ]]; then
+        used_pct="${capacity%\%}"
+    fi
 
     local result="$icon"
 
     if [ "$show_free" = "true" ]; then
+        if [[ ! "$free_space" =~ ^[0-9]+([.,][0-9]+)?([KMGTPEZY]i?B?|B)?$ ]]; then
+            echo "$icon --"
+            return
+        fi
         result="$result ${free_space} free"
     elif [ "$show_pct" = "true" ]; then
+        if [ -z "$used_pct" ]; then
+            echo "$icon --"
+            return
+        fi
         result="$result ${used_pct}%"
     fi
 
     if [ "$show_status" = "true" ]; then
-        local status_ind=$(get_status "$used_pct" "$warn_thresh" "$crit_thresh")
-        result="$result${status_ind}"
+        if [ -n "$used_pct" ]; then
+            local status_ind=$(get_status "$used_pct" "$warn_thresh" "$crit_thresh")
+            result="$result${status_ind}"
+        elif [ "$result" = "$icon" ]; then
+            result="$icon --"
+        fi
     fi
 
     echo "$result"

@@ -27,14 +27,15 @@ module_battery() {
 
     # Get battery info
     local batt_info
-    batt_info=$(pmset -g batt 2>/dev/null)
-    if [ -z "$batt_info" ]; then
+    if ! batt_info=$(pmset -g batt 2>/dev/null); then
+        echo "$(get_icon "$icon" "BAT:") --"
         return
     fi
 
     local battery
-    battery=$(echo "$batt_info" | grep -o '[0-9]*%' | head -1)
+    battery=$(echo "$batt_info" | grep -oE '[0-9]+%' | head -1)
     if [ -z "$battery" ]; then
+        echo "$(get_icon "$icon" "BAT:") --"
         return
     fi
 

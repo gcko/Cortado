@@ -20,66 +20,60 @@ module_brightness() {
     local show_bar="${BRIGHTNESS_SHOW_BAR:-false}"
     local bar_width="${BRIGHTNESS_BAR_WIDTH:-5}"
 
-    local brightness=""
+    local brightness="" reading
 
     if [ "${render_os-$(uname)}" = Darwin ]; then
         # Prefer brew brightness CLI when present (fast, direct)
-        if command -v brightness >/dev/null 2>&1; then
-            brightness=$(brightness -l 2>/dev/null | grep -o 'brightness [0-9.]*' | awk '{print $2}' | head -1)
-            if [ -n "$brightness" ]; then
-                brightness=$(echo "scale=0; $brightness * 100" | bc -l 2>/dev/null || echo "")
+        if reading=$(brightness -l 2>/dev/null); then
+            local fraction
+            fraction=$(printf '%s\n' "$reading" | grep -o 'brightness [0-9.]*' | awk 'NR == 1 {print $2}')
+            if [[ "$fraction" =~ ^([0-9]+([.][0-9]+)?|[.][0-9]+)$ ]]; then
+                brightness=$(echo "scale=0; $fraction * 100" | bc -l 2>/dev/null) || brightness=""
             fi
         fi
 
-        # Primary fallback: IODisplayParameters "brightness"={min,max,value}
-        # Live shape (Apple Silicon / modern macOS): max=65536, not 0–1024.
-        if [ -z "$brightness" ]; then
-            local dict max val
-            # Isolate the brightness dict (not BrightnessMilliNits / rawBrightness)
-            dict=$(ioreg -l 2>/dev/null | grep -o '"brightness"={"min"=[0-9]*,"max"=[0-9]*,"value"=[0-9]*}' | head -1)
-            if [ -n "$dict" ]; then
+        if [ -z "$brightness" ] && reading=$(ioreg -l 2>/dev/null); then
+            local key dict max val
+            # Prefer the IODisplayParameters brightness dict. Fall back to
+            # rawBrightness, which has its own scale.
+            for key in brightness rawBrightness; do
+                dict=$(printf '%s\n' "$reading" | grep -oE "\"$key\"=\{\"min\"=[0-9]+,\"max\"=[0-9]+,\"value\"=[0-9]+\}" | head -1)
+                [ -n "$dict" ] || continue
                 max=$(echo "$dict" | grep -o '"max"=[0-9]*' | cut -d= -f2)
                 val=$(echo "$dict" | grep -o '"value"=[0-9]*' | cut -d= -f2)
-                if [ -n "$max" ] && [ "$max" -gt 0 ] && [ -n "$val" ]; then
-                    brightness=$((val * 100 / max))
+                if [ "$max" -gt 0 ]; then
+                    brightness=$((10#$val * 100 / 10#$max))
+                    break
                 fi
-            fi
-        fi
-
-        # Last resort: rawBrightness with its own max (often 2047 on Apple Silicon)
-        if [ -z "$brightness" ]; then
-            local dict max val
-            dict=$(ioreg -l 2>/dev/null | grep -o '"rawBrightness"={"min"=[0-9]*,"max"=[0-9]*,"value"=[0-9]*}' | head -1)
-            if [ -n "$dict" ]; then
-                max=$(echo "$dict" | grep -o '"max"=[0-9]*' | cut -d= -f2)
-                val=$(echo "$dict" | grep -o '"value"=[0-9]*' | cut -d= -f2)
-                if [ -n "$max" ] && [ "$max" -gt 0 ] && [ -n "$val" ]; then
-                    brightness=$((val * 100 / max))
-                fi
-            fi
+            done
         fi
     else
         # Linux: try various methods
-        if ls /sys/class/backlight/*/brightness >/dev/null 2>&1; then
-            local curr
-            curr=$(cat /sys/class/backlight/*/brightness 2>/dev/null | head -1)
-            local max
-            max=$(cat /sys/class/backlight/*/max_brightness 2>/dev/null | head -1)
-            if [ -n "$curr" ] && [ -n "$max" ] && [ "$max" -gt 0 ]; then
-                brightness=$((curr * 100 / max))
+        local path curr max
+        for path in /sys/class/backlight/*/brightness; do
+            [ -f "$path" ] || continue
+            if curr=$(cat "$path" 2>/dev/null) &&
+               max=$(cat "${path%/*}/max_brightness" 2>/dev/null) &&
+               [[ "$curr" =~ ^[0-9]+$ && "$max" =~ ^[0-9]+$ ]] && [ "$max" -gt 0 ]; then
+                brightness=$((10#$curr * 100 / 10#$max))
+                break
             fi
+        done
         # Try xbacklight
-        elif command -v xbacklight >/dev/null 2>&1; then
-            brightness=$(xbacklight -get 2>/dev/null | cut -d. -f1)
+        if [ -z "$brightness" ] && reading=$(xbacklight -get 2>/dev/null) &&
+           [[ "$reading" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+            brightness="${reading%%.*}"
         fi
     fi
 
-    if [ -z "$brightness" ]; then
+    local brightness_int
+    if [ -z "$brightness" ] || ! brightness_int=$(
+        export LC_ALL=C
+        printf "%.0f" "$brightness" 2>/dev/null
+    ); then
+        echo "$icon --"
         return
     fi
-
-    local brightness_int
-    brightness_int=$(printf "%.0f" "$brightness" 2>/dev/null || echo "0")
 
     local result="$icon"
 

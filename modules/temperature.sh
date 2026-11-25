@@ -22,46 +22,67 @@ module_temperature() {
     local crit_thresh=$(safe_int "${TEMP_CRITICAL_THRESHOLD:-85}" 85)
     local show_status="${TEMP_SHOW_STATUS:-true}"
 
-    local temp=""
+    local temp="" reading pattern
+    local temp_number='-?([0-9]+([.][0-9]+)?|[.][0-9]+)'
+    local celsius="($temp_number)[[:space:]]*°C"
 
     if [ "${render_os-$(uname)}" = Darwin ]; then
         # Try osx-cpu-temp first (most common)
         if command -v osx-cpu-temp >/dev/null 2>&1; then
-            temp=$(osx-cpu-temp 2>/dev/null | grep -o '[0-9.]*' | head -1)
+            pattern="^[[:space:]]*${celsius}[[:space:]]*$"
+            if reading=$(osx-cpu-temp 2>/dev/null) && [[ "$reading" =~ $pattern ]]; then
+                temp="${BASH_REMATCH[1]}"
+            fi
         # Try istats
         elif command -v istats >/dev/null 2>&1; then
-            temp=$(istats cpu temp 2>/dev/null | grep -o '[0-9.]*' | head -1)
+            if reading=$(istats cpu temp 2>/dev/null); then
+                temp=$(printf '%s\n' "$reading" |
+                    sed -nE "s/^[[:space:]]*CPU temp:[[:space:]]*$celsius([[:space:]].*)?$/\\1/p" | head -1)
+            fi
         # Try smctemp
-        elif command -v smctemp >/dev/null 2>&1; then
-            temp=$(smctemp -c 2>/dev/null | head -1)
+        elif reading=$(smctemp -c 2>/dev/null); then
+            temp="${reading%%$'\n'*}"
         fi
     else
         # Linux: read from thermal zones
         if [ -f /sys/class/thermal/thermal_zone0/temp ]; then
-            local millideg=$(cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null)
-            if [ -n "$millideg" ]; then
+            local millideg
+            if millideg=$(cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null) &&
+               [[ "$millideg" =~ ^-?(0|[1-9][0-9]*)$ ]]; then
                 temp=$((millideg / 1000))
             fi
         # Try sensors command
-        elif command -v sensors >/dev/null 2>&1; then
-            temp=$(sensors 2>/dev/null | grep -i 'core 0' | grep -o '[0-9.]*' | head -1)
+        elif reading=$(sensors 2>/dev/null); then
+            temp=$(printf '%s\n' "$reading" |
+                sed -nE "s/^[Cc]ore 0:[[:space:]]*\\+?$celsius([[:space:]].*)?$/\\1/p" | head -1)
         fi
     fi
 
-    if [ -z "$temp" ]; then
+    local temp_int
+    if [[ ! "$temp" =~ ^$temp_number$ ]] || ! temp_int=$(
+        export LC_ALL=C
+        printf "%.0f" "$temp" 2>/dev/null
+    ); then
+        echo "$icon --"
         return
     fi
-
-    # Convert to integer for comparison
-    local temp_int=$(printf "%.0f" "$temp" 2>/dev/null || echo "0")
 
     # Convert to Fahrenheit if requested
     local display_temp="$temp_int"
     if [ "$units" = "F" ]; then
-        display_temp=$(echo "scale=0; ($temp_int * 9/5) + 32" | bc -l 2>/dev/null || echo "$temp_int")
-        # Adjust thresholds for Fahrenheit
-        warn_thresh=$(echo "scale=0; ($warn_thresh * 9/5) + 32" | bc -l 2>/dev/null || echo "158")
-        crit_thresh=$(echo "scale=0; ($crit_thresh * 9/5) + 32" | bc -l 2>/dev/null || echo "185")
+        local integer='^-?[0-9]+$'
+        if ! display_temp=$(echo "scale=0; ($temp_int * 9/5) + 32" | bc -l 2>/dev/null) ||
+           [[ ! "$display_temp" =~ $integer ]]; then
+            echo "$icon --"
+            return
+        fi
+        if [ "$show_status" = "true" ]; then
+            if ! warn_thresh=$(echo "scale=0; ($warn_thresh * 9/5) + 32" | bc -l 2>/dev/null) ||
+               ! crit_thresh=$(echo "scale=0; ($crit_thresh * 9/5) + 32" | bc -l 2>/dev/null) ||
+               [[ ! "$warn_thresh" =~ $integer || ! "$crit_thresh" =~ $integer ]]; then
+                show_status=false
+            fi
+        fi
     fi
 
     local result="$icon ${display_temp}°${units}"

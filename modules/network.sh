@@ -25,18 +25,22 @@ module_network() {
     local show_ssid="${NETWORK_SHOW_SSID:-false}"
     local compact="${NETWORK_COMPACT:-false}"
 
-    local result="$icon"
     local parts=""
+    local attempted=false
 
     # Get LAN IP
     if [ "$show_lan" = "true" ]; then
-        local lan_ip
+        attempted=true
+        local lan_ip addresses
         if [ "${render_os-$(uname)}" = Darwin ]; then
-            lan_ip=$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null)
+            lan_ip=$(ipconfig getifaddr en0 2>/dev/null) ||
+                lan_ip=$(ipconfig getifaddr en1 2>/dev/null) || lan_ip=""
         else
-            lan_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+            if addresses=$(hostname -I 2>/dev/null); then
+                lan_ip=$(printf '%s\n' "$addresses" | awk 'NF {print $1; exit}')
+            fi
         fi
-        if [ -n "$lan_ip" ]; then
+        if [ -n "${lan_ip:-}" ]; then
             parts="$lan_ip"
         fi
     fi
@@ -44,12 +48,15 @@ module_network() {
     # Get WiFi SSID (macOS). The legacy `airport` CLI was removed in Sonoma+;
     # prefer networksetup / ipconfig getsummary, fall back to airport if present.
     # Capture the full SSID (spaces allowed) — never awk $2 only.
+    if [ "$show_ssid" = "true" ]; then
+        attempted=true
+    fi
     if [ "$show_ssid" = "true" ] && [ "${render_os-$(uname)}" = Darwin ]; then
         local ssid="" wifi_dev line airport
         wifi_dev=$(networksetup -listallhardwareports 2>/dev/null | awk '/Wi-Fi|AirPort/{getline; print $2; exit}')
         wifi_dev="${wifi_dev:-en0}"
 
-        line=$(networksetup -getairportnetwork "$wifi_dev" 2>/dev/null)
+        line=$(networksetup -getairportnetwork "$wifi_dev" 2>/dev/null) || line=""
         case "$line" in
             "Current Wi-Fi Network: "*)
                 ssid="${line#Current Wi-Fi Network: }"
@@ -57,7 +64,9 @@ module_network() {
         esac
 
         if [ -z "$ssid" ]; then
-            ssid=$(ipconfig getsummary "$wifi_dev" 2>/dev/null | sed -n 's/^  SSID : //p' | head -1)
+            if line=$(ipconfig getsummary "$wifi_dev" 2>/dev/null); then
+                ssid=$(printf '%s\n' "$line" | sed -n 's/^  SSID : //p' | head -1)
+            fi
         fi
 
         if [ -z "$ssid" ]; then
@@ -66,7 +75,9 @@ module_network() {
                 /System/Library/PrivateFrameworks/Apple80211.framework/Resources/airport; do
                 if [ -x "$airport" ]; then
                     # Full field after ": " — multi-word SSIDs
-                    ssid=$("$airport" -I 2>/dev/null | sed -n 's/^ *SSID: //p' | head -1)
+                    if line=$("$airport" -I 2>/dev/null); then
+                        ssid=$(printf '%s\n' "$line" | sed -n 's/^ *SSID: //p' | head -1)
+                    fi
                     break
                 fi
             done
@@ -85,6 +96,7 @@ module_network() {
     # NETWORK_SHOW_WAN defaults to "false" (opt-in) to avoid leaking the
     # public IP to third-party lookup services without explicit consent.
     if [ "$show_wan" = "true" ] && ! is_compact "$compact"; then
+        attempted=true
         # Cache in user-private directory instead of world-readable /tmp
         local wan_cache_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/cortado-cache"
         mkdir -p "$wan_cache_dir" 2>/dev/null
@@ -100,8 +112,8 @@ module_network() {
         fi
 
         if [ -z "$wan_ip" ]; then
-            wan_ip=$(curl -s --max-time 2 --proto =https https://ifconfig.me 2>/dev/null || \
-                     curl -s --max-time 2 --proto =https https://icanhazip.com 2>/dev/null)
+            wan_ip=$(curl -s --max-time 2 --proto =https https://ifconfig.me 2>/dev/null) || \
+                wan_ip=$(curl -s --max-time 2 --proto =https https://icanhazip.com 2>/dev/null) || wan_ip=""
             # Validate response looks like an IP address (v4 or v6) before caching
             if echo "$wan_ip" | grep -qE '^[0-9a-fA-F.:]+$'; then
                 printf '%s' "$wan_ip" > "$wan_cache"
@@ -133,7 +145,7 @@ module_network() {
         fi
     fi
 
-    if [ -n "$parts" ]; then
-        echo "$result $parts"
+    if [ "$attempted" = "true" ]; then
+        echo "$icon ${parts:---}"
     fi
 }

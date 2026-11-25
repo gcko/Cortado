@@ -17,17 +17,14 @@ module_node() {
     local show_nvm="${NODE_SHOW_NVM:-false}"
     local compact="${NODE_COMPACT:-false}"
 
-    # Check if node is available
-    if ! command -v node >/dev/null 2>&1; then
-        return
-    fi
-
-    local result="$icon"
     local parts=""
+    local version_number='^[0-9]+\.[0-9]+\.[0-9]+([+-][[:alnum:].+-]+)?$'
 
     if [ "$show_version" = "true" ]; then
-        local node_version=$(node --version 2>/dev/null | tr -d 'v')
-        if [ -n "$node_version" ]; then
+        local node_version
+        node_version=$(node --version 2>/dev/null) || node_version=""
+        node_version="${node_version#v}"
+        if [[ "$node_version" =~ $version_number ]]; then
             if is_compact "$compact"; then
                 # Just major.minor in compact
                 parts=$(echo "$node_version" | cut -d. -f1-2)
@@ -38,8 +35,8 @@ module_node() {
     fi
 
     if [ "$show_npm" = "true" ]; then
-        local npm_version=$(npm --version 2>/dev/null)
-        if [ -n "$npm_version" ]; then
+        local npm_version
+        if npm_version=$(npm --version 2>/dev/null) && [[ "$npm_version" =~ $version_number ]]; then
             if is_compact "$compact"; then
                 npm_version=$(echo "$npm_version" | cut -d. -f1-2)
             fi
@@ -58,6 +55,8 @@ module_node() {
     fi
 
     if [ -n "$parts" ]; then
-        echo "$result $parts"
+        echo "$icon $parts"
+    elif [ "$show_version" = "true" ] || [ "$show_npm" = "true" ] || [ "$show_nvm" = "true" ]; then
+        echo "$icon --"
     fi
 }

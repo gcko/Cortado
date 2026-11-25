@@ -12,6 +12,15 @@
 #   TIME_COMPACT     - Compact mode with single icon (default: false)
 # =============================================================================
 
+_time_read() {
+    local value
+    if value=$(date "+$1" 2>/dev/null) && [[ "$value" == *[![:space:]]* ]]; then
+        printf '%s' "$value"
+    else
+        printf '%s' --
+    fi
+}
+
 module_time() {
     local date_icon=$(get_icon "${TIME_DATE_ICON:-📅}" "DATE:")
     local clock_icon=$(get_icon "${TIME_CLOCK_ICON:-🕐}" "TIME:")
@@ -26,24 +35,20 @@ module_time() {
     # Compact mode: single combined output
     if [ "$compact" = "true" ] || is_compact; then
         if [ "$show_date" = "true" ] && [ "$show_time" = "true" ]; then
-            result="$clock_icon $(date "+$date_fmt $time_fmt")"
+            result="$clock_icon $(_time_read "$date_fmt $time_fmt")"
         elif [ "$show_date" = "true" ]; then
-            result="$date_icon $(date "+$date_fmt")"
+            result="$date_icon $(_time_read "$date_fmt")"
         elif [ "$show_time" = "true" ]; then
-            result="$clock_icon $(date "+$time_fmt")"
+            result="$clock_icon $(_time_read "$time_fmt")"
         fi
     else
         # Normal mode: separate date and time
         if [ "$show_date" = "true" ]; then
-            result="$date_icon $(date "+$date_fmt")"
+            result="$date_icon $(_time_read "$date_fmt")"
         fi
 
         if [ "$show_time" = "true" ]; then
-            if [ -n "$result" ]; then
-                result="$result $clock_icon $(date "+$time_fmt")"
-            else
-                result="$clock_icon $(date "+$time_fmt")"
-            fi
+            result="${result:+$result }$clock_icon $(_time_read "$time_fmt")"
         fi
     fi
 

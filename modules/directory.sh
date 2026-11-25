@@ -20,12 +20,20 @@ module_directory() {
     local dir_name
     if [ "$show_full" = "true" ]; then
         dir_name="$current_dir"
-    else
-        dir_name=$(basename "$current_dir")
+    elif [ -n "$current_dir" ]; then
+        case "$current_dir" in
+            -*) current_dir="./$current_dir" ;;
+        esac
+        dir_name=$(basename "$current_dir" 2>/dev/null) || dir_name=""
     fi
 
     # Truncate if needed
-    dir_name=$(truncate_string "$dir_name" "$max_len")
+    dir_name="${dir_name:-}"
+    if [ -n "$dir_name" ]; then
+        dir_name=$(truncate_string "$dir_name" "$max_len")
+    else
+        dir_name="--"
+    fi
 
     # Format output based on style
     case "$style" in

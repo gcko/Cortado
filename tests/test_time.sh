@@ -8,19 +8,27 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cat > "$TEST_BASE/bin/date" <<'STUB'
 #!/bin/bash
 case "$*" in
-    '+%m/%d'|'+%I:%M %p') ;;
+    '+%m/%d'|'+%I:%M %p'|'+%m/%d %I:%M %p') ;;
     *) exec /bin/date "$@" ;;
 esac
-[ "$TEST_SAMPLE" = normal ] || exit 1
+case "$TEST_SAMPLE:$*" in
+    normal:*|date-only:+%m/%d) ;;
+    empty:*) exit 0 ;;
+    *) exit 1 ;;
+esac
 case "$*" in
     '+%m/%d') printf '%s\n' 11/25 ;;
     '+%I:%M %p') printf '%s\n' '09:42 AM' ;;
+    '+%m/%d %I:%M %p') printf '%s\n' '11/25 09:42 AM' ;;
 esac
 STUB
 chmod +x "$TEST_BASE/bin/date"
 
 check_render 'time shows the measured date and clock' 'DATE: 11/25 TIME: 09:42 AM' normal
-check_render_gap 'time shows absence when both date reads fail' 'DATE: -- TIME: --' 'DATE:  TIME: ' failed
+check_render 'time shows absence when both date reads fail' 'DATE: -- TIME: --' failed
+check_render 'time keeps the date when the clock is unavailable' 'DATE: 11/25 TIME: --' date-only
+check_render 'time shows absence when date returns empty output' 'DATE: -- TIME: --' empty
+check_render 'time shows one placeholder for a failed compact clock' 'TIME: --' failed '' 'TIME_COMPACT=true'
 
 printf '\nResults: %s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

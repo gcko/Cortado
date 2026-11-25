@@ -28,19 +28,24 @@ module_load() {
 
     # Get load averages
     # macOS prints "load averages:" (plural), Linux "load average:" — match both.
-    local load_output=$(uptime 2>/dev/null | awk -F'load averages?:' '{print $2}')
-
-    if [ -z "$load_output" ]; then
+    local uptime_output load_output load1 load5 load15
+    if ! uptime_output=$(LC_ALL=C uptime 2>/dev/null); then
+        echo "$icon --"
         return
     fi
-
-    local load1=$(echo "$load_output" | awk '{print $1}' | tr -d ',')
-    local load5=$(echo "$load_output" | awk '{print $2}' | tr -d ',')
-    local load15=$(echo "$load_output" | awk '{print $3}' | tr -d ',')
+    load_output=$(printf '%s\n' "$uptime_output" | awk -F'load averages?:' 'NF > 1 {print $2; exit}')
+    IFS=$' ,\t' read -r load1 load5 load15 <<< "$load_output"
+    local load_number='^[0-9]+([.][0-9]+)?$'
+    if [[ ! "$load1" =~ $load_number ]]; then
+        echo "$icon --"
+        return
+    fi
 
     local result="$icon"
 
     if [ "$show_all" = "true" ]; then
+        [[ "$load5" =~ $load_number ]] || load5=--
+        [[ "$load15" =~ $load_number ]] || load15=--
         result="$result $load1 $load5 $load15"
     else
         result="$result $load1"
@@ -48,11 +53,14 @@ module_load() {
 
     if [ "$show_status" = "true" ]; then
         # Convert load to percentage relative to num_cpus for status
-        local load_pct=$(echo "scale=0; $load1 * 100 / $num_cpus" | bc -l 2>/dev/null || echo "0")
-        local warn_pct=$(echo "scale=0; $warn_thresh * 100 / $num_cpus" | bc -l 2>/dev/null || echo "100")
-        local crit_pct=$(echo "scale=0; $crit_thresh * 100 / $num_cpus" | bc -l 2>/dev/null || echo "200")
-        local status_ind=$(get_status "$load_pct" "$warn_pct" "$crit_pct")
-        result="$result${status_ind}"
+        local load_pct warn_pct crit_pct integer='^-?[0-9]+$'
+        if load_pct=$(echo "scale=0; $load1 * 100 / $num_cpus" | bc -l 2>/dev/null) &&
+           warn_pct=$(echo "scale=0; $warn_thresh * 100 / $num_cpus" | bc -l 2>/dev/null) &&
+           crit_pct=$(echo "scale=0; $crit_thresh * 100 / $num_cpus" | bc -l 2>/dev/null) &&
+           [[ "$load_pct" =~ $integer && "$warn_pct" =~ $integer && "$crit_pct" =~ $integer ]]; then
+            local status_ind=$(get_status "$load_pct" "$warn_pct" "$crit_pct")
+            result="$result${status_ind}"
+        fi
     fi
 
     echo "$result"
