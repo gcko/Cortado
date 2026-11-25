@@ -3,12 +3,13 @@
 # Weather Module - Shows current weather (uses wttr.in)
 # =============================================================================
 # Configuration options:
-#   WEATHER_LOCATION   - Location (default: auto-detect)
-#   WEATHER_UNITS      - Units: "m" (metric), "u" (US), "M" (metric wind) (default: u)
+#   WEATHER_LOCATION   - Location in user config (default: auto-detect)
+#   WEATHER_UNITS      - User config units: "m" (metric), "u" (US), "M" (metric wind) (default: u)
 #   WEATHER_SHOW_TEMP  - Show temperature (default: true)
 #   WEATHER_SHOW_COND  - Show condition icon (default: true)
 #   WEATHER_COMPACT    - Compact mode (default: false)
-#   WEATHER_CACHE_TTL  - Cache duration in seconds (default: 1800)
+#   WEATHER_CACHE_TTL  - User config cache duration in seconds (default: 1800)
+# Project config can set the display options above or set MODULE_WEATHER=false.
 # =============================================================================
 
 module_weather() {
@@ -23,7 +24,7 @@ module_weather() {
     local show_cond="${WEATHER_SHOW_COND:-true}"
     local compact="${WEATHER_COMPACT:-false}"
     local cache_ttl="${WEATHER_CACHE_TTL:-1800}"
-    # Reject non-numeric TTL so an untrusted .cortado.conf can't break arithmetic
+    # Use a numeric TTL for the cache age comparison.
     case "$cache_ttl" in
         ''|*[!0-9]*) cache_ttl=1800 ;;
     esac
@@ -46,10 +47,7 @@ module_weather() {
 
     # Fetch fresh data if needed
     if [ -z "$weather_data" ]; then
-        # Sanitize location: reject shell metacharacters AND URL query hijacks.
-        # Untrusted project .cortado.conf can set WEATHER_LOCATION; a value like
-        # "x?format=@v" or "x#frag" would rewrite the wttr.in query string.
-        # Also reject whitespace / control chars (path segment must stay simple).
+        # Keep metacharacters, whitespace and query delimiters out of the location.
         case "$location" in
             *\`*|*\$\(*|*\;*|*\|*|*\&*|*\>*|*\<*|*\'*|*\"*|*\\*|*'?'*|*'#'*|*' '*|*[[:cntrl:]]*)
                 log_debug "weather: rejected unsafe WEATHER_LOCATION value"
