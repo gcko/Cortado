@@ -502,12 +502,124 @@ validate_module_order() {
 # Joins modules with separator, wrapping to new lines at separator boundaries
 # when content would exceed available terminal width
 
+# East Asian Width W/F intervals from the Unicode Character Database. Each
+# pair is the inclusive start and exclusive end of a two-column range.
+layout_wide_boundaries=(
+    0x1100 0x1160  0x231A 0x231C  0x2329 0x232B  0x23E9 0x23ED
+    0x23F0 0x23F1  0x23F3 0x23F4  0x25FD 0x25FF  0x2614 0x2616
+    0x2630 0x2638  0x2648 0x2654  0x267F 0x2680  0x268A 0x2690
+    0x2693 0x2694  0x26A1 0x26A2  0x26AA 0x26AC  0x26BD 0x26BF
+    0x26C4 0x26C6  0x26CE 0x26CF  0x26D4 0x26D5  0x26EA 0x26EB
+    0x26F2 0x26F4  0x26F5 0x26F6  0x26FA 0x26FB  0x26FD 0x26FE
+    0x2705 0x2706  0x270A 0x270C  0x2728 0x2729  0x274C 0x274D
+    0x274E 0x274F  0x2753 0x2756  0x2757 0x2758  0x2795 0x2798
+    0x27B0 0x27B1  0x27BF 0x27C0  0x2B1B 0x2B1D  0x2B50 0x2B51
+    0x2B55 0x2B56  0x2E80 0x2E9A  0x2E9B 0x2EF4  0x2F00 0x2FD6
+    0x2FF0 0x303F  0x3041 0x3097  0x3099 0x3100  0x3105 0x3130
+    0x3131 0x318F  0x3190 0x31E6  0x31EF 0x321F  0x3220 0x3248
+    0x3250 0xA48D  0xA490 0xA4C7  0xA960 0xA97D  0xAC00 0xD7A4
+    0xF900 0xFB00  0xFE10 0xFE1A  0xFE30 0xFE53  0xFE54 0xFE67
+    0xFE68 0xFE6C  0xFF01 0xFF61  0xFFE0 0xFFE7  0x16FE0 0x16FE5
+    0x16FF0 0x16FF7  0x17000 0x18CD6  0x18CFF 0x18D1F  0x18D80 0x18DF3
+    0x1AFF0 0x1AFF4  0x1AFF5 0x1AFFC  0x1AFFD 0x1AFFF  0x1B000 0x1B123
+    0x1B132 0x1B133  0x1B150 0x1B153  0x1B155 0x1B156  0x1B164 0x1B168
+    0x1B170 0x1B2FC  0x1D300 0x1D357  0x1D360 0x1D377  0x1F004 0x1F005
+    0x1F0CF 0x1F0D0  0x1F18E 0x1F18F  0x1F191 0x1F19B  0x1F200 0x1F203
+    0x1F210 0x1F23C  0x1F240 0x1F249  0x1F250 0x1F252  0x1F260 0x1F266
+    0x1F300 0x1F321  0x1F32D 0x1F336  0x1F337 0x1F37D  0x1F37E 0x1F394
+    0x1F3A0 0x1F3CB  0x1F3CF 0x1F3D4  0x1F3E0 0x1F3F1  0x1F3F4 0x1F3F5
+    0x1F3F8 0x1F43F  0x1F440 0x1F441  0x1F442 0x1F4FD  0x1F4FF 0x1F53E
+    0x1F54B 0x1F54F  0x1F550 0x1F568  0x1F57A 0x1F57B  0x1F595 0x1F597
+    0x1F5A4 0x1F5A5  0x1F5FB 0x1F650  0x1F680 0x1F6C6  0x1F6CC 0x1F6CD
+    0x1F6D0 0x1F6D3  0x1F6D5 0x1F6D9  0x1F6DC 0x1F6E0  0x1F6EB 0x1F6ED
+    0x1F6F4 0x1F6FD  0x1F7E0 0x1F7EC  0x1F7F0 0x1F7F1  0x1F90C 0x1F93B
+    0x1F93C 0x1F946  0x1F947 0x1FA00  0x1FA70 0x1FA7D  0x1FA80 0x1FA8B
+    0x1FA8E 0x1FAC7  0x1FAC8 0x1FAC9  0x1FACD 0x1FADD  0x1FADF 0x1FAEB
+    0x1FAEF 0x1FAF9  0x20000 0x2FFFE  0x30000 0x3FFFE
+)
+
+layout_codepoint_width() {
+    local codepoint="$1" low=0 high="${#layout_wide_boundaries[@]}" mid
+    if (( codepoint == 0x200D || (codepoint >= 0xFE00 && codepoint <= 0xFE0F) )); then
+        printf -v "$2" '%d' 0
+        return
+    fi
+
+    # An odd insertion index means the code point lies inside a wide range.
+    while (( low < high )); do
+        mid=$(((low + high) / 2))
+        if (( codepoint < layout_wide_boundaries[mid] )); then
+            high=$mid
+        else
+            low=$((mid + 1))
+        fi
+    done
+    printf -v "$2" '%d' "$((1 + low % 2))"
+}
+
+# With no limit, return the width. With a limit, return the longest original
+# prefix that fits. Use byte offsets so this also works in the C locale.
+scan_layout() {
+    local LC_ALL=C
+    local remaining="$1" destination="$2" limit="${3:--1}"
+    local columns=0 consumed=0 size width plain glyph codepoint byte i
+    local utf8=$'^([\302-\337][\200-\277]|[\340-\357][\200-\277]{2}|[\360-\364][\200-\277]{3})'
+    # CSI (including SGR), OSC, other control strings, and short escapes.
+    local ansi=$'^\033(\\[[0-?]*[ -/]*[@-~]|\\][^\033\007]*(\007|\033\\\\)|[PX^_][^\033]*\033\\\\|[ -/]*[0-~])'
+
+    while [ -n "$remaining" ]; do
+        plain=${remaining%%[![:print:]]*}
+        if [ -n "$plain" ]; then
+            # Handle an entire printable ASCII run at once.
+            size=${#plain}
+            width=$size
+            if (( limit >= 0 && columns + width > limit )); then
+                consumed=$((consumed + limit - columns))
+                break
+            fi
+        elif [[ "$remaining" == $'\033'* && "$remaining" =~ $ansi ]]; then
+            size=${#BASH_REMATCH[0]}
+            width=0
+        elif [[ "$remaining" =~ $utf8 ]]; then
+            glyph=${BASH_REMATCH[0]}
+            size=${#glyph}
+            printf -v byte '%d' "'$glyph"
+            codepoint=$((byte & (0x7f >> size)))
+            for ((i = 1; i < size; i++)); do
+                printf -v byte '%d' "'${glyph:i:1}"
+                codepoint=$(((codepoint << 6) | (byte & 0x3f)))
+            done
+            layout_codepoint_width "$codepoint" width
+        else
+            size=1
+            width=1
+            [[ "$remaining" == [[:cntrl:]]* ]] && width=0
+        fi
+        if (( limit >= 0 && columns + width > limit )); then
+            break
+        fi
+        columns=$((columns + width))
+        consumed=$((consumed + size))
+        remaining=${remaining:size}
+    done
+
+    if (( limit < 0 )); then
+        printf -v "$destination" '%d' "$columns"
+    else
+        printf -v "$destination" '%s' "${1:0:consumed}"
+    fi
+}
+
 measure_wrap_width() {
     local text="$1"
     case "$text" in
-        *$'\033'*|*$'\n'|*\\*|-*) text=$(echo "$text" | sed $'s/\033\[[0-9;]*m//g') ;;
+        *$'\n'|*\\*|-*)
+            # Match the renderer's echo option and escape handling.
+            # shellcheck disable=SC2116
+            text=$(echo "$text")
+            ;;
     esac
-    printf -v "$2" '%d' "${#text}"
+    scan_layout "$text" "$2"
 }
 
 wrap_at_separators() {
@@ -761,9 +873,8 @@ main() {
                 term_width=$(tput cols 2>/dev/null || echo "${COLUMNS:-200}")
                 term_width=${term_width:-200}
             fi
-            local visible_output
-            visible_output=$(echo "$output" | sed $'s/\033\[[0-9;]*m//g')
-            local output_len=${#visible_output}
+            local output_len
+            measure_wrap_width "$output" output_len
             local remainder=$((output_len % term_width))
             if [ "$remainder" -ne 0 ]; then
                 local padding_needed=$((term_width - remainder))
@@ -792,14 +903,16 @@ main() {
                 term_width=${term_width:-200}
             fi
             local available_width=$((term_width - right_reserve))
-            local visible_output
-            visible_output=$(echo "$output" | sed $'s/\033\[[0-9;]*m//g')
-            local output_len=${#visible_output}
+            local output_len
+            scan_layout "$output" output_len
             if [ "$output_len" -gt "$available_width" ]; then
-                local truncate_at=$((available_width - 3))  # Room for "..."
-                if [ "$truncate_at" -gt 0 ]; then
-                    output="${output:0:$truncate_at}..."
+                local ellipsis='...'
+                if (( available_width < 3 )); then
+                    (( available_width >= 0 )) || available_width=0
+                    ellipsis=${ellipsis:0:available_width}
                 fi
+                scan_layout "$output" output "$((available_width - ${#ellipsis}))"
+                output="${output}${ellipsis}"$'\033[0m'
             fi
             ;;
         none)
