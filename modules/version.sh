@@ -50,14 +50,11 @@ module_version() {
     [ "$show_duration" -ge 0 ] 2>/dev/null || show_duration=120
     [ "$show_duration" -gt 0 ] || return 0
 
-    # run_module currently keeps the payload in its local input_json and
-    # dispatches version without an argument. Bash exposes that caller local.
-    local payload="${1:-${input_json:-}}"
-    local session_id
-    session_id=$(printf '%s' "$payload" | jq -r '
-        .session_id | strings | select(length > 0) | @base64
-        | select(length <= 200)
-    ' 2>/dev/null)
+    if [ "${CTX_READY:-}" != true ]; then
+        with_payload_context module_version <<< "${1:-}"
+        return
+    fi
+    local session_id="${CTX_SESSION_ID:-}"
     [ -n "$session_id" ] || return 0
 
     local now session_start
@@ -80,6 +77,6 @@ module_version() {
     fi
 
     local icon
-    icon=$(get_icon "${VERSION_ICON:-☕}" "Cortado")
+    get_icon_reply "${VERSION_ICON:-☕}" "Cortado"; icon=$REPLY
     echo "${icon} v${version}"
 }

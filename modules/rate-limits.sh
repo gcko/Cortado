@@ -115,38 +115,6 @@ _check_backoff() {
     fi
 }
 
-# Rate limits from the statusline payload. Claude Code sends them after the
-# first turn of a session (observed in 2.1.330):
-#   rate_limits.five_hour.used_percentage, rate_limits.five_hour.resets_at (Unix s)
-#   rate_limits.seven_day.used_percentage, rate_limits.seven_day.resets_at
-# Prints them in the usage API's shape ({five_hour:{utilization,resets_at}, ...},
-# resets_at as an ISO 8601 UTC string) so the renderer below needs no second path.
-# Both window objects and at least one numeric reading are needed to use the
-# payload. A missing or invalid percentage stays null if its sibling can render.
-# A reset time that is neither a number nor a strict ISO 8601 string is dropped
-# (no countdown), because it is written into the comma-separated history file.
-_usage_from_payload() {
-    local input="$1"
-    [ -n "$input" ] || return 0
-    printf '%s' "$input" | jq -c '
-        def window:
-            if type == "object"
-            then {utilization: ((.used_percentage | numbers) // null),
-                  resets_at: (if (.resets_at | type) == "number"
-                              then (.resets_at | floor | todate)
-                              elif (.resets_at | type) == "string"
-                                   and (.resets_at | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})?$"))
-                              then .resets_at
-                              else null end)}
-            else null end;
-        (.rate_limits // null)
-        | select(type == "object")
-        | {five_hour: (.five_hour | window), seven_day: (.seven_day | window)}
-        | select(.five_hour != null and .seven_day != null)
-        | select(.five_hour.utilization != null or .seven_day.utilization != null)
-    ' 2>/dev/null
-}
-
 # Older versions briefly wrote the bearer config to a fixed path. Remove a
 # leftover only after the five-minute grace period for an older render.
 _cleanup_legacy_curl_config() {
@@ -279,23 +247,53 @@ _record_usage_history() (
 ) 2>/dev/null
 
 # Get projection status indicator (only shown at warning/critical levels)
-_get_projection_status() {
+_get_projection_status_reply() {
     local projected=$1
     local warn_thresh="${RATE_WARNING_THRESHOLD:-80}"
     local crit_thresh="${RATE_CRITICAL_THRESHOLD:-100}"
 
-    if [ "${RATE_SHOW_PROJECTION:-true}" != "true" ]; then
-        echo ""
-        return
+    REPLY=
+    [ "${RATE_SHOW_PROJECTION:-true}" = "true" ] || return 0
+    if ! [ "$projected" -lt "$warn_thresh" ] 2>/dev/null; then
+        get_status_reply "$projected" "$warn_thresh" "$crit_thresh"
+    fi
+}
+
+_get_projection_status() {
+    _get_projection_status_reply "$@"
+    echo "$REPLY"
+}
+
+_project_usage_reply() {
+    local LC_ALL=C
+    local current first last elapsed="$4" remaining="$5"
+    decimal_fixed_reply "$1" || return 1; current=$REPLY
+    decimal_fixed_reply "$2" || return 1; first=$REPLY
+    decimal_fixed_reply "$3" || return 1; last=$REPLY
+    # The history percentage range and the reset cap keep products in range.
+    if [ "$first" -gt 1000000000000 ] || [ "$last" -gt 1000000000000 ]; then
+        return 1
     fi
 
-    # Only show projection indicator when it's warning or critical
-    if [ "$projected" -lt "$warn_thresh" ] 2>/dev/null; then
-        echo ""
-        return
+    # Keep ten places in the rate and two in the additional utilization,
+    # truncating toward zero at each step.
+    local rate=$(((last - first) / elapsed))
+    local additional_cents=$((rate * remaining / 100000000))
+    local total=$((current + additional_cents * 100000000)) sign=""
+    if [ "$total" -lt 0 ]; then
+        sign=-
+        total=$((-total))
     fi
+    local projected
+    printf -v projected '%s%d.%010d' "$sign" "$((total / 10000000000))" "$((total % 10000000000))"
+    printf -v REPLY '%.0f' "$projected"
+}
 
-    get_status "$projected" "$warn_thresh" "$crit_thresh"
+# jq emits decimal points even in a comma-decimal locale. printf's
+# nearest-even rounding matches the existing whole-percent display.
+_round_usage_reply() {
+    local LC_ALL=C
+    printf -v REPLY '%.0f' "$1" 2>/dev/null || REPLY=
 }
 
 # Parse an ISO-8601 resets_at timestamp (UTC, fractional seconds stripped by the
@@ -321,7 +319,10 @@ _render_placeholder() {
 }
 
 module_rate_limits() {
-    local input="${1:-}"
+    if [ "${CTX_READY:-}" != true ]; then
+        with_payload_context module_rate_limits <<< "${1:-}"
+        return
+    fi
     local show_5h="${RATE_SHOW_5H:-true}"
     local show_7d="${RATE_SHOW_7D:-true}"
     local show_time="${RATE_SHOW_TIME_REMAINING:-true}"
@@ -353,13 +354,14 @@ module_rate_limits() {
     local backoff_remaining=0
     local age_marker=""
 
-    # Prefer the payload: it is current, needs no credential, and costs no
-    # request. It is deliberately not written to the shared usage cache, which is
-    # served for up to 24 hours when a fetch fails; a payload reading replayed at
-    # the next session's start would read as current when it is not.
-    usage_data=$(_usage_from_payload "$input")
-    if [ -n "$usage_data" ]; then
+    local five_hour seven_day five_hour_reset seven_day_reset
+    # Prefer the parsed payload and keep its readings out of the shared API cache.
+    if [ "${CTX_HAS_RATES:-false}" = "true" ]; then
         from_payload=true
+        five_hour="${CTX_FIVE_HOUR#-}"
+        seven_day="${CTX_SEVEN_DAY#-}"
+        five_hour_reset="$CTX_FIVE_RESET"
+        seven_day_reset="$CTX_SEVEN_RESET"
     else
         # Check if we're in API backoff (429 cooldown). The probe result is shared
         # with _get_claude_usage so it does not repeat the check in this process.
@@ -398,7 +400,7 @@ module_rate_limits() {
         fi
     fi
 
-    if [ -z "$usage_data" ]; then
+    if [ "$from_payload" = "false" ] && [ -z "$usage_data" ]; then
         # No data at all - show backoff countdown if applicable
         if [ "$in_backoff" = "true" ]; then
             local pause_icon=$(get_icon "⏸" "WAIT:")
@@ -409,19 +411,21 @@ module_rate_limits() {
         return
     fi
 
-    local five_hour_obj=$(echo "$usage_data" | jq -r '.five_hour // .five_hour_opus // .five_hour_sonnet // "null"' 2>/dev/null)
-    local seven_day_obj=$(echo "$usage_data" | jq -r '.seven_day // .seven_day_opus // .seven_day_sonnet // "null"' 2>/dev/null)
+    if [ "$from_payload" = "false" ]; then
+        local five_hour_obj=$(echo "$usage_data" | jq -r '.five_hour // .five_hour_opus // .five_hour_sonnet // "null"' 2>/dev/null)
+        local seven_day_obj=$(echo "$usage_data" | jq -r '.seven_day // .seven_day_opus // .seven_day_sonnet // "null"' 2>/dev/null)
 
-    if [ "$five_hour_obj" = "null" ] || [ "$seven_day_obj" = "null" ]; then
-        _render_placeholder "$show_5h" "$show_7d" "$label_5h" "$label_7d"
-        return
+        if [ "$five_hour_obj" = "null" ] || [ "$seven_day_obj" = "null" ]; then
+            _render_placeholder "$show_5h" "$show_7d" "$label_5h" "$label_7d"
+            return
+        fi
+
+        local utilization_filter='.utilization | numbers | select(. >= 0 and . <= 100) | if . == 0 then 0 else . end'
+        five_hour=$(printf '%s' "$five_hour_obj" | jq -r "$utilization_filter" 2>/dev/null)
+        seven_day=$(printf '%s' "$seven_day_obj" | jq -r "$utilization_filter" 2>/dev/null)
+        five_hour_reset=$(echo "$five_hour_obj" | jq -r '.resets_at // empty' 2>/dev/null)
+        seven_day_reset=$(echo "$seven_day_obj" | jq -r '.resets_at // empty' 2>/dev/null)
     fi
-
-    local utilization_filter='.utilization | numbers | select(. >= 0 and . <= 100) | if . == 0 then 0 else . end'
-    local five_hour=$(printf '%s' "$five_hour_obj" | jq -r "$utilization_filter" 2>/dev/null)
-    local seven_day=$(printf '%s' "$seven_day_obj" | jq -r "$utilization_filter" 2>/dev/null)
-    local five_hour_reset=$(echo "$five_hour_obj" | jq -r '.resets_at // empty' 2>/dev/null)
-    local seven_day_reset=$(echo "$seven_day_obj" | jq -r '.resets_at // empty' 2>/dev/null)
 
     local now=$(date +%s)
 
@@ -461,14 +465,10 @@ module_rate_limits() {
                 local last_util=$(echo "$last_entry" | cut -d',' -f2)
                 local elapsed=$((now - first_ts))
 
-                if [ "$elapsed" -gt 60 ]; then
-                    local usage_delta=$(echo "$last_util - $first_util" | bc -l 2>/dev/null || echo "0")
-                    local rate=$(echo "scale=10; $usage_delta / $elapsed" | bc -l 2>/dev/null || echo "0")
-                    local projected_additional=$(echo "scale=2; $rate * $five_hour_remaining" | bc -l 2>/dev/null || echo "0")
-                    local projected_total=$(echo "scale=2; $five_hour + $projected_additional" | bc -l 2>/dev/null || echo "$five_hour")
-                    local projected_int=$(printf "%.0f" "$projected_total" 2>/dev/null || echo "0")
-
-                    five_hour_status=$(_get_projection_status "$projected_int")
+                if [ "$elapsed" -gt 60 ] &&
+                    _project_usage_reply "$five_hour" "$first_util" "$last_util" "$elapsed" "$five_hour_remaining"; then
+                    _get_projection_status_reply "$REPLY"
+                    five_hour_status=$REPLY
                 fi
             fi
         fi
@@ -494,50 +494,42 @@ module_rate_limits() {
                 local elapsed=$((now - first_ts))
                 local min_elapsed=$((12 * 3600))
 
-                if [ "$elapsed" -gt "$min_elapsed" ]; then
-                    local usage_delta=$(echo "$last_util - $first_util" | bc -l 2>/dev/null || echo "0")
-                    local rate=$(echo "scale=10; $usage_delta / $elapsed" | bc -l 2>/dev/null || echo "0")
-                    local projected_additional=$(echo "scale=2; $rate * $seven_day_remaining" | bc -l 2>/dev/null || echo "0")
-                    local projected_total=$(echo "scale=2; $seven_day + $projected_additional" | bc -l 2>/dev/null || echo "$seven_day")
-                    local projected_int=$(printf "%.0f" "$projected_total" 2>/dev/null || echo "0")
-
-                    seven_day_status=$(_get_projection_status "$projected_int")
+                if [ "$elapsed" -gt "$min_elapsed" ] &&
+                    _project_usage_reply "$seven_day" "$first_util" "$last_util" "$elapsed" "$seven_day_remaining"; then
+                    _get_projection_status_reply "$REPLY"
+                    seven_day_status=$REPLY
                 fi
             fi
         fi
     fi
 
     local five_hour_int seven_day_int
-    # jq emits a decimal point regardless of the user's locale. Clear any
-    # partial output printf emits before reporting a conversion error.
-    five_hour_int=$(
-        LC_ALL=C
-        printf "%.0f" "${five_hour:-0}" 2>/dev/null
-    ) || five_hour_int=""
-    seven_day_int=$(
-        LC_ALL=C
-        printf "%.0f" "${seven_day:-0}" 2>/dev/null
-    ) || seven_day_int=""
+    _round_usage_reply "${five_hour:-0}"; five_hour_int=$REPLY
+    _round_usage_reply "${seven_day:-0}"; seven_day_int=$REPLY
 
     local five_hour_part="--"
     local seven_day_part="--"
     if [ -n "$five_hour" ] && [ -n "$five_hour_int" ]; then
         five_hour_part="${five_hour_int}%${age_marker}"
         if [ "$show_bar" = "true" ]; then
-            five_hour_part="$(progress_bar "$five_hour_int" "$bar_width") $five_hour_part"
+            progress_bar_reply "$five_hour_int" "$bar_width"
+            five_hour_part="$REPLY $five_hour_part"
         fi
         if [ "$show_usage_status" = "true" ]; then
-            five_hour_part="$five_hour_part$(get_status_4level "$five_hour_int" "$low_thresh" "$medium_thresh" "$high_thresh")"
+            get_status_4level_reply "$five_hour_int" "$low_thresh" "$medium_thresh" "$high_thresh"
+            five_hour_part="$five_hour_part$REPLY"
         fi
         five_hour_part="$five_hour_part$five_hour_status"
     fi
     if [ -n "$seven_day" ] && [ -n "$seven_day_int" ]; then
         seven_day_part="${seven_day_int}%${age_marker}"
         if [ "$show_bar" = "true" ]; then
-            seven_day_part="$(progress_bar "$seven_day_int" "$bar_width") $seven_day_part"
+            progress_bar_reply "$seven_day_int" "$bar_width"
+            seven_day_part="$REPLY $seven_day_part"
         fi
         if [ "$show_usage_status" = "true" ]; then
-            seven_day_part="$seven_day_part$(get_status_4level "$seven_day_int" "$low_thresh" "$medium_thresh" "$high_thresh")"
+            get_status_4level_reply "$seven_day_int" "$low_thresh" "$medium_thresh" "$high_thresh"
+            seven_day_part="$seven_day_part$REPLY"
         fi
         seven_day_part="$seven_day_part$seven_day_status"
     fi
