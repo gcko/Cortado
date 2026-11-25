@@ -218,6 +218,8 @@ For a source install, `./install.sh --check-update`, its alias `./install.sh --c
 
 Cortado also checks for a newer *release* when you run the from-source installer (skip with `--skip-update-check`).
 
+If the installer updates by downloading an archive, it verifies `Cortado-source.zip` against the Release's `SHA256SUMS` file before replacing any files. Each asset download has up to 5 seconds to connect and 60 seconds to finish. A timed-out download, a missing checksum, or a checksum mismatch stops the update.
+
 ### Migrating from Barista
 
 Cortado can read your existing Barista settings.

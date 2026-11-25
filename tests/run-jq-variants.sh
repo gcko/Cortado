@@ -35,8 +35,16 @@ for jq_bin in "${variants[@]}"; do
     ln -sf "$jq_bin" "$test_bin/jq" || exit 1
     printf '\n=== %s (%s) ===\n' "$jq_bin" "$("$jq_bin" --version)"
     for suite in "$@"; do
-        if PATH="$test_bin:$PATH" /bin/bash "$suite" > "$test_bin/output" 2>&1; then
+        # Bound each suite so a hang names itself instead of stalling CI.
+        status=0
+        PATH="$test_bin:$PATH" perl -e 'alarm shift; exec @ARGV' "${SUITE_TIMEOUT:-300}" \
+            /bin/bash "$suite" > "$test_bin/output" 2>&1 || status=$?
+        if [ "$status" -eq 0 ]; then
             printf 'PASS: %s\n' "${suite##*/}"
+        elif [ "$status" -eq 142 ]; then
+            printf 'TIMEOUT: %s (over %ss)\n' "${suite##*/}" "${SUITE_TIMEOUT:-300}"
+            cat "$test_bin/output"
+            failed=1
         else
             printf 'FAIL: %s\n' "${suite##*/}"
             cat "$test_bin/output"
