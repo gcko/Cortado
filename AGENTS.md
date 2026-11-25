@@ -140,7 +140,7 @@ module_name() {
 
 ### What a module prints when it does not know
 
-A module that has no reading must say so, never print a value that reads as an all-clear. `rate-limits` prints `5h:-- 7d:--` (or `--` for the one window it lacks) rather than `0%`, and `context` prints `--` until Claude Code reports usage; follow that pattern. "Zero", "green" and "nothing" are claims, and a missing field, a failed fetch or a stale cache must not produce one. The `visual-review-and-fix` skill walks these cases.
+A module that has no reading must say so, never print a value that reads as an all-clear. `rate-limits` prints `5h:-- 7d:--` (or `--` for the one window it lacks) rather than `0%`, and `context` prints `--` until Claude Code reports usage. Missing fields, failed fetches and stale caches must indicate the state of the reading. The optional gateway spend segment appears only when the payload supplies a usable reading. The `visual-review-and-fix` skill walks these cases.
 
 ## Display Modes
 
@@ -343,6 +343,7 @@ Modules also include their own `${CLAUDE_CONFIG_DIR:-$HOME/.claude}` fallback fo
 
 The rate limits module (`rate-limits.sh`) is the most complex:
 - Reads usage from the statusline payload first: Claude Code sends `rate_limits.five_hour` and `rate_limits.seven_day` (`used_percentage`, `resets_at` in Unix seconds) after a session's first turn (seen in 2.1.330). `_usage_from_payload` reshapes them into the usage API's shape, so one renderer serves both sources. This needs no credential and makes no request, on any platform
+- Appends gateway spend from `rate_limits.spend_limit` independently of the 5-hour and 7-day windows. Claude Code receives `used_percentage` with each response and refreshes the optional `used_usd` and `limit_usd` about every five minutes while requests are active. Cortado shows both readings when usable, with the configured usage indicator on the reported percentage, or shows either reading alone. It omits the segment when neither reading is usable or when `limit_usd` is numeric and zero or less
 - Until the first turn, or when the payload lacks either window, shows its `5h:-- 7d:--` placeholder or falls back to the Anthropic OAuth usage API with the token in `$CLAUDE_CONFIG_DIR/.credentials.json`, and only when that file is owner-only. It never reads the macOS Keychain
 - A payload reading is never written to the shared usage cache, and records a history point at most once per `RATE_CACHE_TTL`. The API path caches responses and serves the last cached reading (up to 24 hours old) when a fetch fails
 - Backs off after 429 responses, honoring `Retry-After` headers

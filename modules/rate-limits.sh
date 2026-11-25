@@ -1,6 +1,7 @@
 # shellcheck shell=bash
 # =============================================================================
 # Rate Limits Module - Shows 5-hour and 7-day usage with projections
+# Shows gateway spend against its limit when Claude Code reports that reading.
 # Prefers the rate limits Claude Code puts in the statusline payload; otherwise
 # reads an owner-only Claude Code credential file. Never accesses macOS Keychain.
 # Stale fallback percentages show their cache age (for example, 42%~6h0m).
@@ -11,7 +12,7 @@
 #   RATE_SHOW_7D            - Show 7-day rate limit (default: true)
 #   RATE_SHOW_TIME_REMAINING - Show time until reset (default: true)
 #   RATE_SHOW_PROJECTION    - Show projection status (default: true)
-#   RATE_SHOW_USAGE_STATUS  - Show usage level indicator (default: true)
+#   RATE_SHOW_USAGE_STATUS  - Show usage level indicator for percentages (default: true)
 #   RATE_SHOW_PROGRESS_BAR  - Show visual progress bar (default: false)
 #   RATE_PROGRESS_BAR_WIDTH - Progress bar width (default: PROGRESS_BAR_WIDTH)
 #   RATE_LOW_THRESHOLD      - Green/yellow boundary (default: 50)
@@ -304,6 +305,31 @@ _round_usage_reply() {
     printf -v REPLY '%.0f' "$1" 2>/dev/null || REPLY=
 }
 
+_spend_limit_part_reply() {
+    local LC_ALL=C
+    local limit percent percent_part=""
+    if [ -n "$CTX_SPEND_PERCENT" ]; then
+        _round_usage_reply "$CTX_SPEND_PERCENT"; percent=$REPLY
+        if [ -n "$percent" ]; then
+            REPLY=
+            if [ "$1" = true ]; then
+                get_status_4level_reply "$percent" "$2" "$3" "$4"
+            fi
+            percent_part="${percent}%$REPLY"
+        fi
+    fi
+
+    REPLY=
+    if [ -n "$CTX_SPEND_USED_USD" ] && [ -n "$CTX_SPEND_LIMIT_USD" ] &&
+        printf -v limit '%.2f' "$CTX_SPEND_LIMIT_USD" 2>/dev/null &&
+        [ "$limit" != 0.00 ] &&
+        printf -v REPLY 'spend:$%.2f/$%s' "$CTX_SPEND_USED_USD" "$limit" 2>/dev/null; then
+        REPLY="$REPLY${percent_part:+ ($percent_part)}"
+    else
+        REPLY="${percent_part:+spend:$percent_part}"
+    fi
+}
+
 # Emit the verified age followed by the cached JSON. When a stale read races
 # with a writer, retry once using the fresh TTL.
 _read_usage_cache() {
@@ -341,15 +367,17 @@ _parse_reset_epoch() {
         echo 0
 }
 
-# Render the placeholder line shown when no usage data is available
+# Render the placeholder line shown when no 5-hour or 7-day usage is available.
 _render_placeholder() {
     local show_5h="$1"
     local show_7d="$2"
     local label_5h="$3"
     local label_7d="$4"
+    local spend_part="${5:-}"
     local result=""
     [ "$show_5h" = "true" ] && result="${label_5h}:--"
     [ "$show_7d" = "true" ] && result="${result:+$result }${label_7d}:--"
+    [ -n "$spend_part" ] && result="${result:+$result }$spend_part"
     echo "$result"
 }
 
@@ -374,6 +402,9 @@ module_rate_limits() {
     local low_thresh="${RATE_LOW_THRESHOLD:-50}"
     local medium_thresh="${RATE_MEDIUM_THRESHOLD:-75}"
     local high_thresh="${RATE_HIGH_THRESHOLD:-95}"
+    local spend_part
+    _spend_limit_part_reply "$show_usage_status" "$low_thresh" "$medium_thresh" "$high_thresh"
+    spend_part=$REPLY
 
     local cache_key="rate_limits_usage"
     local cache_ttl="${RATE_CACHE_TTL:-120}"
@@ -432,16 +463,16 @@ module_rate_limits() {
         # No data at all - show backoff countdown if applicable
         if [ "$in_backoff" = "true" ] && [ -n "$backoff_remaining" ]; then
             local pause_icon=$(get_icon "⏸" "WAIT:")
-            echo "${pause_icon} API cooldown $(format_cooldown "$backoff_remaining")"
+            echo "${pause_icon} API cooldown $(format_cooldown "$backoff_remaining")${spend_part:+ $spend_part}"
         else
-            _render_placeholder "$show_5h" "$show_7d" "$label_5h" "$label_7d"
+            _render_placeholder "$show_5h" "$show_7d" "$label_5h" "$label_7d" "$spend_part"
         fi
         return
     fi
 
     if [ "$from_payload" = "false" ]; then
         if ! _json_reply usage "$usage_data" || [ -z "$REPLY" ]; then
-            _render_placeholder "$show_5h" "$show_7d" "$label_5h" "$label_7d"
+            _render_placeholder "$show_5h" "$show_7d" "$label_5h" "$label_7d" "$spend_part"
             return
         fi
         # The decoder supplies four fixed assignment keys with @sh-quoted values.
@@ -577,6 +608,8 @@ module_rate_limits() {
             result="${result} ($(format_time_remaining "$seven_day_remaining"))"
         fi
     fi
+
+    [ -n "$spend_part" ] && result="${result:+$result }$spend_part"
 
     # Append backoff indicator at the end
     result="${result}${backoff_marker}"
