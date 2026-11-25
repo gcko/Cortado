@@ -36,7 +36,8 @@ sandbox() {
 
 # render <sandbox> <payload>
 render() {
-    printf '%s' "$2" | CLAUDE_CONFIG_DIR="$1" /bin/bash "$PROJECT_ROOT/cortado.sh" 2>&1
+    printf '%s' "$2" | CLAUDE_CONFIG_DIR="$1" CACHE_DIR="$1/cortado-cache" \
+        /bin/bash "$PROJECT_ROOT/cortado.sh" 2>&1 | sed $'s/\x1b\\[[0-9;]*m//g'
 }
 
 NOW=$(date +%s)
@@ -194,6 +195,7 @@ mkdir "$TEST_BASE/fallback-bin"
 cat > "$TEST_BASE/fallback-bin/date" <<'STUB'
 #!/bin/bash
 if [ "$*" = '+%s' ]; then
+    [ "$TEST_NOW" != unavailable ] || exit 1
     printf '%s\n' "$TEST_NOW"
 else
     exec /bin/date "$@"
@@ -227,6 +229,14 @@ assert_eq "the stale fallback follows a curl attempt" "attempt" "$(cat "$sb/curl
 sb=$(sandbox expired-cache)
 assert_eq "a reading older than 24 hours is absent" "5h:-- 7d:--" "$(render_cache "$sb" 86401)"
 
+sb=$(sandbox unavailable-cache-clock)
+printf '%s\n' 'RATE_SHOW_USAGE_STATUS="true"' >> "$sb/cortado.conf"
+printf '%s\n' '{"five_hour":{"utilization":2},"seven_day":{"utilization":3}}' \
+    > "$sb/cortado-cache/rate_limits_usage"
+TZ=UTC touch -t 202001010000 "$sb/cortado-cache/rate_limits_usage"
+out=$(TEST_NOW=unavailable PATH="$TEST_BASE/fallback-bin:$PATH" render "$sb" "$NO_LIMITS")
+assert_eq "a quota cache of unknown age shows absence when the clock fails" "5h:-- 7d:--" "$out"
+
 sb=$(sandbox backoff-stale-cache)
 printf '300\n' > "$sb/cortado-cache/rate_limits_backoff"
 TZ=UTC touch -t 202001010600 "$sb/cortado-cache/rate_limits_backoff"
@@ -236,6 +246,20 @@ assert_eq "backoff skips curl" "" "$(cat "$sb/curl.log" 2>/dev/null)"
 sb=$(sandbox payload-over-stale-cache)
 live_payload='{"rate_limits":{"five_hour":{"used_percentage":0},"seven_day":{"used_percentage":100}}}'
 assert_eq "payload readings carry no cache age" "5h:0% 7d:100%" "$(render_cache "$sb" 21600 "$live_payload")"
+
+echo ""
+echo "=== scientific notation preserves the projection indicator ==="
+
+reset=$(jq -nr --argjson ts "$RESET_5H" '$ts | todate')
+for utilization in 100 1e2; do
+    sb=$(sandbox "projection-$utilization")
+    printf '%s\n' 'RATE_SHOW_TIME_REMAINING="false"' 'RATE_SHOW_PROJECTION="true"' >> "$sb/cortado.conf"
+    printf '{"five_hour":{"utilization":%s,"resets_at":"%s"},"seven_day":{"utilization":10}}\n' \
+        "$utilization" "$reset" > "$sb/cortado-cache/rate_limits_usage"
+    printf '%s,100,10,%s,\n' "$((NOW - 300))" "$reset" > "$sb/.usage_history"
+    assert_eq "a quota of $utilization keeps its critical projection" "5h:100% [CRIT] 7d:10%" \
+        "$(render "$sb" "$NO_LIMITS")"
+done
 
 echo ""
 echo "=== quota indicator spacing follows display mode ==="

@@ -131,15 +131,13 @@ module_git() {
 
     if [ "$from_cache" != "true" ]; then
         # Get branch name (handles detached HEAD)
-        git_branch=$(git symbolic-ref --short HEAD 2>/dev/null)
+        git_branch=$(git symbolic-ref --short HEAD 2>/dev/null) || git_branch=""
         if [ -z "$git_branch" ]; then
             # Detached HEAD - show short SHA
-            git_branch=$(git rev-parse --short HEAD 2>/dev/null)
-            if [ -z "$git_branch" ]; then
-                cd "$orig_dir" 2>/dev/null || return
-                return
+            git_branch=$(git rev-parse --short HEAD 2>/dev/null) || git_branch=""
+            if [ -n "$git_branch" ]; then
+                git_branch="($git_branch)"
             fi
-            git_branch="($git_branch)"  # Indicate detached state
         fi
 
         if [ "$show_status" = "true" ] || [ "$show_file_count" = "true" ]; then
@@ -156,8 +154,8 @@ module_git() {
                 status_count=${status_output##*$'\n'}
                 git_porcelain=${status_output%"$status_count"}
                 git_porcelain=${git_porcelain%$'\n'}
-                if [ "$use_cache" = "true" ]; then
-                    # Store branch + porcelain for next render within TTL
+                if [ "$use_cache" = "true" ] && [ -n "$git_branch" ]; then
+                    # Store the complete branch + porcelain snapshot.
                     cache_set "$cache_key" "${git_branch}
 ---CORTADO_GIT---
 ${git_porcelain}"
@@ -172,7 +170,7 @@ ${git_porcelain}"
 
     # Branch name
     if [ "$show_branch" = "true" ]; then
-        result="$result $git_branch"
+        result="$result ${git_branch:---}"
     fi
 
     if [ "$status_available" = "false" ]; then

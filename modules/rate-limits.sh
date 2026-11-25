@@ -4,6 +4,7 @@
 # Prefers the rate limits Claude Code puts in the statusline payload; otherwise
 # reads an owner-only Claude Code credential file. Never accesses macOS Keychain.
 # Stale fallback percentages show their cache age (for example, 42%~6h0m).
+# A quota cache whose age cannot be established is ignored.
 # =============================================================================
 # Configuration options:
 #   RATE_SHOW_5H            - Show 5-hour rate limit (default: true)
@@ -298,6 +299,33 @@ _get_projection_status() {
     get_status "$projected" "$warn_thresh" "$crit_thresh"
 }
 
+# jq can emit exponent notation, which bc does not accept. Older history
+# entries can contain it too. Keep ordinary decimal strings as written.
+_projection_decimal() {
+    case "$1" in
+        *[eE]*) LC_ALL=C printf '%.20f' "$1" 2>/dev/null ;;
+        *) printf '%s' "$1" ;;
+    esac
+}
+
+# Emit the verified age followed by the cached JSON.
+_read_usage_cache() {
+    local file="$1" max_age="$2" mtime now age data
+    [ -f "$file" ] || return 1
+    mtime=$(_file_mtime "$file")
+    now=$(date +%s 2>/dev/null) || return 1
+    case "$now" in
+        ''|0*|*[!0-9]*) return 1 ;;
+    esac
+    [ "$mtime" -gt 0 ] && [ "$now" -ge "$mtime" ] || return 1
+    age=$((now - mtime))
+    [ "$age" -le "$max_age" ] 2>/dev/null || return 1
+    data=$(cat "$file" 2>/dev/null) || return 1
+    # A concurrent fetch can publish a new file while this reader checks it.
+    [ -n "$data" ] && [ "$mtime" = "$(_file_mtime "$file")" ] || return 1
+    printf '%s\n%s\n' "$age" "$data"
+}
+
 # Parse an ISO-8601 resets_at timestamp (UTC, fractional seconds stripped by the
 # caller) to epoch seconds. `date -j -f` is BSD/macOS-only; GNU date (Linux,
 # Git Bash on Windows) needs -d. Try both so time-remaining works everywhere.
@@ -369,8 +397,10 @@ module_rate_limits() {
             export RATE_BACKOFF_REMAINING="$backoff_remaining"
         fi
 
-        # Read from shared cache if fresh
-        usage_data=$(cache_get "$cache_key" "$cache_ttl")
+        local cache_file="$CACHE_DIR/$cache_key" cached_usage cache_age
+        if cached_usage=$(_read_usage_cache "$cache_file" "$cache_ttl"); then
+            usage_data=${cached_usage#*$'\n'}
+        fi
 
         # Fetch fresh data if cache miss
         if [ -z "$usage_data" ]; then
@@ -378,21 +408,12 @@ module_rate_limits() {
             if [ -n "$usage_data" ]; then
                 cache_set "$cache_key" "$usage_data"
                 fresh_fetch=true
-            else
-                # API failed (429/error/timeout) — serve stale cache if available
-                local cache_file="$CACHE_DIR/$cache_key" cache_time cache_age
-                cache_time=$(_file_mtime "$cache_file")
-                usage_data=$(cache_get "$cache_key" 86400)
-                if [ -n "$usage_data" ]; then
-                    if [ "$cache_time" -eq 0 ] || [ "$cache_time" -ne "$(_file_mtime "$cache_file")" ]; then
-                        # A concurrent fetch replaced the file. Try its fresh reading.
-                        usage_data=$(cache_get "$cache_key" "$cache_ttl")
-                    else
-                        cache_age=$(($(date +%s) - cache_time))
-                        if [ "$cache_age" -gt "$cache_ttl" ]; then
-                            age_marker="~$(format_cooldown "$cache_age")"
-                        fi
-                    fi
+            elif cached_usage=$(_read_usage_cache "$cache_file" 86400); then
+                # API failed — serve the bounded fallback with its age.
+                usage_data=${cached_usage#*$'\n'}
+                cache_age=${cached_usage%%$'\n'*}
+                if [ "$cache_age" -gt "$cache_ttl" ]; then
+                    age_marker="~$(format_cooldown "$cache_age")"
                 fi
             fi
         fi
@@ -420,6 +441,12 @@ module_rate_limits() {
     local utilization_filter='.utilization | numbers | select(. >= 0 and . <= 100) | if . == 0 then 0 else . end'
     local five_hour=$(printf '%s' "$five_hour_obj" | jq -r "$utilization_filter" 2>/dev/null)
     local seven_day=$(printf '%s' "$seven_day_obj" | jq -r "$utilization_filter" 2>/dev/null)
+    case "$five_hour,$seven_day" in
+        *[eE]*)
+            five_hour=$(_projection_decimal "$five_hour")
+            seven_day=$(_projection_decimal "$seven_day")
+            ;;
+    esac
     local five_hour_reset=$(echo "$five_hour_obj" | jq -r '.resets_at // empty' 2>/dev/null)
     local seven_day_reset=$(echo "$seven_day_obj" | jq -r '.resets_at // empty' 2>/dev/null)
 
@@ -462,7 +489,7 @@ module_rate_limits() {
                 local elapsed=$((now - first_ts))
 
                 if [ "$elapsed" -gt 60 ]; then
-                    local usage_delta=$(echo "$last_util - $first_util" | bc -l 2>/dev/null || echo "0")
+                    local usage_delta=$(echo "$(_projection_decimal "$last_util") - $(_projection_decimal "$first_util")" | bc -l 2>/dev/null || echo "0")
                     local rate=$(echo "scale=10; $usage_delta / $elapsed" | bc -l 2>/dev/null || echo "0")
                     local projected_additional=$(echo "scale=2; $rate * $five_hour_remaining" | bc -l 2>/dev/null || echo "0")
                     local projected_total=$(echo "scale=2; $five_hour + $projected_additional" | bc -l 2>/dev/null || echo "$five_hour")
@@ -495,7 +522,7 @@ module_rate_limits() {
                 local min_elapsed=$((12 * 3600))
 
                 if [ "$elapsed" -gt "$min_elapsed" ]; then
-                    local usage_delta=$(echo "$last_util - $first_util" | bc -l 2>/dev/null || echo "0")
+                    local usage_delta=$(echo "$(_projection_decimal "$last_util") - $(_projection_decimal "$first_util")" | bc -l 2>/dev/null || echo "0")
                     local rate=$(echo "scale=10; $usage_delta / $elapsed" | bc -l 2>/dev/null || echo "0")
                     local projected_additional=$(echo "scale=2; $rate * $seven_day_remaining" | bc -l 2>/dev/null || echo "0")
                     local projected_total=$(echo "scale=2; $seven_day + $projected_additional" | bc -l 2>/dev/null || echo "$seven_day")

@@ -64,8 +64,16 @@ ls() {
 }
 
 grep() {
-    if [[ "$1" == -lE && "${3:-}" == /proc/*/status ]]; then
-        command grep "$1" "$2" "$TEST_PROC"/*/status
+    if [[ ( "$1" == -lE || "$1" == -cE ) && "${3:-}" == /proc/*/status ]]; then
+        local status
+        for status in "${@:3}"; do
+            case "$status" in
+                '/proc/*/status'|/proc/self/status|/proc/thread-self/status)
+                    command grep "$1" "$2" "$TEST_PROC"/*/status
+                    return ;;
+            esac
+        done
+        command grep "$1" "$2" "$TEST_PROC"/[0-9]*/status
     else
         command grep "$@"
     fi
@@ -83,7 +91,7 @@ check() {
     actual=$(render "$3" "$platform")
     if [ "$platform" = Linux ]; then
         # BSD wc pads the running and total counts in the procfs branch.
-        actual=$(printf '%s\n' "$actual" | sed -E 's@^PROC: +([0-9]+)/ *([0-9]+) @PROC: \1/\2 @')
+        actual=$(printf '%s\n' "$actual" | sed -E 's@^PROC: +([0-9]+|--)/ *([0-9]+) @PROC: \1/\2 @')
     fi
     assert_eq "$desc" "$expected" "$actual"
 }
@@ -100,6 +108,22 @@ check "empty Linux procfs shows absence" "PROC: --" present Linux
 mkdir "$TEST_BASE/proc/1"
 printf 'State:\tR (running)\n' > "$TEST_BASE/proc/1/status"
 check "Linux procfs shows one running PID and one total" "PROC: 1/1 [OK]" present Linux
+ln -s 1 "$TEST_BASE/proc/self"
+ln -s 1 "$TEST_BASE/proc/thread-self"
+check "Linux procfs ignores self aliases when counting PIDs" "PROC: 1/1 [OK]" present Linux
+rm "$TEST_BASE/proc/self" "$TEST_BASE/proc/thread-self"
+printf 'State:\tS (sleeping)\n' > "$TEST_BASE/proc/1/status"
+check "Linux procfs shows measured zero running" "PROC: 0/1 [OK]" present Linux
+
+rm "$TEST_BASE/proc/1/status"
+# A directory in place of the status file forces a read error even as root.
+mkdir "$TEST_BASE/proc/1/status"
+check "an unreadable PID status makes the Linux running count unknown" "PROC: --/1 [OK]" present Linux
+mkdir "$TEST_BASE/proc/2"
+printf 'State:\tR (running)\n' > "$TEST_BASE/proc/2/status"
+check "a partial read with a running match still shows unknown" "PROC: --/2 [OK]" present Linux
+rmdir "$TEST_BASE/proc/1/status"
+check "a vanished PID status makes the Linux running count unknown" "PROC: --/2 [OK]" present Linux
 
 printf 'Results: %s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

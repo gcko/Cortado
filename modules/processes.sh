@@ -24,7 +24,22 @@ module_processes() {
 
     if [ "$(uname)" != "Darwin" ] && [ -d /proc ]; then
         total_procs=$(ls -d /proc/[0-9]* 2>/dev/null | wc -l)
-        running_procs=$(grep -lE '^State:[[:space:]]*R' /proc/*/status 2>/dev/null | wc -l)
+        if [ "$show_running" = "true" ]; then
+            local status_counts statuses_read running_count
+            running_procs="--"
+            # grep exits 1 for a complete scan with no running processes.
+            # A read error or a PID vanishing before the glob makes it partial.
+            if status_counts=$(grep -cE '^State:[[:space:]]*R' /proc/[0-9]*/status 2>/dev/null) \
+                || [ "$?" -eq 1 ]; then
+                IFS=' ' read -r statuses_read running_count <<< "$(awk -F: '
+                    NF { read_count++; if ($NF > 0) running++ }
+                    END { print read_count+0, running+0 }
+                ' <<< "$status_counts")"
+                if [ "$statuses_read" -eq "$total_procs" ] 2>/dev/null; then
+                    running_procs="$running_count"
+                fi
+            fi
+        fi
     else
         local snapshot counts
         if ! snapshot=$(ps aux 2>/dev/null) || [ -z "$snapshot" ]; then
