@@ -53,16 +53,20 @@ _get_claude_token() {
         if _credentials_file_is_private "$creds_file"; then
             local file_token
             # Parse the entire file before emitting anything. Reject multiple
-            # documents, malformed input and non-string tokens, even if jq
-            # produced partial output before reporting an error.
-            if file_token=$(jq -ers '
-                select(length == 1) | .[0] |
-                select(type == "object") | .claudeAiOauth |
-                select(type == "object") | .accessToken |
-                select(type == "string") | select(length > 0)
-            ' "$creds_file" 2>/dev/null); then
+            # documents, malformed input and non-string tokens.
+            if [ "${CTX_READY:-false}" = true ]; then
+                [ "${cortado_json_worker:-false}" = true ] || return 0
+                local credentials=
+                # A successful read stopped at a raw NUL, which is invalid JSON.
+                if IFS= read -r -d '' credentials 2>/dev/null < "$creds_file"; then
+                    return 0
+                fi
+                if [ -n "$credentials" ] && _json_reply credential "$credentials"; then
+                    printf '%s\n' "$REPLY"
+                fi
+            elif file_token=$(_cortado_jq -ers --arg kind credential 2>/dev/null < "$creds_file"); then
+                # Standalone callers still check jq's complete exit status.
                 printf '%s\n' "$file_token"
-                return
             fi
         else
             log_debug "rate-limits: refusing credentials file with group or other permissions"
@@ -275,11 +279,9 @@ _project_usage_reply() {
         return 1
     fi
 
-    # Keep ten places in the rate and two in the additional utilization,
-    # truncating toward zero at each step.
+    # Keep ten places through the addition before rounding the projection.
     local rate=$(((last - first) / elapsed))
-    local additional_cents=$((rate * remaining / 100000000))
-    local total=$((current + additional_cents * 100000000)) sign=""
+    local total=$((current + rate * remaining)) sign=""
     if [ "$total" -lt 0 ]; then
         sign=-
         total=$((-total))
@@ -412,19 +414,12 @@ module_rate_limits() {
     fi
 
     if [ "$from_payload" = "false" ]; then
-        local five_hour_obj=$(echo "$usage_data" | jq -r '.five_hour // .five_hour_opus // .five_hour_sonnet // "null"' 2>/dev/null)
-        local seven_day_obj=$(echo "$usage_data" | jq -r '.seven_day // .seven_day_opus // .seven_day_sonnet // "null"' 2>/dev/null)
-
-        if [ "$five_hour_obj" = "null" ] || [ "$seven_day_obj" = "null" ]; then
+        if ! _json_reply usage "$usage_data" || [ -z "$REPLY" ]; then
             _render_placeholder "$show_5h" "$show_7d" "$label_5h" "$label_7d"
             return
         fi
-
-        local utilization_filter='.utilization | numbers | select(. >= 0 and . <= 100) | if . == 0 then 0 else . end'
-        five_hour=$(printf '%s' "$five_hour_obj" | jq -r "$utilization_filter" 2>/dev/null)
-        seven_day=$(printf '%s' "$seven_day_obj" | jq -r "$utilization_filter" 2>/dev/null)
-        five_hour_reset=$(echo "$five_hour_obj" | jq -r '.resets_at // empty' 2>/dev/null)
-        seven_day_reset=$(echo "$seven_day_obj" | jq -r '.resets_at // empty' 2>/dev/null)
+        # The decoder supplies four fixed assignment keys with @sh-quoted values.
+        eval "$REPLY"
     fi
 
     local now=$(date +%s)

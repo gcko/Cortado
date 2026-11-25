@@ -22,7 +22,21 @@ cat > "$scratch/bin/bc" <<'SHIM'
 printf '%s\n' bc >> "$CLAUDE_CONFIG_DIR/bc.calls"
 exit 1
 SHIM
-chmod 700 "$scratch/bin/jq" "$scratch/bin/bc"
+cat > "$scratch/bin/curl" <<'SHIM'
+#!/bin/bash
+[ "${FIXTURE_FETCH:-false}" = true ] || exit 7
+body=
+while [ "$#" -gt 0 ]; do
+    if [ "$1" = -o ]; then body=$2; shift; fi
+    shift
+done
+IFS= read -r auth
+[ "$auth" = 'header = "Authorization: Bearer test-token-REDACTED"' ] || exit 7
+[ -n "$body" ] || exit 7
+printf '%s\n' '{"five_hour":{"utilization":42},"seven_day":{"utilization":10}}' > "$body"
+printf 200
+SHIM
+chmod 700 "$scratch/bin/jq" "$scratch/bin/bc" "$scratch/bin/curl"
 
 render() {
     local payload="$1"
@@ -30,6 +44,20 @@ render() {
     sandbox=$(mktemp -d "$scratch/render.XXXXXX") || exit 1
     printf '%s\n' "$@" > "$sandbox/cortado.conf"
     chmod 600 "$sandbox/cortado.conf"
+    if [ -n "${usage_seed:-}" ]; then
+        mkdir -m 700 "$sandbox/cortado-cache"
+        printf '%s\n' "$usage_seed" > "$sandbox/cortado-cache/rate_limits_usage"
+    fi
+    if [ "${FIXTURE_FETCH:-false}" = true ]; then
+        (
+            umask 077
+            {
+                printf '%s\n' '{' '  "claudeAiOauth":{"accessToken":"test-token-REDACTED"}' '}'
+                printf '%b' "${credential_suffix:-}"
+            } > "$sandbox/.credentials.json"
+        )
+        chmod 600 "$sandbox/.credentials.json"
+    fi
     if [ -n "${history_seed:-}" ]; then
         mkdir -m 700 "$sandbox/cortado-cache"
         printf '%s\n' "$history_seed" > "$sandbox/.usage_history"
@@ -46,6 +74,24 @@ assert_eq "the default startup render launches exactly one jq process" \
     '1' "$(awk 'END {print NR}' "$sandbox/jq.calls")"
 assert_contains "missing context usage reads as absent" '📊 --' "$rendered"
 assert_contains "missing quota readings read as absent" '5h:-- 7d:--' "$rendered"
+
+usage_seed='{"five_hour_opus":{"utilization":42},"seven_day_sonnet":{"utilization":10}}' render '{}'
+assert_eq "the default render with a fresh quota cache launches exactly one jq process" \
+    '1' "$(awk 'END {print NR}' "$sandbox/jq.calls")"
+assert_contains "fresh quota cache shows both readings, including aliases" '5h:42% 🟢 7d:10% 🟢' "$rendered"
+
+FIXTURE_FETCH=true render '{}'
+assert_eq "the default render with a successful quota fetch launches exactly one jq process" \
+    '1' "$(awk 'END {print NR}' "$sandbox/jq.calls")"
+assert_contains "the fetched quota shows both readings" '5h:42% 🟢 7d:10% 🟢' "$rendered"
+
+for credential_suffix in '{}' '\000'; do
+    FIXTURE_FETCH=true render '{}'
+    assert_contains "a credential file with trailing data cannot reach the quota API" '5h:-- 7d:--' "$rendered"
+    assert_eq "rejecting bad credentials still uses exactly one jq process" \
+        '1' "$(awk 'END {print NR}' "$sandbox/jq.calls")"
+done
+unset credential_suffix
 
 render '{"model":{"display_name":"Claude Opus"},"cost":{"total_cost_usd":0.5234,"total_duration_ms":12345},"context_window":{"context_window_size":200000,"current_usage":{"input_tokens":50000},"total_input_tokens":150000,"total_output_tokens":25000},"rate_limits":{"five_hour":{"used_percentage":42},"seven_day":{"used_percentage":10}}}'
 assert_eq "the default post-turn render launches exactly one jq process" \
@@ -79,7 +125,35 @@ unset history_seed
 assert_contains "the projected five-hour limit still shows a critical indicator" '5h:70% 🟡 🔴' "$rendered"
 assert_eq "projection rendering launches no bc process" '0' "$(awk 'END {print NR}' "$sandbox/bc.calls" 2>/dev/null || printf 0)"
 
+inspect_context() {
+    local variable declaration flags readonly_count=0
+    for variable in CTX_CURRENT_DIR CTX_CONTEXT_PERCENT CTX_CONTEXT_SIZE CTX_CURRENT_TOKENS \
+        CTX_COST_USD CTX_DURATION_MS CTX_TOTAL_IN CTX_TOTAL_OUT CTX_MODEL_NAME \
+        CTX_OUTPUT_STYLE CTX_THINKING CTX_EFFORT CTX_SESSION_ID CTX_HAS_RATES \
+        CTX_FIVE_HOUR CTX_SEVEN_DAY CTX_FIVE_RESET CTX_SEVEN_RESET; do
+        declaration=$(declare -p "$variable") || continue
+        flags=${declaration#declare -}
+        case "${flags%% *}" in *r*) readonly_count=$((readonly_count + 1));; esac
+    done
+    printf '%s readonly fields, context: %s, cost: %s, quotas: %s/%s\n' \
+        "$readonly_count" "$CTX_CONTEXT_PERCENT" "$CTX_COST_USD" "$CTX_FIVE_HOUR" "$CTX_SEVEN_DAY"
+}
+
+inspect_payload() (
+    # shellcheck source=modules/utils.sh
+    . "$PROJECT_ROOT/modules/utils.sh"
+    PATH="$scratch/bin:$PATH" CLAUDE_CONFIG_DIR="$sandbox" \
+        with_payload_context inspect_context <<< "$1"
+)
+
+readonly_missing='18 readonly fields, context: -, cost: -, quotas: -/-'
+assert_eq "empty payload freezes the absence sentinels" "$readonly_missing" "$(inspect_payload '{}')"
+assert_eq "malformed payload freezes the absence sentinels" "$readonly_missing" "$(inspect_payload 'invalid JSON')"
+assert_eq "measured zero is a readonly reading" '18 readonly fields, context: 0, cost: 0, quotas: 0/-' \
+    "$(inspect_payload '{"cost":{"total_cost_usd":0},"context_window":{"used_percentage":0},"rate_limits":{"five_hour":{"used_percentage":0},"seven_day":{}}}')"
+
 export FAIL_JQ=true
+assert_eq "failed jq freezes the absence sentinels" "$readonly_missing" "$(inspect_payload '{}')"
 render '{"context_window":{"used_percentage":0}}'
 assert_contains "a failing jq does not turn unread context into zero" '📊 --' "$rendered"
 assert_contains "a failing jq does not turn unread quota into zero" '5h:-- 7d:--' "$rendered"

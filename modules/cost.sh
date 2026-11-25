@@ -26,15 +26,22 @@ module_cost() {
     [[ "$min_display" =~ ^[0-9]+(\.[0-9]+)?$ ]] || min_display=0.01
 
     local LC_ALL=C
-    local session_cost="${CTX_COST_USD:--}" session_duration_ms result=""
+    local session_cost="${CTX_COST_USD:--}" session_duration_ms cost="" result=""
     decimal_int_reply "${CTX_DURATION_MS:--}" 0; session_duration_ms=$REPLY
 
-    if decimal_fixed_reply "$session_cost" && [ "$REPLY" -gt 0 ]; then
-        local cost=$REPLY min_cost decimals cost_fmt icon
-        decimal_fixed_reply "$min_display" || return 0
-        min_cost=$REPLY
-        [ "$cost" -ge "$min_cost" ] || return 0
+    if decimal_fixed_reply "$session_cost"; then
+        cost=$REPLY
+        if ! decimal_fixed_reply "$min_display" || [ "$cost" -lt "$REPLY" ]; then
+            # Positive sub-minimum costs have always hidden the segment.
+            # A zero-cost session can still report its token rate.
+            [ "$cost" -eq 0 ] || return 0
+            cost=
+        fi
+    fi
 
+    if [ -n "$cost" ]; then
+        local decimals cost_fmt icon
+        session_cost="${session_cost#-}"  # Normalize signed zero.
         safe_int_reply "${COST_DECIMAL_PLACES:-2}" 2; decimals=$REPLY
         printf -v cost_fmt "%.${decimals}f" "$session_cost" 2>/dev/null || cost_fmt="$session_cost"
         get_icon_reply "${COST_ICON:-💰}" "COST:"; icon=$REPLY

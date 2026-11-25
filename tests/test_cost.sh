@@ -95,6 +95,33 @@ assert_eq "negative duration and zero cost yields empty result" \
     "" \
     "$(run_cost '{"cost":{"total_cost_usd":0,"total_duration_ms":-500},"context_window":{"total_input_tokens":100,"total_output_tokens":50}}')"
 
+render_cost() (
+    local sb
+    sb=$(mktemp -d) || return 1
+    trap 'rm -rf "$sb"' EXIT
+    printf '%s\n' MODULE_ORDER=cost "COST_MINIMUM_DISPLAY=$2" > "$sb/cortado.conf"
+    chmod 600 "$sb/cortado.conf"
+    printf '%s' "$1" | CLAUDE_CONFIG_DIR="$sb" CACHE_DIR="$sb/cortado-cache" \
+        /bin/bash "$PROJECT_ROOT/cortado.sh"
+)
+
+for minimum in 0.03 0.01; do
+    assert_eq "scientific-notation cost at minimum $minimum keeps its exact hourly rate" \
+        "💰 \$0.03 @\$.03/h" \
+        "$(render_cost '{"cost":{"total_cost_usd":"3e-2","total_duration_ms":3600000}}' "$minimum")"
+done
+for spelling in 0 0.0 0e0 -0.0; do
+    assert_eq "measured cost $spelling displays at a zero minimum" "💰 \$0.00" \
+        "$(render_cost "{\"cost\":{\"total_cost_usd\":$spelling}}" 0)"
+done
+assert_eq "missing cost stays absent at a zero minimum" "" "$(render_cost '{}' 0)"
+assert_eq "null cost stays absent at a zero minimum" "" \
+    "$(render_cost '{"cost":{"total_cost_usd":null}}' 0)"
+assert_eq "zero cost stays hidden at a positive minimum" "" \
+    "$(render_cost '{"cost":{"total_cost_usd":0}}' 0.01)"
+assert_eq "zero cost below the minimum can still show TPM" '⚡60tpm' \
+    "$(render_cost '{"cost":{"total_cost_usd":0,"total_duration_ms":1000},"context_window":{"total_input_tokens":1}}' 0.01)"
+
 echo
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

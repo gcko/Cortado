@@ -6,6 +6,10 @@
 # It must be loaded first before any other modules.
 # =============================================================================
 
+# The payload and fixed-point helpers also serve the incomplete-install path.
+# shellcheck source=modules/payload.sh
+. "${BASH_SOURCE[0]%utils.sh}payload.sh"
+
 # =============================================================================
 # PORTABLE FILE STAT HELPERS
 # =============================================================================
@@ -163,97 +167,6 @@ cache_clear() {
     else
         rm -rf "$CACHE_DIR" 2>/dev/null
     fi
-}
-
-# =============================================================================
-# SAFE NUMBER HANDLING
-# =============================================================================
-# Functions to handle null/empty/invalid numeric values safely
-
-# The _reply variants return through REPLY without a command substitution.
-# Keep the printing entry points for standalone and optional-module callers.
-safe_int_reply() {
-    local val="${1%%.*}"
-    case "${val#-}" in
-        '' | *[!0-9]*) REPLY="${2:-0}" ;;
-        *) REPLY="$val" ;;
-    esac
-}
-
-safe_int() {
-    safe_int_reply "$@"
-    echo "$REPLY"
-}
-
-# Bash defaults to octal for zero-prefixed operands and silently wraps overflow.
-# Validate the integer range with test, then read the digits in base ten.
-decimal_int_reply() {
-    safe_int_reply "$@"
-    if ! [ "$REPLY" -ge -9223372036854775808 ] 2>/dev/null; then
-        REPLY="${2:-0}"
-    fi
-    case "$REPLY" in
-        -*) REPLY=$((-10#${REPLY#-})) ;;
-        *) REPLY=$((10#$REPLY)) ;;
-    esac
-}
-
-safe_divide_reply() {
-    local num denom
-    decimal_int_reply "$1" 0; num=$REPLY
-    decimal_int_reply "$2" 1; denom=$REPLY
-    if [ "$denom" -eq 0 ]; then
-        REPLY="${3:-0}"
-    else
-        REPLY=$((num / denom))
-    fi
-}
-
-safe_divide() {
-    safe_divide_reply "$@"
-    echo "$REPLY"
-}
-
-safe_percent_reply() {
-    local value total
-    decimal_int_reply "$1" 0; value=$REPLY
-    decimal_int_reply "$2" 1; total=$REPLY
-    if [ "$total" -eq 0 ]; then
-        REPLY="${3:-0}"
-    else
-        REPLY=$((value * 100 / total))
-    fi
-}
-
-safe_percent() {
-    safe_percent_reply "$@"
-    echo "$REPLY"
-}
-
-# Convert a nonnegative decimal to units of 10^-10, truncating excess digits.
-# jq may emit exponential notation. Its normalized mantissa is also accepted by
-# Bash printf, so expand it before splitting at the decimal point.
-decimal_fixed_reply() {
-    local LC_ALL=C
-    local text="$1" whole fraction
-    local decimal_pattern='^([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?$'
-    REPLY=
-    [[ "$text" =~ $decimal_pattern ]] || return 1
-    case "$text" in
-        *[eE]*) printf -v text '%.18f' "$text" 2>/dev/null || return 1 ;;
-    esac
-    whole="${text%%.*}"
-    whole="${whole:-0}"
-    [ "$whole" -le 922337203 ] 2>/dev/null || return 1
-    case "$text" in
-        *.*) fraction="${text#*.}0000000000" ;;
-        *) fraction=0000000000 ;;
-    esac
-    fraction="${fraction:0:10}"
-    if [ "$whole" -eq 922337203 ] && [ "$fraction" -gt 6854775807 ]; then
-        return 1
-    fi
-    REPLY=$((10#$whole * 10000000000 + 10#$fraction))
 }
 
 # =============================================================================
@@ -817,80 +730,4 @@ json_get_int() {
     local value
     value=$(json_get "$json" "$path" "$default")
     safe_int "$value" "$default"
-}
-
-# Parse once for the callback and its descendants. Standalone module callers
-# use this same field map with a here-string. The keys in the assignment list
-# are literals below, and jq @sh quotes every value before Bash reads the list.
-with_payload_context() {
-    local CTX_CURRENT_DIR='' CTX_CONTEXT_PERCENT='-' CTX_CONTEXT_SIZE='-' CTX_CURRENT_TOKENS='-'
-    local CTX_COST_USD='-' CTX_DURATION_MS='-' CTX_TOTAL_IN='-' CTX_TOTAL_OUT='-'
-    local CTX_MODEL_NAME='' CTX_OUTPUT_STYLE='' CTX_THINKING='' CTX_EFFORT='' CTX_SESSION_ID=''
-    local CTX_HAS_RATES=false CTX_FIVE_HOUR='-' CTX_SEVEN_DAY='-' CTX_FIVE_RESET='' CTX_SEVEN_RESET=''
-    local -r CTX_READY=true
-    local assignments
-    if assignments=$(jq -rs '
-        def count:
-            (try tonumber catch null)
-            | if . != null and . >= 0 and . <= 9007199254740991
-              then floor else null end;
-        def object_or_empty: if type == "object" then . else {} end;
-        def effort_text:
-            if type == "string" then .
-            elif type == "object" then (.level // .name | strings) // ""
-            else "" end;
-        def utilization: numbers | select(. >= 0 and . <= 100) | if . == 0 then 0 else . end;
-        # Resets can be carried into the comma-separated history. Keep its UTC
-        # format for epochs and accept only timestamp-shaped strings.
-        def reset_time:
-            if type == "number" then (try (floor | todate) catch "")
-            elif type == "string"
-                 and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})?$")
-            then . else "" end;
-        def shell_value:
-            if type == "string" then gsub("\u0000"; "") | sub("\n+$"; "") else . end
-            | @sh;
-        select(length == 1) | .[0] | objects
-        | (.context_window | object_or_empty) as $context
-        | (.cost | object_or_empty) as $cost
-        | (.model | object_or_empty) as $model
-        | (.thinking | object_or_empty) as $thinking
-        | (.rate_limits | object_or_empty) as $rates
-        | ($rates.five_hour | object_or_empty) as $five
-        | ($rates.seven_day | object_or_empty) as $seven
-        | (if (.thinking | type) == "object" then ($thinking.enabled // $thinking.on)
-           else (.thinking // $model.thinking) end) as $think
-        | {
-            CTX_CURRENT_DIR: ((.workspace | object_or_empty | .current_dir) // .cwd // "." | tostring),
-            CTX_CONTEXT_PERCENT: (($context.used_percentage | numbers | count) // "-"),
-            CTX_CONTEXT_SIZE: (($context.context_window_size | count) // "-"),
-            CTX_CURRENT_TOKENS: (($context.current_usage | objects
-                | [.input_tokens, .cache_creation_input_tokens, .cache_read_input_tokens, .output_tokens]
-                | map(count) | add | count) // "-"),
-            CTX_COST_USD: ($cost.total_cost_usd // "-" | tostring),
-            CTX_DURATION_MS: ($cost.total_duration_ms // "-" | tostring),
-            CTX_TOTAL_IN: ($context.total_input_tokens // "-" | tostring),
-            CTX_TOTAL_OUT: ($context.total_output_tokens // "-" | tostring),
-            CTX_MODEL_NAME: ($model.display_name // "" | tostring),
-            CTX_OUTPUT_STYLE: ((.output_style | object_or_empty | .name) // "" | tostring),
-            CTX_THINKING: (if ($think == true or $think == "true" or $think == "on" or $think == "enabled")
-                then "On" else "" end),
-            CTX_EFFORT: ([.effort, $thinking.effort, $model.effort, $model.reasoning_effort]
-                | map(effort_text | select(length > 0)) | first // ""),
-            CTX_SESSION_ID: ((.session_id | strings | select(length > 0) | @base64
-                | select(length <= 200)) // ""),
-            CTX_HAS_RATES: (([$rates.five_hour, $rates.seven_day] | all(type == "object"))
-                and ([$five.used_percentage, $seven.used_percentage] | any(type == "number"))),
-            CTX_FIVE_HOUR: (($five.used_percentage | utilization) // "-"),
-            CTX_SEVEN_DAY: (($seven.used_percentage | utilization) // "-"),
-            CTX_FIVE_RESET: ($five.resets_at | reset_time),
-            CTX_SEVEN_RESET: ($seven.resets_at | reset_time)
-        }
-        | [to_entries[] | .key + "=" + (.value | shell_value)] | join(" ")
-    ' 2>/dev/null) && [ -n "$assignments" ]; then
-        eval "readonly $assignments"
-    fi
-
-    # Module output, exit status and stderr belong to the caller.
-    "$@"
 }

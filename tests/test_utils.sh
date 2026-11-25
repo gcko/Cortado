@@ -273,6 +273,25 @@ assert_eq "compact mode is compact"    "yes" "$(is_compact && echo yes || echo n
 # empty / null / missing result falls back to the default. json_get_int
 # additionally coerces through safe_int (non-numeric -> default). Requires jq.
 # -----------------------------------------------------------------------------
+echo "=== Fixed-point decimal tests ==="
+decimal_fixed_reply '3e-2'
+assert_eq 'scientific notation keeps all ten decimal places' 300000000 "$REPLY"
+decimal_fixed_reply '0.03'
+assert_eq 'ordinary decimal has the same fixed-point value' 300000000 "$REPLY"
+decimal_fixed_reply '30E-0003'
+assert_eq 'zero-padded exponent and shifted mantissa are exact' 300000000 "$REPLY"
+decimal_fixed_reply '.0003e+2'
+assert_eq 'positive exponent shifts an implicit whole part' 300000000 "$REPLY"
+decimal_fixed_reply '1e-99999999999999999999'
+assert_eq 'an arbitrarily small nonnegative amount truncates to zero' 0 "$REPLY"
+decimal_fixed_reply '9223372036854775807e-10'
+assert_eq 'exponent can represent the largest supported fixed-point value' 9223372036854775807 "$REPLY"
+if decimal_fixed_reply '9223372036854775808e-10'; then
+    fail 'a unit above the fixed-point limit is rejected'
+else
+    pass 'a unit above the fixed-point limit is rejected'
+fi
+
 echo "=== json_get / json_get_int Tests ==="
 assert_eq "json_get extracts a string value"           "bar" "$(json_get '{"foo":"bar"}' '.foo' 'def')"
 assert_eq "json_get extracts a nested value"           "c"   "$(json_get '{"a":{"b":"c"}}' '.a.b' 'def')"

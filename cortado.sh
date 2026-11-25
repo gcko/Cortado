@@ -326,24 +326,31 @@ load_modules() {
         . "$MODULES_DIR/utils.sh" 2>|"$stderr_file"
         log_module_stderr utils
     else
+        CACHE_DIR="$CLAUDE_CONFIG_DIR/cortado-cache"
+        cache_get() { return 1; }
+        cache_set() { :; }
+        init_cache() { return 1; }
+        _file_mtime() { printf '0\n'; }
+        is_compact() { [[ "${DISPLAY_MODE:-normal}" == compact || "${1:-}" == true ]]; }
         get_icon() { echo "$1"; }
         get_icon_reply() { REPLY="$1"; }
         get_status() { echo ""; }
         get_status_reply() { REPLY=; }
+        get_status_4level() { echo ""; }
+        get_status_4level_reply() { REPLY=; }
         progress_bar() { echo ""; }
         progress_bar_reply() { REPLY=; }
         format_number() { echo "$1"; }
         format_number_reply() { REPLY="$1"; }
-        safe_int() { echo "${1:-0}"; }
-        safe_int_reply() { REPLY="${1:-0}"; }
-        safe_percent_reply() { REPLY=0; }
-        with_payload_context() { local CTX_READY=true; "$@"; }
+        # A complete payload helper is also loaded by utils.sh.
+        with_payload_context() { local -r CTX_READY=true; "$@"; }
     fi
 
     for module_file in "$MODULES_DIR"/*.sh; do
         [ -f "$module_file" ] || continue
         module_name="${module_file##*/}"
         [ "$module_name" != utils.sh ] || continue
+        if [ "$module_name" = payload.sh ] && [ -f "$MODULES_DIR/utils.sh" ]; then continue; fi
         start_module_stderr
         # shellcheck source=/dev/null
         . "$module_file" 2>|"$stderr_file"

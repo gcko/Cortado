@@ -290,5 +290,32 @@ assert_contains "history keeps the unrounded payload percentages" ",97.5,82.4," 
     "$(cat "$sb/.usage_history" 2>/dev/null)"
 
 echo ""
+echo "=== sub-percent growth can trigger a projected warning ==="
+for theme in default monochrome; do
+    sb=$(sandbox "projection-$theme")
+    printf '%s\n' "COLOR_THEME=$theme" 'RATE_SHOW_TIME_REMAINING=false' 'TERMINAL_WIDTH=200' \
+        'date() { if [ "$*" = +%s ]; then echo 1800000000; else /bin/date "$@"; fi; }' \
+        >> "$sb/cortado.conf"
+    printf '%s\n' 1800000000 > "$sb/cortado-cache/rate_limits_payload_recorded"
+    TZ=UTC touch -t 202701150800 "$sb/cortado-cache/rate_limits_payload_recorded"
+    if [ "$theme" = default ]; then
+        printf '%s\n' 'RATE_SHOW_USAGE_STATUS=true' >> "$sb/cortado.conf"
+        reset=2027-01-15T11:20:00
+        printf '%s\n' "1799998000,79.494,10,$reset," "1799999900,79.495,10,$reset," > "$sb/.usage_history"
+        used=79.495
+        expected='5h:79% 🟠 🟡 7d:10% 🟢'
+    else
+        reset=2027-01-15T08:16:40
+        printf '%s\n' "1799999000,0,10,$reset," "1799999500,0.005,10,$reset," > "$sb/.usage_history"
+        used=79.499
+        expected='5h:79% [WARN] 7d:10%'
+    fi
+    projection_payload=$(printf '{"rate_limits":{"five_hour":{"used_percentage":%s,"resets_at":"%s"},"seven_day":{"used_percentage":10}}}' \
+        "$used" "$reset")
+    assert_eq "$theme keeps the projected warning when growth is below 0.01%" "$expected" \
+        "$(render "$sb" "$projection_payload")"
+done
+
+echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
