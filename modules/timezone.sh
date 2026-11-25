@@ -11,19 +11,20 @@
 # =============================================================================
 
 module_timezone() {
-    local zones="${TIMEZONE_ZONES:-UTC}"
+    # Add a delimiter so the last field can be consumed like any other.
+    local zones="${TIMEZONE_ZONES:-UTC},"
     local format="${TIMEZONE_FORMAT:-%H:%M}"
     local show_label="${TIMEZONE_SHOW_LABEL:-true}"
-    local labels="${TIMEZONE_LABELS:-}"
+    local labels="${TIMEZONE_LABELS:+$TIMEZONE_LABELS,}"
     local compact="${TIMEZONE_COMPACT:-false}"
 
     local result=""
-    local i=0
+    local zone time_str label part
 
-    # Split zones by comma
-    local old_ifs="$IFS"
-    IFS=','
-    for zone in $zones; do
+    while [ -n "$zones" ]; do
+        zone="${zones%%,*}"
+        zones="${zones#*,}"
+
         # Trim whitespace
         zone=$(echo "$zone" | sed 's/^ *//;s/ *$//')
 
@@ -31,29 +32,18 @@ module_timezone() {
             continue
         fi
 
-        local time_str=""
-        if [ "$(uname)" = "Darwin" ]; then
-            time_str=$(TZ="$zone" date +"$format" 2>/dev/null)
-        else
-            time_str=$(TZ="$zone" date +"$format" 2>/dev/null)
-        fi
+        time_str=$(TZ="$zone" date +"$format" 2>/dev/null)
 
         if [ -z "$time_str" ]; then
             continue
         fi
 
-        local label=""
+        label=""
         if [ "$show_label" = "true" ]; then
-            # Get custom label or derive from zone
             if [ -n "$labels" ]; then
-                local j=0
-                for l in $labels; do
-                    if [ "$j" = "$i" ]; then
-                        label=$(echo "$l" | sed 's/^ *//;s/ *$//')
-                        break
-                    fi
-                    j=$((j + 1))
-                done
+                # Consume a label only for a zone that produced a reading.
+                label=$(echo "${labels%%,*}" | sed 's/^ *//;s/ *$//')
+                labels="${labels#*,}"
             fi
 
             if [ -z "$label" ]; then
@@ -62,7 +52,6 @@ module_timezone() {
             fi
         fi
 
-        local part=""
         if [ -n "$label" ]; then
             if is_compact "$compact"; then
                 part="${label}:${time_str}"
@@ -78,10 +67,7 @@ module_timezone() {
         else
             result="$part"
         fi
-
-        i=$((i + 1))
     done
-    IFS="$old_ifs"
 
     echo "$result"
 }
