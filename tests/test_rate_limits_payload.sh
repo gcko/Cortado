@@ -64,7 +64,7 @@ sandbox() {
 
 # render <sandbox> <payload>
 render() {
-    printf '%s' "$2" | CLAUDE_CONFIG_DIR="$1" bash "$PROJECT_ROOT/cortado.sh" 2>&1
+    printf '%s' "$2" | CLAUDE_CONFIG_DIR="$1" /bin/bash "$PROJECT_ROOT/cortado.sh" 2>&1
 }
 
 NOW=$(date +%s)
@@ -72,6 +72,19 @@ RESET_5H=$((NOW + 7200))
 RESET_7D=$((NOW + 3 * 86400))
 WITH_LIMITS=$(printf '{"model":{"display_name":"Opus"},"rate_limits":{"five_hour":{"used_percentage":65,"resets_at":%s},"seven_day":{"used_percentage":32,"resets_at":%s}}}' "$RESET_5H" "$RESET_7D")
 NO_LIMITS='{"model":{"display_name":"Opus"}}'
+
+if [ "$(uname -s)" = Darwin ] && [ -x /usr/bin/jq ]; then
+    echo "=== bundled jq uses live readings with or without cache ==="
+    sb=$(sandbox bundled-jq)
+    mkdir "$TEST_BASE/bundled-bin"
+    ln -s /usr/bin/jq "$TEST_BASE/bundled-bin/jq"
+    bundled_payload='{"rate_limits":{"five_hour":{"used_percentage":42},"seven_day":{"used_percentage":65}}}'
+    out=$(PATH="$TEST_BASE/bundled-bin:$PATH" render "$sb" "$bundled_payload")
+    assert_eq "bundled jq renders 42/65 with an empty cache" "5h:42% 7d:65%" "$out"
+    printf '%s\n' '{"five_hour":{"utilization":1},"seven_day":{"utilization":2}}' +        > "$sb/cortado-cache/rate_limits_usage"
+    out=$(PATH="$TEST_BASE/bundled-bin:$PATH" render "$sb" "$bundled_payload")
+    assert_eq "bundled jq prefers 42/65 over cached 1/2" "5h:42% 7d:65%" "$out"
+fi
 
 echo "=== a payload with rate limits is shown without any credential ==="
 
@@ -154,6 +167,17 @@ assert_eq "a malformed reset time adds one history line, not several" "1" "${lin
 echo ""
 echo "=== missing percentages leave the sibling reading visible ==="
 
+sb=$(sandbox no-payload-readings)
+both_null='{"rate_limits":{"five_hour":{"used_percentage":null},"seven_day":{"used_percentage":null}}}'
+null_missing='{"rate_limits":{"five_hour":{"used_percentage":null},"seven_day":{}}}'
+zero_null='{"rate_limits":{"five_hour":{"used_percentage":0},"seven_day":{"used_percentage":null}}}'
+assert_eq "both-null quota without a fallback shows absence" "5h:-- 7d:--" "$(render "$sb" "$both_null")"
+printf '%s\n' '{"five_hour":{"utilization":42},"seven_day":{"utilization":10}}' \
+    > "$sb/cortado-cache/rate_limits_usage"
+assert_eq "both-null quota uses cached readings" "5h:42% 7d:10%" "$(render "$sb" "$both_null")"
+assert_eq "null and missing quota use cached readings" "5h:42% 7d:10%" "$(render "$sb" "$null_missing")"
+assert_eq "a payload with one measured zero is used without merging sources" "5h:0% 7d:--" "$(render "$sb" "$zero_null")"
+
 sb=$(sandbox missing-utilization)
 printf '%s\n' 'RATE_SHOW_TIME_REMAINING="false"' 'RATE_SHOW_PROGRESS_BAR="false"' \
     >> "$sb/cortado.conf"
@@ -192,6 +216,35 @@ assert_eq "normal dots have one space" "5h:42% ● 7d:65% ●" "$(render "$sb" "
 printf '%s\n' 'STATUS_STYLE="emoji"' 'STATUS_GREEN="g"' 'STATUS_YELLOW="y"' \
     'DISPLAY_MODE="compact"' >> "$sb/cortado.conf"
 assert_eq "compact custom indicators attach directly to percentages" "5h:42%g 7d:65%y" "$(render "$sb" "$low")"
+
+echo ""
+echo "=== decimal percentages round consistently across locales ==="
+
+sb=$(sandbox decimal-usage)
+printf '%s\n' 'RATE_SHOW_USAGE_STATUS="true"' 'RATE_SHOW_TIME_REMAINING="false"' \
+    >> "$sb/cortado.conf"
+decimal_payload='{"rate_limits":{"five_hour":{"used_percentage":97.5},"seven_day":{"used_percentage":82.4}}}'
+printf '%s\n' '{"five_hour":{"utilization":97.5},"seven_day":{"utilization":82.4}}' \
+    > "$sb/cortado-cache/rate_limits_usage"
+rounded='5h:98% [CRIT] 7d:82% [HIGH]'
+assert_eq "C locale rounds decimal payload readings" "$rounded" "$(LC_ALL=C render "$sb" "$decimal_payload")"
+assert_eq "C locale rounds decimal cached readings" "$rounded" "$(LC_ALL=C render "$sb" "$NO_LIMITS")"
+comma_locale=$(
+    locale -a | while IFS= read -r candidate; do
+        if [ "$(LC_ALL="$candidate" locale decimal_point 2>/dev/null)" = "," ]; then
+            printf '%s\n' "$candidate"
+            break
+        fi
+    done
+)
+if [ -n "$comma_locale" ]; then
+    assert_eq "comma-decimal locale rounds payload readings" "$rounded" \
+        "$(LC_ALL="$comma_locale" render "$sb" "$decimal_payload")"
+    assert_eq "comma-decimal locale rounds cached readings" "$rounded" \
+        "$(LC_ALL="$comma_locale" render "$sb" "$NO_LIMITS")"
+fi
+assert_contains "history keeps the unrounded payload percentages" ",97.5,82.4," \
+    "$(cat "$sb/.usage_history" 2>/dev/null)"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

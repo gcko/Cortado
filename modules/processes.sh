@@ -35,7 +35,7 @@ module_processes() {
         # Count both readings from the same snapshot, skipping the header.
         counts=$(printf '%s\n' "$snapshot" | awk '
             NF && ++lines > 1 { total++; if ($8 ~ /R/) running++ }
-            END { if (lines) print total+0, running+0 }
+            END { if (total) print total, running+0 }
         ')
         IFS=' ' read -r total_procs running_procs <<< "$counts"
     fi

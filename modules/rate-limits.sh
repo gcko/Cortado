@@ -120,8 +120,8 @@ _check_backoff() {
 #   rate_limits.seven_day.used_percentage, rate_limits.seven_day.resets_at
 # Prints them in the usage API's shape ({five_hour:{utilization,resets_at}, ...},
 # resets_at as an ISO 8601 UTC string) so the renderer below needs no second path.
-# Both window objects must exist to use the payload. Within each object, a
-# missing or invalid percentage stays null so the other window can still render.
+# Both window objects and at least one numeric reading are needed to use the
+# payload. A missing or invalid percentage stays null if its sibling can render.
 # A reset time that is neither a number nor a strict ISO 8601 string is dropped
 # (no countdown), because it is written into the comma-separated history file.
 _usage_from_payload() {
@@ -130,7 +130,7 @@ _usage_from_payload() {
     printf '%s' "$input" | jq -c '
         def window:
             if type == "object"
-            then {utilization: (.used_percentage | numbers) // null,
+            then {utilization: ((.used_percentage | numbers) // null),
                   resets_at: (if (.resets_at | type) == "number"
                               then (.resets_at | floor | todate)
                               elif (.resets_at | type) == "string"
@@ -142,6 +142,7 @@ _usage_from_payload() {
         | select(type == "object")
         | {five_hour: (.five_hour | window), seven_day: (.seven_day | window)}
         | select(.five_hour != null and .seven_day != null)
+        | select(.five_hour.utilization != null or .seven_day.utilization != null)
     ' 2>/dev/null
 }
 
@@ -491,8 +492,16 @@ module_rate_limits() {
     fi
 
     local five_hour_int seven_day_int
-    five_hour_int=$(printf "%.0f" "${five_hour:-0}" 2>/dev/null)
-    seven_day_int=$(printf "%.0f" "${seven_day:-0}" 2>/dev/null)
+    # jq emits a decimal point regardless of the user's locale. Clear any
+    # partial output printf emits before reporting a conversion error.
+    five_hour_int=$(
+        LC_ALL=C
+        printf "%.0f" "${five_hour:-0}" 2>/dev/null
+    ) || five_hour_int=""
+    seven_day_int=$(
+        LC_ALL=C
+        printf "%.0f" "${seven_day:-0}" 2>/dev/null
+    ) || seven_day_int=""
 
     local five_hour_part="--"
     local seven_day_part="--"

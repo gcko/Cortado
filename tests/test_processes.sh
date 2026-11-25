@@ -21,6 +21,7 @@ esac
 printf 'USER PID %%CPU %%MEM VSZ RSS TT STAT STARTED TIME COMMAND\n'
 case "$TEST_PS" in
     partial) exit 1 ;;
+    sleeping) printf '%s\n' 'user 1 0 0 0 0 ?? S 0 0 mock' ;;
     present)
         printf '%s\n' 'user 1 0 0 0 0 ?? R 0 0 mock' 'user 2 0 0 0 0 ?? S 0 0 mock'
         ;;
@@ -52,7 +53,8 @@ check() {
 check "failing ps shows absence" "PROC: --" failed
 check "successful but silent ps shows absence" "PROC: --" empty
 check "partial output from failing ps shows absence" "PROC: --" partial
-check "a header-only snapshot counts zero" "PROC: 0/0 [OK]" zero
+check "a header-only snapshot shows absence" "PROC: --" header
+check "a sleeping process is a measured zero running" "PROC: 0/1 [OK]" sleeping
 check "a measured process count still shows running and total" "PROC: 1/2 [OK]" present
 
 printf 'Results: %s passed, %s failed\n' "$PASS" "$FAIL"

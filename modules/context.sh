@@ -46,10 +46,18 @@ module_context() {
 
     local tokens_until_compact=""
     if [[ "$context_size" =~ ^[1-9][0-9]*$ && "$current_tokens" =~ ^[0-9]+$ ]]; then
+        local counted_percent=$(safe_percent "$current_tokens" "$context_size")
         if [ "$context_percent" = "-" ]; then
-            context_percent=$(safe_percent "$current_tokens" "$context_size")
+            context_percent="$counted_percent"
         fi
-        if [ "$show_tokens" = "true" ]; then
+        # Only show the count-derived estimate when it agrees with the percentage.
+        if [ "$show_tokens" = "true" ] && [ "$context_percent" = "$counted_percent" ]; then
+            # Bash arithmetic treats a leading zero as octal by default.
+            if [[ "$compact_thresh" == -* ]]; then
+                compact_thresh=$((-10#${compact_thresh#-}))
+            else
+                compact_thresh=$((10#$compact_thresh))
+            fi
             tokens_until_compact=$((context_size * compact_thresh / 100 - current_tokens))
             if [ "$tokens_until_compact" -lt 0 ]; then
                 tokens_until_compact=0
