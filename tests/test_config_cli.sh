@@ -319,6 +319,32 @@ fi
 assert_file_contains "project --set writes .cortado.conf" 'COLOR_THEME="minimal"' "$PROJ_MIG/.cortado.conf"
 assert_file_contains "project --set carries over .barista.conf extras" 'RATE_SHOW_PROGRESS_BAR="true"' "$PROJ_MIG/.cortado.conf"
 
+# The interactive path requires a TTY on both streams. Feed q to leave
+# the module menu immediately after its first preview.
+first_preview() (
+    CLAUDE_CONFIG_DIR=$(mktemp -d "$TMPHOME/preview.XXXXXX") || exit 1
+    export CLAUDE_CONFIG_DIR CACHE_DIR="$CLAUDE_CONFIG_DIR/cache" TERM=xterm NO_COLOR=1
+    printf '%s\n' "COLOR_THEME=$1" "USE_ICONS=$2" > "$CLAUDE_CONFIG_DIR/cortado.conf"
+    if [ "$(uname)" = Darwin ]; then
+        script -q /dev/null /bin/bash "$CORTADO" config <<< q
+    else
+        # The shell started by script expands this path.
+        # shellcheck disable=SC2016
+        CORTADO_PREVIEW_SCRIPT="$CORTADO" script -q -c 'exec /bin/bash "$CORTADO_PREVIEW_SCRIPT" config' /dev/null <<< q
+    fi | awk '/Preview:/ && !printed { print; printed=1 }'
+)
+
+assert_contains "minimal preview labels the directory" '| → project |' "$(first_preview minimal true)"
+assert_contains "vibrant preview labels the directory" '| 📂 project |' "$(first_preview vibrant true)"
+preview=$(first_preview monochrome true)
+assert_contains "monochrome preview labels the directory" '| DIR: project |' "$preview"
+assert_contains "monochrome preview labels context" '| CTX: ' "$preview"
+assert_contains "monochrome preview labels Git" '| GIT: main |' "$preview"
+assert_contains "monochrome preview labels the model" '| AI: Claude |' "$preview"
+preview=$(first_preview default false)
+assert_contains "no-icons preview labels the directory" '| DIR: project |' "$preview"
+assert_contains "no-icons preview labels the model" '| MODEL: Claude |' "$preview"
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

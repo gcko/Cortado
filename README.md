@@ -310,7 +310,7 @@ export CLAUDE_CONFIG_DIR="/path/to/my/claude-config"
 Cortado will automatically use that directory for:
 - User config overrides (`cortado.conf`)
 - Cache files (`cortado-cache/`)
-- Debug logs (`cortado.log`)
+- Debug logs (`cortado.log`, rotated to `cortado.log.1` at 1 MiB)
 - Rate limit history (`.usage_history`)
 
 No other configuration changes are needed.
@@ -423,7 +423,7 @@ RIGHT_SIDE_RESERVE=20        # Space reserved for Claude's right-side display
 # =============================================================================
 
 CACHE_MAX_AGE=60             # Default cache TTL (seconds) for cache_get() when no max_age is passed
-DEBUG_MODE="false"           # Debug logging to $CLAUDE_CONFIG_DIR/cortado.log
+DEBUG_MODE="false"           # Debug logging to $CLAUDE_CONFIG_DIR/cortado.log (module errors included)
 ```
 
 Per-module settings (icons, thresholds, formats, and TTLs such as `GIT_CACHE_TTL`, `RATE_CACHE_TTL`, `WEATHER_CACHE_TTL`, `VERSION_SHOW_DURATION`, and `UPDATE_CHECK_INTERVAL`) are documented inline in the shipped `cortado.conf`.
@@ -520,7 +520,8 @@ MODULE_ORDER="...,mycustom,..."
 ### Modules not loading
 - Check file permissions: `chmod +x cortado.sh`
 - Verify module files exist in `modules/` directory
-- Enable debug mode: `DEBUG_MODE="true"`
+- Enable debug mode: `DEBUG_MODE="true"`. Module errors (a missing tool, a bad setting) never print into the statusline; with debug mode on they go to `cortado.log`, prefixed with the module name. The log rotates at 1 MiB and keeps one previous file, `cortado.log.1`.
+- If the statusline reads `cortado: jq missing`, install `jq`: Cortado needs it to read the data Claude Code sends.
 
 ### Arrow keys not working in installer
 - Make sure you're running in a proper terminal (not a script)

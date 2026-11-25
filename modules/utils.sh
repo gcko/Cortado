@@ -687,12 +687,43 @@ format_number() {
 # LOGGING
 # =============================================================================
 
-# Debug logging
+# Best-effort debug logging. The lock covers both the size check and append so
+# concurrent refreshes cannot each rotate the same log.
 log_debug() {
-    if [ "${DEBUG_MODE:-false}" = "true" ]; then
-        local log_file="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/cortado.log"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$log_file" 2>/dev/null
-    fi
+    [ "${DEBUG_MODE:-false}" = "true" ] || return 0
+    local log_file="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/cortado.log"
+    local lock="$log_file-lock" limit=1048576
+    local LC_ALL=C  # Count bytes, including for messages that contain Unicode.
+    local entry size
+
+    (
+        umask 077
+        # A single unusually large diagnostic still fits in one generation.
+        entry="[$(date '+%Y-%m-%d %H:%M:%S')] $1"
+        entry="${entry:0:$((limit - 1))}"$'\n'
+
+        # Keep the lock inode independent of the rotating log. The kernel
+        # releases the lock when the inherited descriptor closes.
+        [ ! -L "$lock" ] && { [ ! -e "$lock" ] || [ -f "$lock" ]; } || return 1
+        exec 9>>"$lock" || return 1
+        if command -v flock >/dev/null 2>&1; then
+            flock -w 5 9
+        else
+            perl -MFcntl=:flock -e 'open(my $lock, ">&=9") or exit 1; alarm 5; exit(!flock($lock, LOCK_EX))'
+        fi || return 1
+
+        # Only append to a regular log. Protect logs left by older versions
+        # before we append or move them into the previous generation.
+        [ ! -L "$log_file" ] || return 1
+        if [ -e "$log_file" ]; then
+            [ -f "$log_file" ] && chmod 600 "$log_file" || return 1
+            size=$(wc -c < "$log_file") || return 1
+            if [ "$((size + ${#entry}))" -gt "$limit" ]; then
+                [ ! -d "$log_file.1" ] && mv -f -- "$log_file" "$log_file.1" || return 1
+            fi
+        fi
+        printf '%s' "$entry" >> "$log_file"
+    ) 2>/dev/null || :
 }
 
 # =============================================================================

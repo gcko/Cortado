@@ -200,7 +200,7 @@ bash tests/test_install_update.sh  # installer update flags, runtime copy, migra
 #       test_rate_limits_concurrency,
 #       test_rate_limits_credentials, test_rate_limits_payload, test_sandbox,
 #       test_status_render, test_timezone, test_ttl_validation, test_update, test_uptime,
-#       test_version
+#       test_version, test_debug_log, test_module_errors
 # tests/run-jq-variants.sh runs every suite under each jq it finds (Homebrew and /usr/bin/jq)
 ```
 
@@ -216,7 +216,8 @@ Never run a worktree's `cortado.sh` against the real `~/.claude`: it writes `cor
 Enable debug mode:
 ```bash
 DEBUG_MODE="true"  # In config
-# Logs to $CLAUDE_CONFIG_DIR/cortado.log
+# Logs to $CLAUDE_CONFIG_DIR/cortado.log: each module's stderr, prefixed with its name
+# (otherwise discarded, never printed into the line); rotates at 1 MiB to cortado.log.1
 ```
 
 ## Pre-PR Checks
@@ -296,7 +297,7 @@ Development skills live in `.claude/skills/` (canonical). Each `.agents/skills/<
 
 ## Dependencies
 
-- **Required**: `jq` (JSON processor), `bc` (calculator)
+- **Required**: `jq` (JSON processor; without it the line reads `cortado: jq missing`), `bc` (calculator)
 - **Optional**: Various CLI tools for specific modules (docker, node, etc.)
 
 ## Custom Config Directory
@@ -310,7 +311,7 @@ CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 Files stored in this directory:
 - `cortado.conf` - User config overrides
 - `cortado-cache/` - Cache for expensive operations (weather, network, etc.)
-- `cortado.log` - Debug log (when `DEBUG_MODE="true"`)
+- `cortado.log` - Debug log (when `DEBUG_MODE="true"`), rotated at 1 MiB to `cortado.log.1`
 - `.usage_history` - Rate limit history for projections
 
 Modules also include their own `${CLAUDE_CONFIG_DIR:-$HOME/.claude}` fallback for robustness if sourced independently.
