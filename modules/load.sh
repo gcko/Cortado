@@ -17,7 +17,7 @@ module_load() {
 
     # Get number of CPUs for threshold calculation
     local num_cpus
-    if [ "$(uname)" = "Darwin" ]; then
+    if [[ "${OSTYPE:-}" == darwin* ]]; then
         num_cpus=$(sysctl -n hw.ncpu 2>/dev/null || echo 4)
     else
         num_cpus=$(nproc 2>/dev/null || echo 4)

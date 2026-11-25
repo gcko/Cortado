@@ -468,6 +468,16 @@ is_module_enabled() {
 # CONFIGURATION VALIDATION
 # =============================================================================
 
+remove_render_spaces() {
+    local name="$1" value="${!1}"
+    case "$value" in
+        # Preserve echo's handling of options and escapes in trusted configs.
+        -*|*\\*|*$'\n'*) value=$(echo "$value" | tr -d ' ') ;;
+        *) value=${value// /} ;;
+    esac
+    printf -v "$name" '%s' "$value"
+}
+
 validate_module_order() {
     local order="$1"
 
@@ -478,7 +488,7 @@ validate_module_order() {
     local modules module func_name
     IFS=',' read -r -a modules <<< "$order"
     for module in "${modules[@]}"; do
-        module=$(echo "$module" | tr -d ' ')
+        remove_render_spaces module
         func_name=$(get_module_function "$module")
         if [ -z "$func_name" ]; then
             log_debug "Warning: Unknown module in MODULE_ORDER: $module"
@@ -491,6 +501,14 @@ validate_module_order() {
 # =============================================================================
 # Joins modules with separator, wrapping to new lines at separator boundaries
 # when content would exceed available terminal width
+
+measure_wrap_width() {
+    local text="$1"
+    case "$text" in
+        *$'\033'*|*$'\n'|*\\*|-*) text=$(echo "$text" | sed $'s/\033\[[0-9;]*m//g') ;;
+    esac
+    printf -v "$2" '%d' "${#text}"
+}
 
 wrap_at_separators() {
     local sections="$1"
@@ -510,34 +528,35 @@ wrap_at_separators() {
 
     local output=""
     local current_line=""
-
-    # Calculate visible separator length (strip ANSI codes)
-    local sep_visible
-    sep_visible=$(echo "$separator" | sed $'s/\033\[[0-9;]*m//g')
-    local sep_len=${#sep_visible}
+    local current_len=0 section section_len sep_len projected_len
+    local sgr_prefix=$'\033''(\[[0-9;]*)?$'
+    measure_wrap_width "$separator" sep_len
 
     # Process each section (newline-separated input)
     while IFS= read -r section || [ -n "$section" ]; do
         [ -z "$section" ] && continue
 
-        # Calculate visible length (strip ANSI codes)
-        local section_visible
-        section_visible=$(echo "$section" | sed $'s/\033\[[0-9;]*m//g')
-        local section_len=${#section_visible}
+        measure_wrap_width "$section" section_len
 
         if [ -z "$current_line" ]; then
             # First section on this line
             current_line="$section"
+            current_len=$section_len
         else
-            # Calculate what line would look like with this section added
-            local current_visible
-            current_visible=$(echo "$current_line" | sed $'s/\033\[[0-9;]*m//g')
-            local current_len=${#current_visible}
-            local projected_len=$((current_len + sep_len + section_len))
+            projected_len=$((current_len + sep_len + section_len))
 
             if [ "$projected_len" -le "$max_line_width" ]; then
-                # Fits on current line - add with separator
+                # A partial SGR sequence can become complete at a join. Echo
+                # options, backslashes and multiline separators can also make
+                # the joined width differ from the sum of the parts.
+                current_len=$projected_len
+                if [[ "$current_line" =~ $sgr_prefix || "$separator" =~ $sgr_prefix ||
+                      "$current_line" == -* || "$separator" == -* || "$section" == -* ||
+                      "$separator" == *$'\n'* || "$current_line$separator$section" == *\\* ]]; then
+                    current_len=
+                fi
                 current_line="${current_line}${separator}${section}"
+                [ -n "$current_len" ] || measure_wrap_width "$current_line" current_len
             else
                 # Doesn't fit - output current line and start new one
                 if [ -n "$output" ]; then
@@ -546,6 +565,7 @@ wrap_at_separators() {
                     output="$current_line"
                 fi
                 current_line="$section"
+                current_len=$section_len
             fi
         fi
     done <<< "$sections"
@@ -633,7 +653,7 @@ main() {
     # Compact removes spaces only when joining the rendered sections.
     local render_separator="${SEPARATOR-}"
     if [ "${DISPLAY_MODE:-normal}" = "compact" ]; then
-        render_separator=$(echo "$render_separator" | tr -d ' ')
+        remove_render_spaces render_separator
     fi
 
     # Default module order if not specified
@@ -642,8 +662,9 @@ main() {
     # Use custom order if specified, otherwise use default
     local module_order="${MODULE_ORDER:-$DEFAULT_ORDER}"
 
-    # Validate module order
-    validate_module_order "$module_order"
+    if [ "${DEBUG_MODE:-false}" = "true" ]; then
+        validate_module_order "$module_order"
+    fi
 
     # Build status line sections
     local sections=""
@@ -656,8 +677,7 @@ main() {
     local modules module
     IFS=',' read -r -a modules <<< "$module_order"
     for module in "${modules[@]}"; do
-        # Trim whitespace
-        module=$(echo "$module" | tr -d ' ')
+        remove_render_spaces module
 
         # Skip empty entries
         [ -z "$module" ] && continue
