@@ -43,12 +43,12 @@ Cortado/
 │   ├── weather.sh      # Weather via wttr.in
 │   ├── sandbox.sh      # Lock icon when in a macOS app sandbox
 │   ├── version.sh      # Cortado version, shown briefly after startup
-│   ├── update.sh       # Daily GitHub check for new releases
+│   ├── update.sh       # GitHub release check with a shorter retry interval on failure
 │   └── ...             # Additional modules
 ├── tests/              # Regression tests (bash tests/test_*.sh, standalone)
 ├── .claude/skills/     # Repository development skills (canonical; see "Repository skills")
 ├── .agents/skills/     # Relative symlinks to .claude/skills/* so Codex reads the same skills
-├── .shellcheckrc       # Shellcheck policy (SC2155, SC2034 disabled)
+├── .shellcheckrc       # ShellCheck policy (see Testing)
 └── README.md
 ```
 
@@ -94,7 +94,7 @@ Cortado/
 All settings are documented with comments. Key settings:
 - `SEPARATOR` - Character(s) between modules (default: `" | "`)
 - `DISPLAY_MODE` - `"normal"`, `"compact"`, or `"verbose"`
-- `COLOR_THEME` - `"default"`, `"minimal"`, `"vibrant"`, `"monochrome"`, or `"nerd"`
+- `COLOR_THEME` - `"default"` or `"monochrome"`
 - `USE_ICONS` - Enable/disable emoji icons
 - `STATUS_STYLE` - `"emoji"`, `"ascii"`, or `"dots"`
 - `MODULE_*` - Enable/disable individual modules
@@ -102,17 +102,7 @@ All settings are documented with comments. Key settings:
 
 ## Color Themes
 
-COLOR_THEME fills status indicators and icons only when those variables are still unset; shipped cortado.conf assigns the default emoji first, so minimal, vibrant, and nerd do not restyle them, while monochrome still forces STATUS_STYLE=ascii and USE_ICONS=false.
-
-| Theme | Status Indicators | Icon Style | Use Case |
-|-------|-------------------|------------|----------|
-| **default** | 🟢 🟡 🟠 🔴 | Standard emoji (📁 📊 🌿) | General use |
-| **minimal** | ◦ ◦ ◦ ● | Geometric (→ ◐ ⎇ ◈) | Clean, subtle look |
-| **vibrant** | 💚 💛 🧡 ❤️ | Expressive (📂 🎯 🔀 🧠) | High visibility |
-| **monochrome** | [OK] [~~] [!!] [XX] | ASCII text (DIR: CTX: GIT:) | Terminal compatibility |
-| **nerd** |     | Nerd Font glyphs | Requires Nerd Font |
-
-Themes are applied via `apply_theme()` in `utils.sh` after all configs are loaded.
+`apply_theme()` in `utils.sh` fills unset indicator and icon variables after config loading. The `default` theme uses the shipped display settings. The `monochrome` theme sets `STATUS_STYLE=ascii` and `USE_ICONS=false` to show ASCII labels and status indicators. See README.md for compatibility with older theme values.
 
 ## Module Structure
 
@@ -205,12 +195,13 @@ bash tests/test_utils.sh           # utils.sh helpers
 bash tests/test_rate_limits.sh     # rate-limit parsers/backoff
 bash tests/test_config_cli.sh      # cortado config CLI (set/toggle/project) and Barista migration
 bash tests/test_install_update.sh  # installer update flags, runtime copy, migration
-# also: test_cache, test_cost, test_git_cache, test_model, test_project,
-#       test_rate_limits_credentials, test_rate_limits_payload, test_sandbox, test_status_render,
-#       test_ttl_validation, test_update, test_uptime
+# also: test_cache, test_cost, test_git_cache, test_install_settings, test_model,
+#       test_project, test_project_config, test_rate_limits_concurrency,
+#       test_rate_limits_credentials, test_rate_limits_payload, test_sandbox,
+#       test_status_render, test_timezone, test_ttl_validation, test_update, test_uptime
 ```
 
-Lint with `shellcheck` - `.shellcheckrc` disables SC2155 and SC2034 project-wide (see upstream pstuart/Barista#21 for the policy).
+Lint with `shellcheck`. `.shellcheckrc` disables SC2155, SC2034, SC2059, SC2001, SC2012, SC1090, SC2129, SC2086, and SC2002 project-wide. See upstream pstuart/Barista#21 for the original policy.
 
 Test the statusline manually, in a sandbox config dir:
 ```bash
@@ -265,7 +256,7 @@ A FAIL or SYNTAX line, or a head ShellCheck count above the base, blocks the pul
 
 ## Versioning and Releases
 
-`VERSION` is the single source of truth, and only a release changes it. The README version badge, the README footer, the "What's New" section and the version assertion in `tests/test_config_cli.sh` follow it in the same release commit. Releases are `vX.Y.Z` tags on `gcko/Cortado` with a GitHub Release; the `update` module and `./install.sh --check-update` read `releases/latest` from `UPDATE_REPO`. There is no release workflow: the `cortado-release` skill owns the whole procedure.
+`VERSION` is the single source of truth, and only a release changes it. The README version badge, the README footer, the "What's New" section and the version assertion in `tests/test_config_cli.sh` follow it in the same release commit. Releases are `vX.Y.Z` tags on `gcko/Cortado` with a GitHub Release. The installer reads `releases/latest` from `gcko/Cortado`, which is also the `update` module's default `UPDATE_REPO`. The `cortado-release` skill owns the release procedure.
 
 The local clone may carry `v1.x` tags inherited from pstuart/Barista that do not exist on `gcko/Cortado` and are not ancestors of `main`. Read release tags from the remote (`git ls-remote --tags origin`), never from `git tag -l`.
 
@@ -341,3 +332,5 @@ The installer (`install.sh`) provides:
 - Auto-update checking from GitHub
 - Backup/restore of previous statusline
 - Copies `cortado.sh`, `VERSION`, `modules/`, and `lib/` (required for `cortado config`)
+
+`./install.sh --check-update`, `./install.sh --check`, and `./install.sh --update` exit with status 1 and print `Could not determine the latest version` if they cannot find a release.

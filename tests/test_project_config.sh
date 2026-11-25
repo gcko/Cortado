@@ -355,7 +355,7 @@ for save in early final; do
         early) keys=' s'; expected="$header"$'\nSEPARATOR=" | "\nMODULE_SANDBOX="false"' ;;
         final)
             keys=$' \n\n\n\n\e[B\ny\n'
-            expected="$header"$'\nSEPARATOR=" | "\nMODULE_SANDBOX="false"\nCOLOR_THEME="minimal"'
+            expected="$header"$'\nSEPARATOR=" | "\nMODULE_SANDBOX="false"\nCOLOR_THEME="monochrome"'
             ;;
     esac
     rc=0

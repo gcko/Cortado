@@ -679,16 +679,10 @@ _cfg_run_interactive() {
     else
         _cfg_interactive_choice "Color theme" \
             "default|Standard emoji" \
-            "minimal|Geometric" \
-            "vibrant|Expressive" \
-            "monochrome|ASCII" \
-            "nerd|Nerd Font glyphs"
+            "monochrome|ASCII labels and indicators"
         case "${CFG_CHOICE_RESULT:-0}" in
             0) theme="default" ;;
-            1) theme="minimal" ;;
-            2) theme="vibrant" ;;
-            3) theme="monochrome" ;;
-            4) theme="nerd" ;;
+            1) theme="monochrome" ;;
         esac
         if [ "$scope" = "project" ]; then
             if ! _cfg_set_project_value COLOR_THEME "$theme"; then
