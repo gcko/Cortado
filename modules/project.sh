@@ -65,6 +65,8 @@ _format_project() {
 
 module_project() {
     local current_dir="$1"
+    [ -n "$current_dir" ] || return 0
+
     local result=""
     local show_dev="${PROJECT_SHOW_DEV_SERVER:-true}"
     local show_build="${PROJECT_SHOW_BUILD:-true}"

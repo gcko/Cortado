@@ -156,7 +156,8 @@ _cortado_jq() {
             | (if (.thinking | type) == "object" then ($thinking.enabled // $thinking.on)
                else (.thinking // $model.thinking) end) as $think
             | {
-                CTX_CURRENT_DIR: ((.workspace | object_or_empty | .current_dir) // .cwd // "." | tostring),
+                CTX_CURRENT_DIR: ((.workspace | object_or_empty | .current_dir | strings | select(length > 0))
+                    // (.cwd | strings | select(length > 0)) // ""),
                 CTX_CONTEXT_PERCENT: (($context.used_percentage | numbers | count) // "-"),
                 CTX_CONTEXT_SIZE: (($context.context_window_size | count) // "-"),
                 CTX_CURRENT_TOKENS: (($context.current_usage | objects

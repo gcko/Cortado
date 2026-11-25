@@ -16,15 +16,6 @@ module_directory() {
     local show_full="${DIRECTORY_SHOW_FULL_PATH:-false}"
     local max_len="${DIRECTORY_MAX_LENGTH:-20}"
 
-    # run_module's local input_json preserves the types lost when main extracts
-    # current_dir for project config and the other directory-dependent modules.
-    if [ -n "${input_json+x}" ]; then
-        current_dir=$(jq -r '
-            (.workspace.current_dir? | select(type == "string" and length > 0)) //
-            (.cwd? | select(type == "string" and length > 0)) // empty
-        ' <<< "$input_json" 2>/dev/null) || current_dir=""
-    fi
-
     # Get directory name
     local dir_name
     if [ "$show_full" = "true" ]; then
