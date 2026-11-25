@@ -307,21 +307,26 @@ _round_usage_reply() {
 
 _spend_limit_part_reply() {
     local LC_ALL=C
-    local limit percent part
+    local limit percent percent_part=""
+    if [ -n "$CTX_SPEND_PERCENT" ]; then
+        _round_usage_reply "$CTX_SPEND_PERCENT"; percent=$REPLY
+        if [ -n "$percent" ]; then
+            REPLY=
+            if [ "$1" = true ]; then
+                get_status_4level_reply "$percent" "$2" "$3" "$4"
+            fi
+            percent_part="${percent}%$REPLY"
+        fi
+    fi
+
     REPLY=
     if [ -n "$CTX_SPEND_USED_USD" ] && [ -n "$CTX_SPEND_LIMIT_USD" ] &&
         printf -v limit '%.2f' "$CTX_SPEND_LIMIT_USD" 2>/dev/null &&
         [ "$limit" != 0.00 ] &&
-        printf -v part 'spend:$%.2f/$%s' "$CTX_SPEND_USED_USD" "$limit" 2>/dev/null; then
-        REPLY=$part
-    elif [ -n "$CTX_SPEND_PERCENT" ]; then
-        _round_usage_reply "$CTX_SPEND_PERCENT"; percent=$REPLY
-        [ -n "$percent" ] || return 0
-        REPLY=
-        if [ "$1" = true ]; then
-            get_status_4level_reply "$percent" "$2" "$3" "$4"
-        fi
-        REPLY="spend:${percent}%$REPLY"
+        printf -v REPLY 'spend:$%.2f/$%s' "$CTX_SPEND_USED_USD" "$limit" 2>/dev/null; then
+        REPLY="$REPLY${percent_part:+ ($percent_part)}"
+    else
+        REPLY="${percent_part:+spend:$percent_part}"
     fi
 }
 

@@ -155,7 +155,8 @@ _cortado_jq() {
             | (.rate_limits | object_or_empty) as $rates
             | ($rates.five_hour | object_or_empty) as $five
             | ($rates.seven_day | object_or_empty) as $seven
-            | ($rates.spend_limit | object_or_empty) as $spend
+            | ($rates.spend_limit | object_or_empty
+                | if (.limit_usd | type == "number" and . <= 0) then {} else . end) as $spend
             | (if (.thinking | type) == "object" then ($thinking.enabled // $thinking.on)
                else (.thinking // $model.thinking) end) as $think
             | {

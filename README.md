@@ -91,7 +91,7 @@ A feature-rich, modular statusline for [Claude Code CLI](https://docs.anthropic.
 | **project** | Auto-detects Node.js, Nuxt, Next.js, Vite, Rust, Go, Python, Swift, and more |
 | **model** | Current Claude model, output style, and optional thinking/reasoning-effort state (`MODEL_SHOW_THINKING`) |
 | **cost** | Session cost with burn rate ($/hour) and tokens per minute (TPM) |
-| **rate-limits** | Real-time 5-hour and 7-day rate limit tracking with projections. A window with no reading shows `--` (for example `5h:42% 7d:--`). When a fetch fails and Cortado serves a cached reading older than `RATE_CACHE_TTL`, it shows the reading's age after the percentage (for example `5h:42%~6h0m`). When Claude Code reports a gateway spend limit, this module shows estimated spend against the limit (for example `spend:$12.40/$50.00`) or the reported percentage if the dollar amounts are unavailable. |
+| **rate-limits** | Real-time 5-hour and 7-day rate limit tracking with projections. A window with no reading shows `--` (for example `5h:42% 7d:--`). When a fetch fails and Cortado serves a cached reading older than `RATE_CACHE_TTL`, it shows the reading's age after the percentage (for example `5h:42%~6h0m`). For gateway spend, Cortado shows each available reading (for example `spend:$12.40/$50.00 (25% 🟢)`). Claude Code receives the percentage with each response and refreshes the dollar estimate about every five minutes while requests are active. Cortado omits the spend segment when it has no usable reading or the payload gives a numeric dollar limit of zero or less. |
 | **time** | Current date and time |
 | **battery** | Battery percentage (macOS) |
 | **sandbox** | Lock icon when running inside a macOS app sandbox |

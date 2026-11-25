@@ -100,8 +100,8 @@ assert_eq "the default post-turn render with a spend limit launches exactly one 
 assert_eq "cost rendering launches no bc process" '0' "$(awk 'END {print NR}' "$sandbox/bc.calls" 2>/dev/null || printf 0)"
 assert_contains "fixed-point cost retains cent truncation and integer TPM" "\$0.52 @\$152.63/h ⚡850ktpm" "$rendered"
 assert_contains "the parsed context token count still drives the estimate" '25% 🟢 (110k→⚡)' "$rendered"
-assert_contains "spend shows estimated dollars against the budget next to the other quotas" \
-    "5h:42% 🟢 7d:10% 🟢 spend:\$12.40/\$50.00" "$rendered"
+assert_contains "spend shows both readings next to the other quotas" \
+    "5h:42% 🟢 7d:10% 🟢 spend:\$12.40/\$50.00 (25% 🟢)" "$rendered"
 
 spend_config=('MODULE_ORDER="rate-limits"' 'COLOR_THEME="monochrome"')
 render '{"rate_limits":{"spend_limit":{"used_percentage":124.6}}}' "${spend_config[@]}"
@@ -109,9 +109,21 @@ assert_contains "spend above the limit stays above 100 percent when USD is missi
     '5h:-- 7d:-- spend:125% [CRIT]' "$rendered"
 render '{"rate_limits":{"spend_limit":{"used_percentage":0,"used_usd":null,"limit_usd":50}}}' "${spend_config[@]}"
 assert_contains "a measured zero percentage survives null dollar usage" 'spend:0% [OK]' "$rendered"
+for spend in '{"used_percentage":0}' '{"used_percentage":0,"limit_usd":null}'; do
+    render "{\"rate_limits\":{\"spend_limit\":$spend}}" "${spend_config[@]}"
+    assert_eq "a measured zero percentage survives an unavailable dollar limit ($spend)" \
+        '5h:-- 7d:-- spend:0% [OK]' "$rendered"
+done
 render '{"rate_limits":{"spend_limit":{"used_usd":0,"limit_usd":50}}}' "${spend_config[@]}" \
     'RATE_SHOW_5H="false"' 'RATE_SHOW_7D="false"'
 assert_eq "spend has its own reading even when both quota windows are hidden" "spend:\$0.00/\$50.00" "$rendered"
+mixed_spend='{"rate_limits":{"spend_limit":{"used_percentage":105,"used_usd":0,"limit_usd":1}}}'
+render "$mixed_spend" "${spend_config[@]}"
+assert_eq "dollar estimates appear alongside the reported percentage and its critical indicator" \
+    "5h:-- 7d:-- spend:\$0.00/\$1.00 (105% [CRIT])" "$rendered"
+render "$mixed_spend" "${spend_config[@]}" 'RATE_SHOW_USAGE_STATUS="false"'
+assert_eq "turning off usage indicators keeps both spend readings" \
+    "5h:-- 7d:-- spend:\$0.00/\$1.00 (105%)" "$rendered"
 render '{"rate_limits":{"spend_limit":{"used_percentage":25,"used_usd":"12.4","limit_usd":50}}}' \
     "${spend_config[@]}" 'RATE_SHOW_USAGE_STATUS="false"'
 assert_eq "non-numeric dollars fall back to the measured percentage with indicators off" \
@@ -119,7 +131,11 @@ assert_eq "non-numeric dollars fall back to the measured percentage with indicat
 
 for spend in null '{}' '"invalid"' '{"used_percentage":null}' '{"used_percentage":"25"}' \
     '{"used_percentage":-1}' '{"used_usd":-1,"limit_usd":50}' \
-    '{"used_usd":12.4,"limit_usd":0}' '{"used_usd":12.4,"limit_usd":-50}'; do
+    '{"used_usd":12.4,"limit_usd":0}' '{"used_usd":12.4,"limit_usd":-50}' \
+    '{"used_usd":0,"limit_usd":0,"used_percentage":0}' \
+    '{"used_usd":0,"limit_usd":-1,"used_percentage":0}' \
+    '{"used_usd":12.4,"limit_usd":0,"used_percentage":25}' \
+    '{"used_usd":12.4,"limit_usd":-50,"used_percentage":25}'; do
     render "{\"rate_limits\":{\"spend_limit\":$spend}}" "${spend_config[@]}"
     assert_eq "unusable spend leaves just the quota placeholders ($spend)" '5h:-- 7d:--' "$rendered"
 done
