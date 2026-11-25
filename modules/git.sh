@@ -50,6 +50,10 @@ module_git() {
     local file_icon
     file_icon=$(get_icon "${GIT_FILE_ICON:-📝}" "")
     local compact="${GIT_COMPACT:-false}"
+    local show_file_count=false
+    if [ "$show_count" = "true" ] && ! is_compact "$compact"; then
+        show_file_count=true
+    fi
     # TTL default 2s; 0 disables (scoping note #26 Phase 1)
     local git_ttl="${GIT_CACHE_TTL:-2}"
 
@@ -83,6 +87,9 @@ module_git() {
     local git_branch=""
     local git_porcelain=""
     local from_cache=false
+    local max_lines=500
+    local status_count=0
+    local status_available=true
 
     # Numeric TTL > 0 enables cache (non-numeric → treat as disabled)
     case "$git_ttl" in
@@ -134,13 +141,24 @@ module_git() {
             git_branch="($git_branch)"  # Indicate detached state
         fi
 
-        # PERFORMANCE: single git status --porcelain; MEMORY: cap monorepo output
         if [ "$show_status" = "true" ] || [ "$show_count" = "true" ]; then
-            local max_lines=500
-            git_porcelain=$(git status --porcelain 2>/dev/null | head -n "$max_lines")
+            # Keep the sample bounded while counting the same stream when needed.
+            local status_output
+            if status_output=$(git status --porcelain 2>/dev/null |
+                awk -v limit="$max_lines" -v count_all="$show_file_count" '
+                    NR <= limit { print }
+                    count_all == "false" && NR == limit { exit }
+                    END { printf "%.0f\n", NR }
+                ' 2>/dev/null); then
+                status_count=${status_output##*$'\n'}
+                git_porcelain=${status_output%"$status_count"}
+                git_porcelain=${git_porcelain%$'\n'}
+            else
+                status_available=false
+            fi
         fi
 
-        if [ "$use_cache" = "true" ]; then
+        if [ "$use_cache" = "true" ] && [ "$status_available" = "true" ]; then
             # Store branch + porcelain for next render within TTL
             cache_set "$cache_key" "${git_branch}
 ---CORTADO_GIT---
@@ -155,11 +173,9 @@ ${git_porcelain}"
         result="$result $git_branch"
     fi
 
-    # PERFORMANCE OPTIMIZATION: Use single git status --porcelain call
-    # This replaces 4 separate git commands with 1
-    # MEMORY OPTIMIZATION: Limit output to prevent OOM in large monorepos
-    if [ "$show_status" = "true" ] || [ "$show_count" = "true" ]; then
-        local max_lines=500  # Cap to prevent memory issues in monorepos
+    if [ "$status_available" = "false" ]; then
+        result="$result [--]"
+    elif [ "$show_status" = "true" ] || [ "$show_count" = "true" ]; then
 
         if [ "$show_status" = "true" ]; then
             local has_modified=false
@@ -208,28 +224,19 @@ ${git_porcelain}"
         fi
 
         # File count (skip in compact mode)
-        if [ "$show_count" = "true" ] && ! is_compact "$compact"; then
-            # Count non-empty lines from porcelain output
-            local modified_count=0
+        if [ "$show_file_count" = "true" ]; then
             local count_display=""
-            if [ -n "$git_porcelain" ]; then
-                modified_count=$(echo "$git_porcelain" | grep -c '^' 2>/dev/null || echo "0")
-                # If we hit the limit, get actual count efficiently with wc -l
-                if [ "$modified_count" -ge "$max_lines" ]; then
-                    # Only re-run full status when not serving from short TTL cache
-                    # (cached path already capped; exact monorepo count is best-effort)
-                    if [ "$from_cache" = "true" ]; then
-                        count_display="${modified_count}+"
-                    else
-                        modified_count=$(git status --porcelain 2>/dev/null | wc -l | tr -d ' ')
-                        count_display="${modified_count}"
-                    fi
-                else
-                    count_display="${modified_count}"
+            if [ "$from_cache" = "true" ] && [ -n "$git_porcelain" ] \
+                && ! status_count=$(printf '%s\n' "$git_porcelain" | grep -c '^' 2>/dev/null); then
+                count_display="--"
+            elif [ "$status_count" -gt 0 ] 2>/dev/null; then
+                count_display="$status_count"
+                # A full cached sample may have been truncated.
+                if [ "$from_cache" = "true" ] && [ "$status_count" -ge "$max_lines" ]; then
+                    count_display="${status_count}+"
                 fi
             fi
-
-            if [ "$modified_count" -gt 0 ] 2>/dev/null; then
+            if [ -n "$count_display" ]; then
                 if [ -n "$file_icon" ]; then
                     result="$result $file_icon $count_display"
                 else
