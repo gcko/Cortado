@@ -83,6 +83,42 @@ assert_check_failed "--check-update when curl fails" --check-update 000 '' 28
 assert_check_failed "--check-update when curl fails with partial output" \
     --check-update 200 '{"tag_name":"v9.9.9"}' 28
 
+tagged_release='{"tag_name":"v9.9.9+fixture"}'
+PATH="$CLAUDE_CONFIG_DIR/bin:$PATH" RELEASE_HTTP=200 RELEASE_BODY="$tagged_release" RELEASE_CURL_STATUS=0 \
+    assert_rc "a same-shell release lookup succeeds" 0 check_remote_version
+assert_eq "a successful lookup records the exact tag" "v9.9.9+fixture" "$REMOTE_TAG"
+assert_eq "a successful lookup records the numeric version" "9.9.9" "$REMOTE_VERSION"
+PATH="$CLAUDE_CONFIG_DIR/bin:$PATH" RELEASE_HTTP=200 RELEASE_BODY="$tagged_release" RELEASE_CURL_STATUS=28 \
+    assert_rc "a subsequent transport failure fails the lookup" 1 check_remote_version
+assert_empty "a failed lookup clears the previous tag" "$REMOTE_TAG"
+assert_empty "a failed lookup clears the previous version" "$REMOTE_VERSION"
+
+run_interactive_install() {
+    local reply="$1" install_calls="$CLAUDE_CONFIG_DIR/install-calls"
+    : > "$curl_calls"
+    : > "$install_calls"
+    update_output=$(printf '%s\n' "$reply" |
+        PATH="$CLAUDE_CONFIG_DIR/bin:$PATH" RELEASE_HTTP=200 RELEASE_BODY="$tagged_release" \
+        RELEASE_CURL_STATUS=28 RELEASE_CALL_LOG="$curl_calls" INSTALL_CALL_LOG="$install_calls" \
+        /bin/bash -c '
+            . "$1"
+            do_install() { printf "%s\n" "$1" >> "$INSTALL_CALL_LOG"; }
+            main --no-color --no-emoji
+        ' -- "$INSTALL" 2>&1)
+    update_status=$?
+    install_modes=$(cat "$install_calls")
+}
+
+run_interactive_install n
+assert_eq "skipping the optional check exits 0" 0 "$update_status"
+assert_eq "skipping the optional check starts interactive installation once" interactive "$install_modes"
+assert_empty "skipping the optional check makes no lookup" "$(cat "$curl_calls")"
+run_interactive_install y
+assert_eq "an unavailable optional check exits 0" 0 "$update_status"
+assert_eq "an unavailable optional check starts interactive installation once" interactive "$install_modes"
+assert_eq "an unavailable optional check makes one lookup" call "$(cat "$curl_calls")"
+assert_contains "an unavailable optional check reports the failure" "Could not check for updates" "$update_output"
+
 run_update_check --check-update 200 "$installed_release"
 assert_eq "a successful current check exits 0" "0" "$update_status"
 assert_eq "a successful current check reports the installed version" \
@@ -179,10 +215,14 @@ SCRIPT_DIR="$FAKE_ROOT"
 REMOTE_VERSION="9.9.9"
 REMOTE_TAG="v$REMOTE_VERSION"
 REEXEC_ARGS=""
+GIT_CHECKOUT=""
 _reexec_installer() {
     REEXEC_ARGS=$(printf '%s\n' "$@")
 }
 _cortado_git() {
+    if [ "$1" = checkout ]; then
+        GIT_CHECKOUT="$*"
+    fi
     return 0
 }
 do_update --update --no-emoji --no-color
@@ -194,6 +234,30 @@ assert_eq "do_update re-exec keeps --no-color" "--no-color" "$(printf '%s\n' "$R
 REEXEC_ARGS=""
 do_update
 assert_eq "bare do_update re-exec has empty argv" "" "$REEXEC_ARGS"
+
+REMOTE_TAG=""
+REMOTE_VERSION=""
+GIT_CHECKOUT=""
+REEXEC_ARGS=""
+: > "$curl_calls"
+PATH="$CLAUDE_CONFIG_DIR/bin:$PATH" RELEASE_HTTP=200 RELEASE_BODY="$tagged_release" \
+    RELEASE_CURL_STATUS=0 RELEASE_CALL_LOG="$curl_calls" \
+    assert_rc "do_update without a resolved tag succeeds after lookup" 0 do_update --update
+assert_eq "do_update without a resolved tag looks up the release once" call "$(cat "$curl_calls")"
+assert_eq "do_update checks out the exact resolved tag" 'checkout -q v9.9.9+fixture' "$GIT_CHECKOUT"
+assert_eq "do_update restarts after checking out the resolved tag" --update "$REEXEC_ARGS"
+
+REMOTE_TAG=""
+REMOTE_VERSION=""
+GIT_CHECKOUT=""
+REEXEC_ARGS=""
+: > "$curl_calls"
+PATH="$CLAUDE_CONFIG_DIR/bin:$PATH" RELEASE_HTTP=200 RELEASE_BODY="$tagged_release" \
+    RELEASE_CURL_STATUS=28 RELEASE_CALL_LOG="$curl_calls" \
+    assert_rc "do_update without a resolved tag fails after lookup failure" 1 do_update --update
+assert_eq "do_update with a failed lookup makes one lookup" call "$(cat "$curl_calls")"
+assert_empty "do_update with a failed lookup never checks out a tag" "$GIT_CHECKOUT"
+assert_empty "do_update with a failed lookup never restarts" "$REEXEC_ARGS"
 
 rm -f "$FAKE_ROOT/.git" 2>/dev/null
 rmdir "$FAKE_ROOT/.git" 2>/dev/null

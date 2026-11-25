@@ -7,39 +7,66 @@ trap 'rm -rf "$TEST_BASE"' EXIT
 # shellcheck source=tests/lib/assert.sh
 . "$REPO_ROOT/tests/lib/assert.sh" indented
 
-fixture_version=99.99.99
-fixture_tag="v$fixture_version+fixture"
+fixture_version=99.0.0+fixture
 archive_name=Cortado-source.zip
 fixture="$TEST_BASE/fixture"
-mkdir -p "$fixture/Cortado-$fixture_version" "$TEST_BASE/bin" || exit 1
-printf '%s\n' "$fixture_version" > "$fixture/Cortado-$fixture_version/VERSION"
-printf '%s\n' 'verified fixture' > "$fixture/Cortado-$fixture_version/cortado.sh"
-cat > "$fixture/Cortado-$fixture_version/install.sh" <<'STUB'
+package="$TEST_BASE/package"
+mkdir -p "$fixture" "$package" "$TEST_BASE/bin" || exit 1
+printf '%s\n' 'verified fixture' > "$fixture/expected-runtime"
+cp "$fixture/expected-runtime" "$package/cortado.sh"
+cat > "$package/install.sh" <<'STUB'
 #!/bin/bash
 printf 'Restarted installer with %s\n' "$*"
 STUB
-chmod +x "$fixture/Cortado-$fixture_version/install.sh"
+chmod +x "$package/install.sh"
+
+fixture_git() {
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git -C "$package" "$@"
+}
+
+package_archive() {
+    local version="$1" output="$2"
+    fixture_git add -A &&
+        fixture_git -c user.name=Fixture -c user.email=fixture@example.invalid \
+            -c commit.gpgsign=false -c core.hooksPath=/dev/null commit -qm 'Package fixture' &&
+        fixture_git archive --format=zip --prefix="Cortado-$version/" -o "$output" HEAD
+}
+
 fixture_checksum() {
     local result
     if command -v sha256sum >/dev/null; then
-        result=$(sha256sum < "$fixture/$1") || return 1
+        result=$(sha256sum < "$1") || return 1
     else
-        result=$(shasum -a 256 < "$fixture/$1") || return 1
+        result=$(shasum -a 256 < "$1") || return 1
     fi
     printf '%s  %s\n' "${result%% *}" "$archive_name"
 }
-(cd "$fixture" && zip -qr "$archive_name" "Cortado-$fixture_version") || exit 1
-fixture_checksum "$archive_name" > "$fixture/SHA256SUMS" || exit 1
-printf '%s\n' 'tampered fixture' > "$fixture/Cortado-$fixture_version/cortado.sh"
-(cd "$fixture" && zip -qr tampered.zip "Cortado-$fixture_version") || exit 1
+
+fixture_git init -q --template= || exit 1
+for version in 99.0.0 "$fixture_version" 99.0.0-rc1; do
+    mkdir "$fixture/$version" || exit 1
+    printf '%s\n' "$version" > "$package/VERSION"
+    package_archive "$version" "$fixture/$version/$archive_name" || exit 1
+    fixture_checksum "$fixture/$version/$archive_name" > "$fixture/$version/SHA256SUMS" || exit 1
+done
+
+printf '%s\n' "$fixture_version" > "$package/VERSION"
+printf '%s\n' 'tampered fixture' > "$package/cortado.sh"
+package_archive "$fixture_version" "$fixture/tampered.zip" || exit 1
+cp "$fixture/expected-runtime" "$package/cortado.sh"
 printf '%s\n' 'not a ZIP' > "$fixture/bad-zip"
-fixture_checksum bad-zip > "$fixture/bad-zip.sums" || exit 1
-printf '%s\n' '0' > "$fixture/Cortado-$fixture_version/VERSION"
-(cd "$fixture" && zip -qr wrong-version.zip "Cortado-$fixture_version") || exit 1
-fixture_checksum wrong-version.zip > "$fixture/wrong-version.sums" || exit 1
-rm "$fixture/Cortado-$fixture_version/cortado.sh"
-(cd "$fixture" && zip -qr missing-files.zip "Cortado-$fixture_version") || exit 1
-fixture_checksum missing-files.zip > "$fixture/missing-files.sums" || exit 1
+fixture_checksum "$fixture/bad-zip" > "$fixture/bad-zip.sums" || exit 1
+printf '%s\n' '0' > "$package/VERSION"
+package_archive "$fixture_version" "$fixture/wrong-version.zip" || exit 1
+fixture_checksum "$fixture/wrong-version.zip" > "$fixture/wrong-version.sums" || exit 1
+printf '%s\n' "$fixture_version" > "$package/VERSION"
+rm "$package/cortado.sh"
+package_archive "$fixture_version" "$fixture/missing-files.zip" || exit 1
+fixture_checksum "$fixture/missing-files.zip" > "$fixture/missing-files.sums" || exit 1
+cp "$fixture/expected-runtime" "$package/cortado.sh"
+rm "$package/VERSION"
+package_archive "$fixture_version" "$fixture/missing-version.zip" || exit 1
+fixture_checksum "$fixture/missing-version.zip" > "$fixture/missing-version.sums" || exit 1
 
 cat > "$TEST_BASE/bin/curl" <<'STUB'
 #!/bin/bash
@@ -62,16 +89,16 @@ case "$url" in
         case "$DOWNLOAD_CASE" in
             manifest-stall) sleep 0.01; exit 28 ;;
             missing-manifest) printf '%s\n' 'HTTP 404' > "$output"; exit 22 ;;
-            manifest-http-error) cp "$FIXTURE/SHA256SUMS" "$output"; exit 22 ;;
-            bad-zip|wrong-version|missing-files) cp "$FIXTURE/$DOWNLOAD_CASE.sums" "$output" ;;
-            no-entry) sed 's/Cortado-source.zip/unrelated.zip/' "$FIXTURE/SHA256SUMS" > "$output" ;;
+            manifest-http-error) cp "$RELEASE_ASSETS/SHA256SUMS" "$output"; exit 22 ;;
+            bad-zip|wrong-version|missing-files|missing-version) cp "$FIXTURE/$DOWNLOAD_CASE.sums" "$output" ;;
+            no-entry) sed 's/Cortado-source.zip/unrelated.zip/' "$RELEASE_ASSETS/SHA256SUMS" > "$output" ;;
             null-hash) printf '%s  Cortado-source.zip\n' null > "$output" ;;
             zero-hash) printf '%s  Cortado-source.zip\n' 0 > "$output" ;;
             nonhex-hash) printf '%064d  Cortado-source.zip\n' 0 | tr 0 z > "$output" ;;
-            extra-field) sed 's/$/ extra/' "$FIXTURE/SHA256SUMS" > "$output" ;;
-            duplicate) cat "$FIXTURE/SHA256SUMS" "$FIXTURE/SHA256SUMS" > "$output" ;;
-            binary-entry) tr 'a-f' 'A-F' < "$FIXTURE/SHA256SUMS" | sed 's/  .*/ *Cortado-source.zip/' > "$output" ;;
-            *) cp "$FIXTURE/SHA256SUMS" "$output" ;;
+            extra-field) sed 's/$/ extra/' "$RELEASE_ASSETS/SHA256SUMS" > "$output" ;;
+            duplicate) cat "$RELEASE_ASSETS/SHA256SUMS" "$RELEASE_ASSETS/SHA256SUMS" > "$output" ;;
+            binary-entry) tr 'a-f' 'A-F' < "$RELEASE_ASSETS/SHA256SUMS" | sed 's/  .*/ *Cortado-source.zip/' > "$output" ;;
+            *) cp "$RELEASE_ASSETS/SHA256SUMS" "$output" ;;
         esac
         ;;
     */Cortado-source.zip|*/archive/refs/tags/*.zip)
@@ -90,10 +117,10 @@ case "$url" in
                 sleep 0.2
                 exit 7
                 ;;
-            http-error) cp "$FIXTURE/Cortado-source.zip" "$output"; exit 22 ;;
-            tampered|wrong-version|missing-files) cp "$FIXTURE/$DOWNLOAD_CASE.zip" "$output" ;;
+            http-error) cp "$RELEASE_ASSETS/Cortado-source.zip" "$output"; exit 22 ;;
+            tampered|wrong-version|missing-files|missing-version) cp "$FIXTURE/$DOWNLOAD_CASE.zip" "$output" ;;
             bad-zip) cp "$FIXTURE/bad-zip" "$output" ;;
-            *) cp "$FIXTURE/Cortado-source.zip" "$output" ;;
+            *) cp "$RELEASE_ASSETS/Cortado-source.zip" "$output" ;;
         esac
         ;;
     *) exit 7 ;;
@@ -108,7 +135,7 @@ STUB
 chmod +x "$TEST_BASE/bin/curl" "$TEST_BASE/bin/unzip"
 
 run_archive_update() {
-    local download_case="$1" flag="${2:---update}" sandbox
+    local download_case="$1" flag="${2:---update}" version="${3:-$fixture_version}" sandbox
     sandbox=$(mktemp -d "$TEST_BASE/update.XXXXXX") || exit 1
     mkdir -p "$sandbox/source" "$sandbox/config/cortado" "$sandbox/tmp"
     cp "$REPO_ROOT/install.sh" "$REPO_ROOT/VERSION" "$sandbox/source/"
@@ -121,29 +148,39 @@ run_archive_update() {
     : > "$request_log"
     unzip_log="$sandbox/unzip"
     : > "$unzip_log"
-    local temp_parent="$sandbox/tmp" stub_path=""
+    local temp_parent="$sandbox/tmp"
     if [ "$download_case" = no-temp ]; then
-        # BSD mktemp falls back to the system temp dir when TMPDIR is unusable,
-        # so force the failure: only a bare `mktemp -d` (the update path) fails.
-        stub_path="$sandbox/no-temp-bin"
-        mkdir -p "$stub_path"
-        cat > "$stub_path/mktemp" <<STUB
-#!/bin/bash
-if [ "\$#" -eq 1 ] && [ "\$1" = -d ]; then exit 1; fi
-exec "$(command -v mktemp)" "\$@"
-STUB
-        chmod +x "$stub_path/mktemp"
+        temp_parent="$sandbox/absent-parent"
     fi
     local args=(--no-color --no-emoji)
     [ "$flag" != interactive ] && args=("$flag" "${args[@]}")
     update_output=$(printf '\n\n' |
         CLAUDE_CONFIG_DIR="$sandbox/config" CACHE_DIR="$sandbox/config/cortado-cache" TMPDIR="$temp_parent" \
-        PATH="${stub_path:+$stub_path:}$TEST_BASE/bin:${UPDATE_PATH:-$PATH}" FIXTURE="$fixture" REQUEST_LOG="$request_log" \
+        PATH="$TEST_BASE/bin:${UPDATE_PATH:-$PATH}" FIXTURE="$fixture" REQUEST_LOG="$request_log" \
         UNZIP_BIN="$unzip_bin" UNZIP_LOG="$unzip_log" \
-        RELEASE_BODY="{\"tag_name\":\"$fixture_tag\"}" DOWNLOAD_CASE="$download_case" \
+        RELEASE_BODY="{\"tag_name\":\"v$version\"}" RELEASE_ASSETS="$fixture/$version" DOWNLOAD_CASE="$download_case" \
         /bin/bash "$sandbox/source/install.sh" "${args[@]}" 2>&1)
     update_status=$?
     update_sandbox="$sandbox"
+}
+
+assert_archive_staged_in_tmpdir() {
+    local desc="$1" request
+    request=$(grep -F "/$archive_name" "$request_log")
+    assert_contains "$desc stages the archive below TMPDIR" " -o $update_sandbox/tmp/" "$request"
+    assert_empty "$desc removes its staging directory" "$(ls -A "$update_sandbox/tmp")"
+}
+
+assert_archived_release() {
+    local desc="$1" version="$2" asset
+    assert_eq "$desc exits 0" 0 "$update_status"
+    assert_contains "$desc reports the full version" "Updated to version $version" "$update_output"
+    assert_eq "$desc copies the full VERSION" "$version" "$(cat "$update_sandbox/source/VERSION")"
+    assert_rc "$desc installs the checked runtime bytes" 0 cmp "$fixture/expected-runtime" "$update_sandbox/source/cortado.sh"
+    for asset in SHA256SUMS "$archive_name"; do
+        assert_contains "$desc requests $asset for the exact tag" \
+            "/releases/download/v$version/$asset" "$(cat "$request_log")"
+    done
 }
 
 assert_refused() {
@@ -165,6 +202,7 @@ run_archive_update manifest-stall
 assert_refused 'a checksum transfer that times out' 'Download timed out for SHA256SUMS'
 run_archive_update tampered
 assert_refused 'a tampered but valid ZIP' 'Checksum mismatch for Cortado-source.zip'
+assert_archive_staged_in_tmpdir 'a refused archive'
 assert_empty 'a checksum mismatch stops before extraction' "$(cat "$unzip_log")"
 run_archive_update missing-manifest
 assert_refused 'a release without SHA256SUMS' 'Could not download SHA256SUMS'
@@ -174,6 +212,7 @@ assert_refused 'a failed checksum transfer with valid-looking bytes' 'Could not 
 assert_not_contains 'a failed checksum transfer stops before the archive request' "$archive_name" "$(cat "$request_log")"
 run_archive_update no-entry
 assert_refused 'a manifest without the archive entry' 'SHA256SUMS must contain one valid checksum for Cortado-source.zip'
+assert_not_contains 'a manifest without the archive entry stops before the archive request' "$archive_name" "$(cat "$request_log")"
 run_archive_update null-hash
 assert_refused 'a null hash' 'SHA256SUMS must contain one valid checksum for Cortado-source.zip'
 run_archive_update zero-hash
@@ -192,6 +231,8 @@ run_archive_update wrong-version
 assert_refused 'a verified ZIP with a mismatched version' 'Archive VERSION (0) does not match release'
 run_archive_update missing-files
 assert_refused 'a verified ZIP without the runtime script' 'Downloaded archive is missing essential files'
+run_archive_update missing-version
+assert_refused 'a verified ZIP without VERSION' 'Downloaded archive is missing essential files'
 run_archive_update no-temp
 assert_refused 'an unavailable temporary directory' 'Could not create a temporary directory for the update'
 assert_not_contains 'an unavailable temporary directory stops before downloads' '/releases/download/' "$(cat "$request_log")"
@@ -202,6 +243,12 @@ for tool in awk cat cp dirname jq mktemp rm sed tail tr; do
 done
 UPDATE_PATH="$TEST_BASE/no-hash" run_archive_update valid
 assert_refused 'an unavailable checksum tool' 'Could not compute SHA-256 for Cortado-source.zip'
+if command -v shasum >/dev/null; then
+    ln -s "$(command -v shasum)" "$TEST_BASE/no-hash/shasum"
+    UPDATE_PATH="$TEST_BASE/no-hash" run_archive_update binary-entry
+    assert_archived_release 'an uppercase binary entry with shasum alone' "$fixture_version"
+    rm "$TEST_BASE/no-hash/shasum"
+fi
 if command -v sha256sum >/dev/null; then
     ln -s "$(command -v sha256sum)" "$TEST_BASE/no-hash/sha256sum"
     UPDATE_PATH="$TEST_BASE/no-hash" run_archive_update binary-entry
@@ -213,22 +260,26 @@ mkdir "$TEST_BASE/failing-hash"
 cat > "$TEST_BASE/failing-hash/shasum" <<'STUB'
 #!/bin/bash
 # A tool can emit a matching digest and still fail.
-cat "$FIXTURE/SHA256SUMS"
+cat "$RELEASE_ASSETS/SHA256SUMS"
 exit 1
 STUB
 chmod +x "$TEST_BASE/failing-hash/shasum"
 UPDATE_PATH="$TEST_BASE/failing-hash:$PATH" run_archive_update valid
 assert_refused 'a checksum tool that fails after printing a digest' 'Could not compute SHA-256 for Cortado-source.zip'
 
-run_archive_update valid
-assert_eq 'a verified release exits 0' 0 "$update_status"
+run_archive_update binary-entry
+assert_archived_release 'a verified uppercase binary entry' "$fixture_version"
+
+for version in 99.0.0 99.0.0-rc1 "$fixture_version"; do
+    run_archive_update valid --update "$version"
+    assert_archived_release "verified release v$version" "$version"
+done
+assert_archive_staged_in_tmpdir 'a successful update'
 assert_contains 'a verified release restarts with the original flags' \
     'Restarted installer with --update --no-color --no-emoji' "$update_output"
-assert_file_contains 'a verified release installs the checked bytes' 'verified fixture' "$update_sandbox/source/cortado.sh"
 assert_match 'release lookup ignores curlrc overrides' '^-q .*api\.github\.com' "$(head -1 "$request_log")"
 for asset in SHA256SUMS "$archive_name"; do
     request=$(grep -F "/$asset" "$request_log")
-    assert_contains "$asset comes from the exact release tag" "/releases/download/$fixture_tag/$asset" "$request"
     assert_match "$asset ignores curlrc and rejects HTTP errors" '^-q -fsL ' "$request"
     assert_contains "$asset restricts downloads to HTTPS" '--proto =https' "$request"
     assert_contains "$asset restricts redirects to HTTPS" '--proto-redir =https' "$request"
@@ -245,7 +296,7 @@ run_archive_update tampered --defaults
 assert_refused 'a failed update accepted before a default install' 'Checksum mismatch for Cortado-source.zip'
 
 # Exercise the real interactive prompt with controlled API responses and no install.
-partial_release="{\"tag_name\":\"$fixture_tag\"}"
+partial_release="{\"tag_name\":\"v$fixture_version\"}"
 for body in '{}' '{"tag_name":null}' '{"tag_name":0}' '{"tag_name":"v9.9.9invalid"}' "$partial_release"; do
     release_status=0
     [ "$body" = "$partial_release" ] && release_status=28

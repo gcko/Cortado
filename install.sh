@@ -283,7 +283,7 @@ _release_archive_digest() {
 
 _stage_release_archive() {
     local tag="$1" dir="$2" extract_dir="$3"
-    local archive_name="Cortado-source.zip" expected actual archive_ver
+    local release_version="${tag#v}" archive_name="Cortado-source.zip" expected actual archive_ver
 
     _download_release_asset "$tag" SHA256SUMS "$dir/SHA256SUMS" || return 1
     if ! expected=$(awk -v archive="$archive_name" '
@@ -321,8 +321,8 @@ _stage_release_archive() {
     fi
 
     archive_ver=$(tr -d '[:space:]' < "$extract_dir/VERSION")
-    if [ "$archive_ver" != "$REMOTE_VERSION" ]; then
-        print_error "Archive VERSION ($archive_ver) does not match release $REMOTE_VERSION."
+    if [ "$archive_ver" != "$release_version" ]; then
+        print_error "Archive VERSION ($archive_ver) does not match release $release_version."
         return 1
     fi
 }
@@ -366,11 +366,11 @@ do_update() {
         print_info "Downloading release $tag..."
 
         local tmp_dir
-        if ! tmp_dir=$(mktemp -d); then
+        if ! tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/cortado-update.XXXXXX"); then
             print_error "Could not create a temporary directory for the update."
             return 1
         fi
-        local extract_dir="$tmp_dir/Cortado-${REMOTE_VERSION}"
+        local extract_dir="$tmp_dir/Cortado-${tag#v}"
         if ! _stage_release_archive "$tag" "$tmp_dir" "$extract_dir"; then
             rm -rf "$tmp_dir"
             return 1
@@ -380,7 +380,7 @@ do_update() {
         cp -r "$extract_dir"/* "$SCRIPT_DIR/"
         rm -rf "$SCRIPT_DIR.backup.$$"
 
-        print_success "Updated to version $REMOTE_VERSION"
+        print_success "Updated to version ${tag#v}"
         echo ""
         print_info "Restarting installer with new version..."
         echo ""
