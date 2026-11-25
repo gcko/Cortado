@@ -29,7 +29,7 @@ module_load() {
     # Get load averages
     # macOS prints "load averages:" (plural), Linux "load average:" — match both.
     local uptime_output load_output load1 load5 load15
-    if ! uptime_output=$(uptime 2>/dev/null); then
+    if ! uptime_output=$(LC_ALL=C uptime 2>/dev/null); then
         echo "$icon --"
         return
     fi
@@ -53,11 +53,14 @@ module_load() {
 
     if [ "$show_status" = "true" ]; then
         # Convert load to percentage relative to num_cpus for status
-        local load_pct=$(echo "scale=0; $load1 * 100 / $num_cpus" | bc -l 2>/dev/null || echo "0")
-        local warn_pct=$(echo "scale=0; $warn_thresh * 100 / $num_cpus" | bc -l 2>/dev/null || echo "100")
-        local crit_pct=$(echo "scale=0; $crit_thresh * 100 / $num_cpus" | bc -l 2>/dev/null || echo "200")
-        local status_ind=$(get_status "$load_pct" "$warn_pct" "$crit_pct")
-        result="$result${status_ind}"
+        local load_pct warn_pct crit_pct integer='^-?[0-9]+$'
+        if load_pct=$(echo "scale=0; $load1 * 100 / $num_cpus" | bc -l 2>/dev/null) &&
+           warn_pct=$(echo "scale=0; $warn_thresh * 100 / $num_cpus" | bc -l 2>/dev/null) &&
+           crit_pct=$(echo "scale=0; $crit_thresh * 100 / $num_cpus" | bc -l 2>/dev/null) &&
+           [[ "$load_pct" =~ $integer && "$warn_pct" =~ $integer && "$crit_pct" =~ $integer ]]; then
+            local status_ind=$(get_status "$load_pct" "$warn_pct" "$crit_pct")
+            result="$result${status_ind}"
+        fi
     fi
 
     echo "$result"

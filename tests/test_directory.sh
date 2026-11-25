@@ -25,6 +25,7 @@ check_render 'directory preserves an explicit dot path' 'DIR: .' normal '{"cwd":
 check_render 'directory preserves a numeric-looking string path' 'DIR: 0' normal '{"cwd":"0"}'
 check_render 'directory falls back to a usable legacy path' 'DIR: legacy' \
     normal '{"workspace":{"current_dir":0},"cwd":"/nonexistent/legacy"}'
+check_render 'directory preserves a dash-prefixed basename' 'DIR: -foo' normal '{"cwd":"-foo"}'
 check_render 'directory shows absence when basename fails for the workspace path' 'DIR: --' \
     failed-basename '{"workspace":{"current_dir":"/nonexistent/fixture-project"}}'
 

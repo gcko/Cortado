@@ -38,6 +38,14 @@ check_render 'docker shows the total with no running reading or status' 'DOCKER:
     total-only '' 'DOCKER_SHOW_TOTAL="true"'
 check_render 'docker shows the running count and status with no total' 'DOCKER: 1 running / -- total [OK]' \
     running-only '' 'DOCKER_SHOW_TOTAL="true"'
+check_render 'docker shows absence when counting two successful listings fails' 'DOCKER: --' \
+    normal '' 'DOCKER_SHOW_TOTAL=true' 'awk() { return 1; }'
+check_render 'docker shows absence when counting the running listing fails' 'DOCKER: --' \
+    normal '' 'awk() { return 1; }'
+check_render 'docker rejects a noninteger count from a successful counter' 'DOCKER: --' \
+    normal '' 'awk() { printf "%s\n" unknown; }'
+check_render 'docker preserves the icon when every field is disabled' 'DOCKER:' \
+    normal '' 'DOCKER_SHOW_RUNNING=false' 'DOCKER_SHOW_TOTAL=false' 'DOCKER_SHOW_STATUS=false'
 
 printf '\nResults: %s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

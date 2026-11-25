@@ -34,25 +34,39 @@ module_disk() {
         return
     fi
 
-    local free_space capacity
-    IFS=' ' read -r free_space capacity <<< "$(printf '%s\n' "$df_output" | awk 'NR > 1 {print $4, $5}' | tail -1)"
-    if [[ ! "$capacity" =~ ^[0-9]+%$ ]]; then
+    local free_space capacity used_pct=""
+    IFS=' ' read -r free_space capacity <<< "$(printf '%s\n' "$df_output" | awk 'NR > 1 && NF >= 5 {print $4, $5}' | tail -1)"
+    if [ -z "$free_space" ] && [ -z "$capacity" ]; then
         echo "$icon --"
         return
     fi
-    local used_pct="${capacity%\%}"
+    if [[ "$capacity" =~ ^[0-9]+%$ ]]; then
+        used_pct="${capacity%\%}"
+    fi
 
     local result="$icon"
 
     if [ "$show_free" = "true" ]; then
+        if [[ ! "$free_space" =~ ^[0-9]+([.,][0-9]+)?([KMGTPEZY]i?B?|B)?$ ]]; then
+            echo "$icon --"
+            return
+        fi
         result="$result ${free_space} free"
     elif [ "$show_pct" = "true" ]; then
+        if [ -z "$used_pct" ]; then
+            echo "$icon --"
+            return
+        fi
         result="$result ${used_pct}%"
     fi
 
     if [ "$show_status" = "true" ]; then
-        local status_ind=$(get_status "$used_pct" "$warn_thresh" "$crit_thresh")
-        result="$result${status_ind}"
+        if [ -n "$used_pct" ]; then
+            local status_ind=$(get_status "$used_pct" "$warn_thresh" "$crit_thresh")
+            result="$result${status_ind}"
+        elif [ "$result" = "$icon" ]; then
+            result="$icon --"
+        fi
     fi
 
     echo "$result"

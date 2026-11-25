@@ -48,8 +48,10 @@ module_network() {
     # Get WiFi SSID (macOS). The legacy `airport` CLI was removed in Sonoma+;
     # prefer networksetup / ipconfig getsummary, fall back to airport if present.
     # Capture the full SSID (spaces allowed) — never awk $2 only.
-    if [ "$show_ssid" = "true" ] && [ "${render_os-$(uname)}" = Darwin ]; then
+    if [ "$show_ssid" = "true" ]; then
         attempted=true
+    fi
+    if [ "$show_ssid" = "true" ] && [ "${render_os-$(uname)}" = Darwin ]; then
         local ssid="" wifi_dev line airport
         wifi_dev=$(networksetup -listallhardwareports 2>/dev/null | awk '/Wi-Fi|AirPort/{getline; print $2; exit}')
         wifi_dev="${wifi_dev:-en0}"

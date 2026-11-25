@@ -30,6 +30,9 @@ module_directory() {
     if [ "$show_full" = "true" ]; then
         dir_name="$current_dir"
     elif [ -n "$current_dir" ]; then
+        case "$current_dir" in
+            -*) current_dir="./$current_dir" ;;
+        esac
         dir_name=$(basename "$current_dir" 2>/dev/null) || dir_name=""
     fi
 

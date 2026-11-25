@@ -17,20 +17,29 @@ module_docker() {
     local show_status="${DOCKER_SHOW_STATUS:-true}"
     local compact="${DOCKER_COMPACT:-false}"
 
+    if [ "$show_running" != "true" ] && [ "$show_total" != "true" ] && [ "$show_status" != "true" ]; then
+        echo "$icon"
+        return
+    fi
+
     if ! docker info >/dev/null 2>&1; then
         echo "$icon --"
         return
     fi
 
-    local running=-- total=-- ids
+    local running=-- total=-- ids count
     if [ "$show_running" = "true" ] || [ "$show_status" = "true" ]; then
-        if ids=$(docker ps -q 2>/dev/null); then
-            running=$(printf '%s' "$ids" | awk 'NF {count++} END {print count+0}')
+        if ids=$(docker ps -q 2>/dev/null) &&
+           count=$(printf '%s' "$ids" | awk 'NF {count++} END {print count+0}' 2>/dev/null) &&
+           [[ "$count" =~ ^[0-9]+$ ]]; then
+            running="$count"
         fi
     fi
     if [ "$show_total" = "true" ]; then
-        if ids=$(docker ps -aq 2>/dev/null); then
-            total=$(printf '%s' "$ids" | awk 'NF {count++} END {print count+0}')
+        if ids=$(docker ps -aq 2>/dev/null) &&
+           count=$(printf '%s' "$ids" | awk 'NF {count++} END {print count+0}' 2>/dev/null) &&
+           [[ "$count" =~ ^[0-9]+$ ]]; then
+            total="$count"
         fi
     fi
 

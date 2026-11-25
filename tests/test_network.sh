@@ -31,6 +31,12 @@ check_render 'network shows LAN and redacted WAN readings' 'NET: 192.0.2.8 | 203
 check_render 'network shows absence when LAN and WAN lookups fail' 'NET: --' \
     failed '' 'NETWORK_SHOW_WAN="true"'
 check_render 'network ignores an address from a failed LAN lookup' 'NET: --' partial
+check_render 'network shows absence when only SSID is requested on Linux' 'NET: --' \
+    normal '' 'NETWORK_SHOW_LAN=false' 'NETWORK_SHOW_SSID=true'
+check_render 'network keeps the LAN address when SSID is unavailable on Linux' 'NET: 192.0.2.8' \
+    normal '' 'NETWORK_SHOW_SSID=true'
+check_render 'network is empty when every field is disabled' '' \
+    normal '' 'NETWORK_SHOW_LAN=false' 'NETWORK_SHOW_WAN=false' 'NETWORK_SHOW_SSID=false'
 
 printf '\nResults: %s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

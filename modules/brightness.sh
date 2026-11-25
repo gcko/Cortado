@@ -67,7 +67,10 @@ module_brightness() {
     fi
 
     local brightness_int
-    if [ -z "$brightness" ] || ! brightness_int=$(printf "%.0f" "$brightness" 2>/dev/null); then
+    if [ -z "$brightness" ] || ! brightness_int=$(
+        export LC_ALL=C
+        printf "%.0f" "$brightness" 2>/dev/null
+    ); then
         echo "$icon --"
         return
     fi
