@@ -79,6 +79,55 @@ mkdir -p "$PROJ"
 )
 assert_file_contains "project conf written" 'MODULE_DIRECTORY="false"' "$PROJ/.cortado.conf"
 
+echo "--- scope and write failures ---"
+rc=0
+"$CORTADO" config --set WEATHER_LOCATION=Lisbon >/dev/null 2>&1 || rc=$?
+assert_eq "global set still accepts a weather location" "0" "$rc"
+assert_file_contains "global set persists the weather location" 'WEATHER_LOCATION="Lisbon"' "$CLAUDE_CONFIG_DIR/cortado.conf"
+rc=0
+(cd "$PROJ" && "$CORTADO" config --project --set WEATHER_LOCATION=Lisbon) >/dev/null 2>&1 || rc=$?
+assert_eq "project set rejects the same weather location" "2" "$rc"
+
+printf '%s\n' '# Keep exact bytes when a project write fails.' 'COLOR_THEME=default' > "$TMPHOME/old-project.conf"
+mkdir "$TMPHOME/fail-bin"
+for op in mktemp write rename; do
+    cp "$TMPHOME/old-project.conf" "$PROJ/.cortado.conf"
+    rm -f "$TMPHOME/fail-bin/mktemp" "$TMPHOME/fail-bin/mv"
+    case "$op" in
+        mktemp)
+            stub='mktemp'
+            printf '#!/bin/sh\nexit 1\n' > "$TMPHOME/fail-bin/$stub"
+            ;;
+        write)
+            stub='mktemp'
+            cat > "$TMPHOME/fail-bin/$stub" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$CLAUDE_CONFIG_DIR/missing-directory/file"
+EOF
+            ;;
+        rename)
+            stub='mv'
+            printf '#!/bin/sh\nexit 1\n' > "$TMPHOME/fail-bin/$stub"
+            ;;
+    esac
+    chmod +x "$TMPHOME/fail-bin/$stub"
+    rc=0
+    (cd "$PROJ" && PATH="$TMPHOME/fail-bin:$PATH" "$CORTADO" config --project --set COLOR_THEME=minimal) \
+        > "$TMPHOME/write-result" 2>&1 || rc=$?
+    assert_eq "project edit reports $op failure" "1" "$rc"
+    assert_eq "project edit preserves exact bytes after $op failure" "0" \
+        "$(cmp -s "$TMPHOME/old-project.conf" "$PROJ/.cortado.conf"; echo "$?")"
+    assert_eq "project edit leaves no temporary file after $op failure" "" \
+        "$(find "$PROJ" -name '.cortado.conf.*' -print)"
+done
+
+mkdir "$TMPHOME/writable-global"
+printf '%s\n' 'COLOR_THEME=minimal' 'export DISPLAY_MODE=verbose' > "$TMPHOME/writable-global/cortado.conf"
+chmod 666 "$TMPHOME/writable-global/cortado.conf"
+show_out=$(CLAUDE_CONFIG_DIR="$TMPHOME/writable-global" "$CORTADO" config --show 2>&1)
+assert_contains "a writable global config supplies literal assignments to --show" "COLOR_THEME=minimal" "$show_out"
+assert_contains "a writable global config leaves shell-only syntax inert" "DISPLAY_MODE=normal" "$show_out"
+
 # statusline path still works with empty-ish JSON (no args)
 json='{"cwd":"/tmp","model":{"display_name":"Test"},"context_window":{"used_percentage":10}}'
 # Must not treat missing args as config

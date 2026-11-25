@@ -141,7 +141,11 @@ _cfg_shell_quote() {
 }
 
 _cfg_module_enabled() {
-    local name="$1" var val
+    local name="$1" scope="${2:-global}" var val
+    if [ "$scope" = "project" ]; then
+        is_module_enabled "$name"
+        return
+    fi
     var=$(_cfg_module_var "$name")
     val="${!var:-false}"
     case "$val" in
@@ -162,7 +166,7 @@ _cfg_set_module() {
 
 _cfg_toggle_module() {
     local name="$1" scope="${2:-global}" state=true
-    if _cfg_module_enabled "$name"; then
+    if _cfg_module_enabled "$name" "$scope"; then
         state=false
     fi
     _cfg_set_module "$name" "$state" "$scope"
@@ -205,17 +209,18 @@ _cfg_load_into_shell() {
                 read_config_kv "$path" _cfg_is_global_key _cfg_load_global_value
             fi
         fi
+        # The global editor fills catalog defaults for missing flags. In project
+        # scope, an unset flag has the same meaning as it does in the renderer.
+        local mod_def name var def
+        for mod_def in "${_CFG_ALL_MODULES[@]}"; do
+            name=$(_cfg_mod_name "$mod_def")
+            def=$(_cfg_mod_default "$mod_def")
+            var=$(_cfg_module_var "$name")
+            if [ -z "${!var+x}" ]; then
+                printf -v "$var" '%s' "$def"
+            fi
+        done
     fi
-    # Ensure MODULE_* exist for every catalog entry
-    local mod_def name var def
-    for mod_def in "${_CFG_ALL_MODULES[@]}"; do
-        name=$(_cfg_mod_name "$mod_def")
-        def=$(_cfg_mod_default "$mod_def")
-        var=$(_cfg_module_var "$name")
-        if [ -z "${!var+x}" ]; then
-            printf -v "$var" '%s' "$def"
-        fi
-    done
     COLOR_THEME="${COLOR_THEME:-default}"
     SEPARATOR="${SEPARATOR:- | }"
     DISPLAY_MODE="${DISPLAY_MODE:-normal}"
@@ -242,19 +247,22 @@ _cfg_set_project_value() {
     local settings=()
     project_config_setting_allowed "$key" "$val" || return 1
     project_config_assign "$key" "$val" || return 1
-    for line in "${_CFG_PROJECT_SETTINGS[@]}"; do
+    # Bash 3.2 treats an empty array as unset under nounset.
+    for line in "${_CFG_PROJECT_SETTINGS[@]+"${_CFG_PROJECT_SETTINGS[@]}"}"; do
         [ "${line%%=*}" = "$key" ] || settings+=("$line")
     done
-    _CFG_PROJECT_SETTINGS=("${settings[@]}" "$key=\"$val\"")
+    _CFG_PROJECT_SETTINGS=("${settings[@]+"${settings[@]}"}" "$key=\"$val\"")
 }
 
 _cfg_write_project_conf() {
     local path="$1" tmp
+    if [ -d "$path" ]; then
+        echo "config: project config destination is a directory: $path" >&2
+        return 1
+    fi
     tmp=$(mktemp "$path.XXXXXX") || return 1
-    {
-        printf '%s\n' '# Cortado project configuration'
-        printf '%s\n' "${_CFG_PROJECT_SETTINGS[@]}"
-    } > "$tmp" || { rm -f "$tmp"; return 1; }
+    printf '%s\n' '# Cortado project configuration' "${_CFG_PROJECT_SETTINGS[@]+"${_CFG_PROJECT_SETTINGS[@]}"}" \
+        > "$tmp" || { rm -f "$tmp"; return 1; }
     mv "$tmp" "$path" || { rm -f "$tmp"; return 1; }
 }
 
@@ -417,7 +425,7 @@ _cfg_write_conf() {
 }
 
 _cfg_show() {
-    local path="$1"
+    local path="$1" scope="$2"
     echo "Config file: $path"
     if [ ! -f "$path" ]; then
         echo "(file does not exist yet — defaults will be used until saved)"
@@ -425,13 +433,15 @@ _cfg_show() {
     echo ""
     echo "COLOR_THEME=$COLOR_THEME  DISPLAY_MODE=$DISPLAY_MODE  LAYOUT_MODE=$LAYOUT_MODE"
     echo "SEPARATOR=\"$SEPARATOR\"  USE_ICONS=$USE_ICONS  STATUS_STYLE=$STATUS_STYLE"
-    echo "NETWORK_SHOW_WAN=$NETWORK_SHOW_WAN  NETWORK_WAN_REDACT=$NETWORK_WAN_REDACT"
+    if [ "$scope" = "global" ]; then
+        echo "NETWORK_SHOW_WAN=$NETWORK_SHOW_WAN  NETWORK_WAN_REDACT=$NETWORK_WAN_REDACT"
+    fi
     echo ""
     echo "Modules:"
     local mod_def name state
     for mod_def in "${_CFG_ALL_MODULES[@]}"; do
         name=$(_cfg_mod_name "$mod_def")
-        if _cfg_module_enabled "$name"; then state="on "; else state="off"; fi
+        if _cfg_module_enabled "$name" "$scope"; then state="on "; else state="off"; fi
         printf "  [%s] %-14s %s\n" "$state" "$name" "$(_cfg_mod_desc "$mod_def")"
     done
     echo ""
@@ -441,7 +451,7 @@ _cfg_show() {
 _cfg_preview_line() {
     # Static sample preview (no network / git) so TUI stays snappy.
     # Icons follow COLOR_THEME the way apply_theme fills unset icon variables.
-    local parts="" mod_def name sample label emoji icon theme icons
+    local scope="$1" parts="" mod_def name sample label emoji icon theme icons
     theme="${COLOR_THEME:-default}"
     icons="${USE_ICONS:-true}"
     if [ "${USE_EMOJI:-true}" = "false" ]; then
@@ -449,7 +459,7 @@ _cfg_preview_line() {
     fi
     for mod_def in "${_CFG_ALL_MODULES[@]}"; do
         name=$(_cfg_mod_name "$mod_def")
-        _cfg_module_enabled "$name" || continue
+        _cfg_module_enabled "$name" "$scope" || continue
         label=""
         emoji=""
         case "$name" in
@@ -518,7 +528,7 @@ _cfg_draw_module_menu() {
     else
         printf "\033[K${CFG_DIM}Space toggle · a all · n none · Enter next · s save · q quit${CFG_NC}\n"
     fi
-    printf "\033[K${CFG_DIM}Preview: %s${CFG_NC}\n" "$(_cfg_preview_line)"
+    printf "\033[K${CFG_DIM}Preview: %s${CFG_NC}\n" "$(_cfg_preview_line "$scope")"
     printf "\033[K\n"
 
     i=0
@@ -531,7 +541,7 @@ _cfg_draw_module_menu() {
         else
             printf "    "
         fi
-        if _cfg_module_enabled "$name"; then
+        if _cfg_module_enabled "$name" "$scope"; then
             printf "${CFG_GREEN}[x]${CFG_NC} "
         else
             printf "${CFG_DIM}[ ]${CFG_NC} "
@@ -664,24 +674,33 @@ _cfg_run_interactive() {
         [ "$_CFG_SAVE_REQUESTED" = "1" ] && { _cfg_write_conf "$path" 1 "" "$scope" && echo "Saved $path"; return; }
     done
 
-    _cfg_interactive_choice "Color theme" \
-        "default|Standard emoji" \
-        "minimal|Geometric" \
-        "vibrant|Expressive" \
-        "monochrome|ASCII" \
-        "nerd|Nerd Font glyphs"
-    case "${CFG_CHOICE_RESULT:-0}" in
-        0) theme="default" ;;
-        1) theme="minimal" ;;
-        2) theme="vibrant" ;;
-        3) theme="monochrome" ;;
-        4) theme="nerd" ;;
-    esac
-
-    if [ "$scope" = "project" ]; then
-        _cfg_set_project_value COLOR_THEME "$theme"
+    if [ "$scope" = "project" ] && project_config_inherited COLOR_THEME; then
+        echo "Color theme is read-only (set in the startup environment)."
     else
-        COLOR_THEME="$theme"
+        _cfg_interactive_choice "Color theme" \
+            "default|Standard emoji" \
+            "minimal|Geometric" \
+            "vibrant|Expressive" \
+            "monochrome|ASCII" \
+            "nerd|Nerd Font glyphs"
+        case "${CFG_CHOICE_RESULT:-0}" in
+            0) theme="default" ;;
+            1) theme="minimal" ;;
+            2) theme="vibrant" ;;
+            3) theme="monochrome" ;;
+            4) theme="nerd" ;;
+        esac
+        if [ "$scope" = "project" ]; then
+            if ! _cfg_set_project_value COLOR_THEME "$theme"; then
+                echo "config: could not set the project color theme" >&2
+                return 2
+            fi
+        else
+            COLOR_THEME="$theme"
+        fi
+    fi
+
+    if [ "$scope" = "global" ]; then
         _cfg_interactive_choice "WAN IP (privacy)" \
             "off|Do not fetch WAN IP (recommended)" \
             "redacted|Fetch but redact" \
@@ -694,7 +713,7 @@ _cfg_run_interactive() {
     fi
 
     echo ""
-    printf "Preview: %s\n" "$(_cfg_preview_line)"
+    printf "Preview: %s\n" "$(_cfg_preview_line "$scope")"
     echo ""
     printf "Save to %s? [Y/n] " "$path"
     local confirm
@@ -795,7 +814,7 @@ cortado_config_main() {
 
     case "$action" in
         show)
-            _cfg_show "$load_path"
+            _cfg_show "$load_path" "$scope"
             return 0
             ;;
         set)
@@ -854,7 +873,7 @@ cortado_config_main() {
                 return 2
             fi
             if _cfg_write_conf "$path" 0 "" "$scope"; then
-                if _cfg_module_enabled "$toggle_name"; then
+                if _cfg_module_enabled "$toggle_name" "$scope"; then
                     echo "Enabled $toggle_name → $path"
                 else
                     echo "Disabled $toggle_name → $path"

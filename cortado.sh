@@ -175,17 +175,63 @@ project_config_setting_allowed() {
     esac
 }
 
-# Call only with a validated project setting. Match complete exported names.
-project_config_assign() {
-    local key="$1"
+# Match complete exported names, including names with empty values.
+project_config_inherited() {
     case $'\n'"${CORTADO_STARTUP_ENV}"$'\n' in
-        *$'\n'"$key"$'\n'*) return 1 ;;
+        *$'\n'"$1"$'\n'*) return 0 ;;
     esac
-    printf -v "$key" '%s' "$2" 2>/dev/null
+    return 1
+}
+
+# Call only with a validated project setting.
+project_config_assign() {
+    if project_config_inherited "$1"; then
+        return 1
+    fi
+    printf -v "$1" '%s' "$2" 2>/dev/null
 }
 
 load_config_safe() {
     read_config_kv "$1" project_config_setting_allowed "${2:-project_config_assign}"
+}
+
+# A project-selected theme may fill empty settings or force monochrome. Preserve
+# inherited settings as they would look after applying the trusted theme alone.
+apply_render_theme() {
+    local trusted_theme="$1" key setting
+    if [ "$trusted_theme" = "${COLOR_THEME:-default}" ]; then
+        apply_theme
+        return
+    fi
+
+    {
+        apply_theme
+        while IFS= read -r -d '' setting; do
+            case "$setting" in
+                *=*)
+                    key="${setting%%=*}"
+                    # Unchanged settings may be read-only in trusted configuration.
+                    if [ -z "${!key+x}" ] || [ "${!key}" != "${setting#*=}" ]; then
+                        printf -v "$key" '%s' "${setting#*=}"
+                    fi
+                    ;;
+                *) unset "$setting" ;;
+            esac
+        done
+    } < <(
+        # This subshell starts before apply_theme changes anything in the parent.
+        # The project loader has already left inherited inputs untouched.
+        COLOR_THEME="$trusted_theme"
+        apply_theme
+        while IFS= read -r key; do
+            project_config_setting_allowed "$key" '' || continue
+            if [ "${!key+x}" ]; then
+                printf '%s=%s\0' "$key" "${!key}"
+            else
+                printf '%s\0' "$key"
+            fi
+        done <<< "$CORTADO_STARTUP_ENV"
+    )
 }
 
 # Load configuration in order of precedence:
@@ -471,6 +517,7 @@ main() {
     # Load per-directory config if it exists
     # This allows project-specific statusline customization
     # Uses safe parser — project configs are untrusted and must not be sourced
+    local trusted_theme="${COLOR_THEME:-default}"
     if [ -n "$current_dir" ] && [ -d "$current_dir" ]; then
         local dir_config="$current_dir/.cortado.conf"
         # Pre-rename name: honor a project's .barista.conf until it gains a .cortado.conf
@@ -483,7 +530,7 @@ main() {
 
     # Apply color theme settings (must be after all config loading)
     if type apply_theme >/dev/null 2>&1; then
-        apply_theme
+        apply_render_theme "$trusted_theme"
     fi
 
     # Sanitize the untrusted-config width numerics before the layout arithmetic below.
@@ -500,11 +547,10 @@ main() {
         ''|*[!0-9]*|0*) RIGHT_SIDE_RESERVE=20 ;;  # invalid/leading-zero → default
     esac
 
-    # Adjust separator based on display mode
-    # Normal/verbose modes get padded separators, compact mode gets no padding
+    # Compact removes spaces only when joining the rendered sections.
+    local render_separator="${SEPARATOR-}"
     if [ "${DISPLAY_MODE:-normal}" = "compact" ]; then
-        # Strip whitespace from separator for compact mode
-        SEPARATOR=$(echo "$SEPARATOR" | tr -d ' ')
+        render_separator=$(echo "$render_separator" | tr -d ' ')
     fi
 
     # Default module order if not specified
@@ -565,7 +611,7 @@ main() {
         smart)
             # Smart mode (default): join with separator, wrap at separator boundaries
             # when content would exceed terminal width minus reserve
-            output=$(wrap_at_separators "$sections" "$SEPARATOR" "$right_reserve")
+            output=$(wrap_at_separators "$sections" "$render_separator" "$right_reserve")
             ;;
         newline)
             # Newline mode: join all with separator, add newline at end
@@ -577,7 +623,7 @@ main() {
                     output="$section"
                     first=false
                 else
-                    output="${output}${SEPARATOR}${section}"
+                    output="${output}${render_separator}${section}"
                 fi
             done <<< "$sections"
             output="${output}"$'\n'
@@ -591,7 +637,7 @@ main() {
                     output="$section"
                     first=false
                 else
-                    output="${output}${SEPARATOR}${section}"
+                    output="${output}${render_separator}${section}"
                 fi
             done <<< "$sections"
             local term_width
@@ -621,7 +667,7 @@ main() {
                     output="$section"
                     first=false
                 else
-                    output="${output}${SEPARATOR}${section}"
+                    output="${output}${render_separator}${section}"
                 fi
             done <<< "$sections"
             local term_width
@@ -651,7 +697,7 @@ main() {
                     output="$section"
                     first=false
                 else
-                    output="${output}${SEPARATOR}${section}"
+                    output="${output}${render_separator}${section}"
                 fi
             done <<< "$sections"
             ;;

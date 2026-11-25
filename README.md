@@ -223,10 +223,10 @@ Cortado also checks for a newer *release* when you run the from-source installer
 
 ### Migrating from Barista
 
-Cortado reads your Barista settings, so nothing is lost when you switch:
+Cortado can read your existing Barista settings.
 
 - **User config.** The first time Cortado runs, it copies `$CLAUDE_CONFIG_DIR/barista.conf` to `cortado.conf`, keeping the file's permissions. It does this only if `cortado.conf` doesn't exist yet, and it leaves the original in place. `./install.sh` does the same copy and tells you about it.
-- **Project config.** A project's `.barista.conf` is still read when there's no `.cortado.conf` next to it. `cortado config --project` copies it to `.cortado.conf` the first time you edit it.
+- **Project config.** Cortado reads a project's `.barista.conf` when there's no `.cortado.conf` next to it. The first successful save with `cortado config --project` writes the allowed settings to `.cortado.conf` and leaves `.barista.conf` in place.
 - **Install location.** The installer puts Cortado in `$CLAUDE_CONFIG_DIR/cortado/` and points `statusLine` in `settings.json` at `cortado/cortado.sh`. Your previous `statusLine` command is backed up, so `./install.sh --uninstall` can switch back to Barista.
 - **Cache and logs.** These move to `cortado-cache/` and `cortado.log` and are rebuilt automatically. `.usage_history` keeps its name.
 
@@ -282,7 +282,7 @@ cortado config --set COLOR_THEME=minimal
 cortado config --project       # edit ./.cortado.conf in the current directory
 ```
 
-Saves to `$CLAUDE_CONFIG_DIR/cortado.conf` (default `~/.claude/cortado.conf`). Cancel leaves the file untouched.
+The default save path is `$CLAUDE_CONFIG_DIR/cortado.conf` (usually `~/.claude/cortado.conf`). Use `--project` to save allowed preferences in the current directory. Cancel leaves the file untouched.
 
 ### Configuration Files
 
@@ -314,7 +314,9 @@ No other configuration changes are needed.
 
 #### Per-Directory Overrides
 
-Create `.cortado.conf` in any project directory to customize the statusline for that project. That file is **never sourced** — only allowlisted `KEY=VALUE` lines are applied (`load_config_safe`).
+Create `.cortado.conf` in a project directory to customize its statusline. Cortado reads literal `KEY=VALUE` lines from a shared list of display settings, such as layout, separators, themes, icons, and thresholds. A project can also turn a known module off with `MODULE_*=false`. Only enabled modules in `MODULE_ORDER` run.
+
+Use the user config for enabling modules or setting URLs, repositories, locations, paths, and debug mode. Settings exported before Cortado starts keep their trusted effective values. The renderer and `cortado config --project` use the same project permissions.
 
 ```bash
 # ~/myproject/.cortado.conf
@@ -328,7 +330,7 @@ Configuration is loaded in order of precedence:
 1. Built-in defaults
 2. `cortado.conf` (in script directory — sourced as bash after a writable check)
 3. `$CLAUDE_CONFIG_DIR/cortado.conf` (user overrides, defaults to `~/.claude/` — also sourced)
-4. `.cortado.conf` (per-directory KEY=VALUE allowlist; never sourced)
+4. `.cortado.conf` (per-directory display preferences and module disables)
 
 ### Full Configuration Options
 
@@ -494,7 +496,8 @@ module_mycustom() {
 }
 ```
 
-Then add to `cortado.conf`:
+Register the module in `get_module_function` and `is_module_enabled` in `cortado.sh`. Include its flag in `project_config_setting_allowed` to let project configs turn it off. Add the flag and module order to `cortado.conf`.
+
 ```bash
 MODULE_MYCUSTOM="true"
 MODULE_ORDER="...,mycustom,..."
