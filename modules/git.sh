@@ -112,6 +112,7 @@ module_git() {
             index_mtime=$(_file_mtime "$index_file")
             if [ "$head_mtime" -gt "$cache_mtime" ] 2>/dev/null \
                 || [ "$index_mtime" -gt "$cache_mtime" ] 2>/dev/null; then
+                cache_clear "$cache_key"
                 cached=""
             fi
         fi
@@ -141,7 +142,7 @@ module_git() {
             git_branch="($git_branch)"  # Indicate detached state
         fi
 
-        if [ "$show_status" = "true" ] || [ "$show_count" = "true" ]; then
+        if [ "$show_status" = "true" ] || [ "$show_file_count" = "true" ]; then
             # Bound the sample, but drain the stream so Git can exit normally.
             local status_output
             if status_output=$(
@@ -155,16 +156,15 @@ module_git() {
                 status_count=${status_output##*$'\n'}
                 git_porcelain=${status_output%"$status_count"}
                 git_porcelain=${git_porcelain%$'\n'}
+                if [ "$use_cache" = "true" ]; then
+                    # Store branch + porcelain for next render within TTL
+                    cache_set "$cache_key" "${git_branch}
+---CORTADO_GIT---
+${git_porcelain}"
+                fi
             else
                 status_available=false
             fi
-        fi
-
-        if [ "$use_cache" = "true" ] && [ "$status_available" = "true" ]; then
-            # Store branch + porcelain for next render within TTL
-            cache_set "$cache_key" "${git_branch}
----CORTADO_GIT---
-${git_porcelain}"
         fi
     fi
 
@@ -177,8 +177,7 @@ ${git_porcelain}"
 
     if [ "$status_available" = "false" ]; then
         result="$result [--]"
-    elif [ "$show_status" = "true" ] || [ "$show_count" = "true" ]; then
-
+    else
         if [ "$show_status" = "true" ]; then
             local has_modified=false
             local has_untracked=false
