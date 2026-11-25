@@ -27,7 +27,11 @@ assert_log_size() {
 assert_private() {
     local file="$1" mode=''
     if [ -f "$file" ]; then
-        mode=$(stat -f %Lp "$file" 2>/dev/null) || mode=$(stat -c %a "$file")
+        if [ "$(uname)" = Darwin ]; then
+            mode=$(/usr/bin/stat -f '%Lp' "$file")
+        else
+            mode=$(stat -c '%a' "$file")
+        fi
     fi
     if [ "$mode" = 600 ]; then pass "${file##*/} is owner-only"
     else fail "${file##*/} is owner-only (got [${mode:-missing}])"
@@ -114,6 +118,110 @@ assert_log_size 'The concurrent rotation preserves the full previous generation'
 assert_log_size 'The current log is small after concurrent rotation' "$log" 1 4096
 assert_private "$log"
 assert_private "$log.1"
+
+# Mark the critical section before suspending a writer so the contender
+# cannot start too early. Each background writer gets its own process group.
+check_blocked_writers() (
+    set -m
+    local holder contender marker
+    local sync="$TEST_BASE/lock-sync"
+    mkdir "$sync"
+    local log="$sync/cortado.log"
+    CLAUDE_CONFIG_DIR="$sync" log_debug seed
+
+    paused_writer() (
+        # Invoked by log_debug while it holds the lock.
+        # shellcheck disable=SC2329
+        chmod() {
+            : > "$sync/inside"
+            while [ ! -f "$sync/release" ]; do /bin/sleep 0.02; done
+            command chmod "$@"
+        }
+        log_debug "$1"
+    )
+    await_holder() {
+        local retry
+        for ((retry = 0; retry < 250; retry++)); do
+            [ ! -f "$sync/inside" ] || return 0
+            /bin/sleep 0.02
+        done
+        return 1
+    }
+
+    CLAUDE_CONFIG_DIR="$sync" paused_writer holder &
+    holder=$!
+    trap 'kill -KILL -- "-$holder" 2>/dev/null || :' EXIT
+    await_holder || return 1
+    CLAUDE_CONFIG_DIR="$sync" log_debug contender &
+    contender=$!
+    /bin/sleep 1.5
+    : > "$sync/release"
+    wait "$holder" && wait "$contender" || return 1
+
+    rm -f "$sync/inside" "$sync/release"
+    CLAUDE_CONFIG_DIR="$sync" paused_writer killed &
+    holder=$!
+    await_holder || return 1
+    kill -KILL -- "-$holder"
+    wait "$holder" 2>/dev/null || :
+    CLAUDE_CONFIG_DIR="$sync" log_debug recovery-one
+    CLAUDE_CONFIG_DIR="$sync" log_debug recovery-two
+
+    local count failed=0
+    for marker in holder contender recovery-one recovery-two; do
+        count=$(cat "$log" "$log.1" 2>/dev/null | grep -c "] $marker$")
+        if [ "$count" -ne 1 ]; then
+            printf '  %s appears %s times\n' "$marker" "$count"
+            failed=1
+        fi
+    done
+    return "$failed"
+)
+if check_blocked_writers; then
+    pass 'A live contender and both writes after SIGKILL survive exactly once'
+else
+    fail 'A live contender and both writes after SIGKILL survive exactly once'
+fi
+
+(
+    # The old log_debug called sleep even when opening the lock could never succeed.
+    # shellcheck disable=SC2329
+    sleep() { : > "$TEST_BASE/unusable-parent-slept"; }
+    CLAUDE_CONFIG_DIR="$TEST_BASE/nonexistent/config" log_debug 'unwritable parent'
+) 2> "$TEST_BASE/unusable-parent.err"
+if [ ! -e "$TEST_BASE/unusable-parent-slept" ] && [ ! -s "$TEST_BASE/unusable-parent.err" ]; then
+    pass 'An unusable parent fails quietly without contention sleeps'
+else
+    fail 'An unusable parent fails quietly without contention sleeps'
+fi
+
+export CLAUDE_CONFIG_DIR="$(mktemp -d "$TEST_BASE/size.XXXXXX")"
+log="$CLAUDE_CONFIG_DIR/cortado.log"
+printf '%1048575s\n' 'full generation' > "$log"
+(
+    OSTYPE=linux-gnu
+    # Exercise the GNU stat failure path of the earlier implementation.
+    # shellcheck disable=SC2329
+    stat() { return 1; }
+    log_debug 'rotate without stat'
+)
+assert_log_size 'Rotation works when stat cannot read a full generation' "$log.1" "$cap" "$cap"
+assert_log_size 'An append without stat still fits the cap' "$log" 1 "$cap"
+if grep -q 'rotate without stat' "$log"; then pass 'The new generation contains the marker'
+else fail 'The new generation contains the marker'
+fi
+
+(
+    # Invoked by log_debug when checking the current log.
+    # shellcheck disable=SC2329
+    wc() { return 1; }
+    log_debug 'skip unknown size'
+) 2> "$TEST_BASE/unknown-size.err"
+if ! grep -q 'skip unknown size' "$log" && [ ! -s "$TEST_BASE/unknown-size.err" ]; then
+    pass 'A byte-count failure skips the append quietly'
+else
+    fail 'A byte-count failure skips the append quietly'
+fi
 
 printf '\nResults: %s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

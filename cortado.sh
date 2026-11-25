@@ -258,17 +258,59 @@ load_config "$USER_CONFIG"
 # LOAD MODULES
 # =============================================================================
 
-log_module_stderr() {
-    local stderr_file="$1" module_name="$2"
-    [ "$stderr_file" != /dev/null ] && [ -s "$stderr_file" ] || return 0
+create_module_stderr() (
+    local dir
+    umask 077
+    dir=$(mktemp -d "$1/cortado-stderr.XXXXXX") || return 1
+    if ! mkfifo "$dir/pipe"; then
+        rmdir -- "$dir"
+        return 1
+    fi
+    printf '%s\n' "$dir"
+) 2>/dev/null
 
-    local line diagnostics
+start_module_stderr() {
+    [ -n "$CORTADO_STDERR_CAPTURE" ] || return 0
+    local dir="$CORTADO_STDERR_CAPTURE"
+    # Drain the pipe after the first 64 KiB so verbose tools keep running.
+    (
+        umask 077
+        if ! { LC_ALL=C head -c 65536 >| "$dir/data" &&
+            LC_ALL=C wc -c >| "$dir/omitted"; }; then
+            cat > /dev/null
+            exit 1
+        fi
+    ) 2>/dev/null < "$dir/pipe" &
+    CORTADO_STDERR_READER=$!
+}
+
+log_module_stderr() {
+    local module_name="$1" dir="$CORTADO_STDERR_CAPTURE" reader="$CORTADO_STDERR_READER"
+    [ -n "$reader" ] || return 0
+    local status=0
+    wait "$reader" 2>/dev/null || status=$?
+    CORTADO_STDERR_READER=
+    [ "$status" -eq 0 ] || return 0
+
+    local omitted line diagnostics
+    IFS=' ' read -r omitted 2>/dev/null < "$dir/omitted" || return 0
+    [ -s "$dir/data" ] || [ "$omitted" -gt 0 ] || return 0
     diagnostics=$(
         while IFS= read -r line || [ -n "$line" ]; do
             printf '%s: %s\n' "$module_name" "$line"
-        done < "$stderr_file"
+        done < "$dir/data"
+        if [ "$omitted" -gt 0 ]; then
+            printf '%s: [truncated %s bytes]\n' "$module_name" "$omitted"
+        fi
     )
     log_debug "$diagnostics"
+}
+
+cleanup_module_stderr() {
+    if [ -n "$CORTADO_STDERR_READER" ]; then
+        kill "$CORTADO_STDERR_READER" 2>/dev/null || :
+    fi
+    rm -rf -- "$CORTADO_STDERR_CAPTURE" 2>/dev/null || :
 }
 
 # The fallback helpers are invoked by the sourced modules.
@@ -279,9 +321,10 @@ load_modules() {
     # Fallbacks for incomplete installations. utils.sh normally defines these.
     log_debug() { :; }
     if [ -f "$MODULES_DIR/utils.sh" ]; then
+        start_module_stderr
         # shellcheck source=/dev/null
-        . "$MODULES_DIR/utils.sh" 2>"$stderr_file"
-        log_module_stderr "$stderr_file" utils
+        . "$MODULES_DIR/utils.sh" 2>|"$stderr_file"
+        log_module_stderr utils
     else
         get_icon() { echo "$1"; }
         get_status() { echo ""; }
@@ -297,9 +340,10 @@ load_modules() {
         [ -f "$module_file" ] || continue
         module_name="${module_file##*/}"
         [ "$module_name" != utils.sh ] || continue
+        start_module_stderr
         # shellcheck source=/dev/null
-        . "$module_file" 2>"$stderr_file"
-        log_module_stderr "$stderr_file" "${module_name%.sh}"
+        . "$module_file" 2>|"$stderr_file"
+        log_module_stderr "${module_name%.sh}"
     done
 }
 
@@ -369,7 +413,7 @@ run_module() {
         directory)
             "$func_name" "$current_dir"
             ;;
-        context|model|cost|rate-limits)
+        context|model|cost|rate-limits|version)
             "$func_name" "$input_json"
             ;;
         git|project)
@@ -531,8 +575,17 @@ main() {
     # Keep a private capture for sequential source and run calls. Flush it in
     # the caller after each call so log entries are available when main returns.
     local module_stderr=/dev/null
+    CORTADO_STDERR_CAPTURE=
+    CORTADO_STDERR_READER=
     if [ "${DEBUG_MODE:-false}" = "true" ]; then
-        module_stderr=$(mktemp "${TMPDIR:-/tmp}/cortado-stderr.XXXXXX" 2>/dev/null) || module_stderr=/dev/null
+        if CORTADO_STDERR_CAPTURE=$(create_module_stderr "${TMPDIR:-/tmp}") ||
+            CORTADO_STDERR_CAPTURE=$(create_module_stderr "$CLAUDE_CONFIG_DIR"); then
+            trap cleanup_module_stderr EXIT
+            trap 'exit 143' TERM
+            trap 'exit 130' INT
+            trap 'exit 129' HUP
+            module_stderr="$CORTADO_STDERR_CAPTURE/pipe"
+        fi
     fi
     load_modules "$module_stderr"
 
@@ -614,11 +667,12 @@ main() {
             # Wrap module execution in a subshell with error handling.
             # This prevents a single module crash from killing the entire statusline.
             local output
-            output=$(run_module "$module" "$current_dir" "$input" 2>"$module_stderr") || {
+            start_module_stderr
+            output=$(run_module "$module" "$current_dir" "$input" 2>|"$module_stderr") || {
                 log_debug "Module $module failed with exit code $?"
                 output=""
             }
-            log_module_stderr "$module_stderr" "$module"
+            log_module_stderr "$module"
 
             if [ -n "$output" ]; then
                 if [ -n "$sections" ]; then
@@ -629,10 +683,6 @@ main() {
             fi
         fi
     done
-    if [ "$module_stderr" != /dev/null ]; then
-        rm -f -- "$module_stderr" 2>/dev/null
-    fi
-
     # =============================================================================
     # TERMINAL-WIDTH-AWARE OUTPUT
     # =============================================================================
@@ -753,6 +803,10 @@ cortado_cli_dispatch() {
                 echo "cortado: missing lib/config-tui.sh (incomplete install)." >&2
                 echo "Re-run ./install.sh from your Cortado checkout." >&2
                 exit 1
+            fi
+            if [ -f "$MODULES_DIR/utils.sh" ]; then
+                # shellcheck source=/dev/null
+                . "$MODULES_DIR/utils.sh"
             fi
             # shellcheck disable=SC1091
             . "$SCRIPT_DIR/lib/config-tui.sh"

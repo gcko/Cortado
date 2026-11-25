@@ -692,7 +692,7 @@ format_number() {
 log_debug() {
     [ "${DEBUG_MODE:-false}" = "true" ] || return 0
     local log_file="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/cortado.log"
-    local lock="$log_file.lock" limit=1048576 attempts=0
+    local lock="$log_file-lock" limit=1048576
     local LC_ALL=C  # Count bytes, including for messages that contain Unicode.
     local entry size
 
@@ -702,22 +702,22 @@ log_debug() {
         entry="[$(date '+%Y-%m-%d %H:%M:%S')] $1"
         entry="${entry:0:$((limit - 1))}"$'\n'
 
-        until mkdir -- "$lock"; do
-            attempts=$((attempts + 1))
-            [ "$attempts" -lt 25 ] || return 1
-            sleep 0.01 || return 1
-        done
-        trap 'rmdir -- "$lock"' EXIT
-        trap 'exit 143' TERM
-        trap 'exit 130' INT
-        trap 'exit 129' HUP
+        # Keep the lock inode independent of the rotating log. The kernel
+        # releases the lock when the inherited descriptor closes.
+        [ ! -L "$lock" ] && { [ ! -e "$lock" ] || [ -f "$lock" ]; } || return 1
+        exec 9>>"$lock" || return 1
+        if command -v flock >/dev/null 2>&1; then
+            flock -w 5 9
+        else
+            perl -MFcntl=:flock -e 'open(my $lock, ">&=9") or exit 1; alarm 5; exit(!flock($lock, LOCK_EX))'
+        fi || return 1
 
         # Only append to a regular log. Protect logs left by older versions
         # before we append or move them into the previous generation.
         [ ! -L "$log_file" ] || return 1
         if [ -e "$log_file" ]; then
             [ -f "$log_file" ] && chmod 600 "$log_file" || return 1
-            size=$(_file_stat %z %s "$log_file")
+            size=$(wc -c < "$log_file") || return 1
             if [ "$((size + ${#entry}))" -gt "$limit" ]; then
                 [ ! -d "$log_file.1" ] && mv -f -- "$log_file" "$log_file.1" || return 1
             fi
