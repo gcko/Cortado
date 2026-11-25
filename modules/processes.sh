@@ -40,7 +40,7 @@ module_processes() {
         IFS=' ' read -r total_procs running_procs <<< "$counts"
     fi
 
-    if [ -z "$total_procs" ]; then
+    if [ "${total_procs:-0}" -le 0 ]; then
         echo "$icon --"
         return
     fi

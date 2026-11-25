@@ -167,6 +167,77 @@ out=$(render "$sb" "$NO_LIMITS")
 assert_eq "cached API zero stays zero while null utilization shows absence" "5h:0% 7d:--" "$out"
 
 echo ""
+echo "=== implausible percentages show absence for their window ==="
+
+for bad in -5 1e30 100.4; do
+    sb=$(sandbox "out-of-range-$bad")
+    printf '{"five_hour":{"utilization":%s},"seven_day":{"utilization":100}}\n' "$bad" \
+        > "$sb/cortado-cache/rate_limits_usage"
+    invalid_payload=$(printf '{"rate_limits":{"five_hour":{"used_percentage":0},"seven_day":{"used_percentage":%s}}}' "$bad")
+    assert_eq "cached $bad shows absence alongside measured 100%" "5h:-- 7d:100%" "$(render "$sb" "$NO_LIMITS")"
+    assert_eq "payload $bad shows absence alongside measured 0%" "5h:0% 7d:--" "$(render "$sb" "$invalid_payload")"
+done
+
+for zero in -0 -0.0; do
+    sb=$(sandbox "signed-zero-$zero")
+    printf '{"five_hour":{"utilization":%s},"seven_day":{"utilization":10}}\n' "$zero" \
+        > "$sb/cortado-cache/rate_limits_usage"
+    signed_zero_payload=$(printf '{"rate_limits":{"five_hour":{"used_percentage":%s},"seven_day":{"used_percentage":10}}}' "$zero")
+    assert_eq "cached $zero displays as unsigned zero" "5h:0% 7d:10%" "$(render "$sb" "$NO_LIMITS")"
+    assert_eq "payload $zero displays as unsigned zero" "5h:0% 7d:10%" "$(render "$sb" "$signed_zero_payload")"
+done
+
+echo ""
+echo "=== stale fallback shows the cache age ==="
+
+mkdir "$TEST_BASE/fallback-bin"
+cat > "$TEST_BASE/fallback-bin/date" <<'STUB'
+#!/bin/bash
+if [ "$*" = '+%s' ]; then
+    printf '%s\n' "$TEST_NOW"
+else
+    exec /bin/date "$@"
+fi
+STUB
+cat > "$TEST_BASE/fallback-bin/curl" <<'STUB'
+#!/bin/bash
+printf 'attempt\n' >> "$CLAUDE_CONFIG_DIR/curl.log"
+exit 7
+STUB
+chmod +x "$TEST_BASE/fallback-bin/"*
+
+render_cache() {
+    local sb="$1" age="$2" payload="${3:-$NO_LIMITS}"
+    printf '%s\n' '{"five_hour":{"utilization":42},"seven_day":{"utilization":10}}' \
+        > "$sb/cortado-cache/rate_limits_usage"
+    TZ=UTC touch -t 202001010000 "$sb/cortado-cache/rate_limits_usage"
+    printf '%s\n' '{"claudeAiOauth":{"accessToken":"test-token-REDACTED"}}' > "$sb/.credentials.json"
+    chmod 600 "$sb/.credentials.json"
+    TEST_NOW=$((1577836800 + age)) PATH="$TEST_BASE/fallback-bin:$PATH" render "$sb" "$payload"
+}
+
+sb=$(sandbox fresh-cache)
+assert_eq "a one-minute-old reading has the original text" "5h:42% 7d:10%" "$(render_cache "$sb" 60)"
+assert_eq "a fresh cached reading does not call curl" "" "$(cat "$sb/curl.log" 2>/dev/null)"
+
+sb=$(sandbox stale-cache)
+assert_eq "a failed fetch shows the age on both stale readings" "5h:42%~6h0m 7d:10%~6h0m" "$(render_cache "$sb" 21600)"
+assert_eq "the stale fallback follows a curl attempt" "attempt" "$(cat "$sb/curl.log" 2>/dev/null)"
+
+sb=$(sandbox expired-cache)
+assert_eq "a reading older than 24 hours is absent" "5h:-- 7d:--" "$(render_cache "$sb" 86401)"
+
+sb=$(sandbox backoff-stale-cache)
+printf '300\n' > "$sb/cortado-cache/rate_limits_backoff"
+TZ=UTC touch -t 202001010600 "$sb/cortado-cache/rate_limits_backoff"
+assert_eq "an active cooldown shows cache age and remaining wait" "5h:42%~6h0m 7d:10%~6h0m WAIT5m" "$(render_cache "$sb" 21600)"
+assert_eq "backoff skips curl" "" "$(cat "$sb/curl.log" 2>/dev/null)"
+
+sb=$(sandbox payload-over-stale-cache)
+live_payload='{"rate_limits":{"five_hour":{"used_percentage":0},"seven_day":{"used_percentage":100}}}'
+assert_eq "payload readings carry no cache age" "5h:0% 7d:100%" "$(render_cache "$sb" 21600 "$live_payload")"
+
+echo ""
 echo "=== quota indicator spacing follows display mode ==="
 
 sb=$(sandbox indicator-spacing)

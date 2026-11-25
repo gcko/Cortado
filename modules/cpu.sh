@@ -20,31 +20,35 @@ module_cpu() {
     # Get CPU usage
     local cpu_usage
     if [ "${render_os-$(uname)}" = Darwin ]; then
-        # macOS: top sample (user + sys; #51)
-        cpu_usage=$(top -l 1 -n 0 2>/dev/null | grep "CPU usage" | awk '{u=$3; s=$5; sub(/%/,"",u); sub(/%/,"",s); print u+s}')
+        # macOS: count user and system usage from a successful top sample.
+        local sample
+        if sample=$(LC_ALL=C top -l 1 -n 0 2>/dev/null); then
+            cpu_usage=$(printf '%s\n' "$sample" | LC_ALL=C awk '
+                /^CPU usage:/ {
+                    if ($3 ~ /^[0-9]+([.][0-9]+)?%$/ && $5 ~ /^[0-9]+([.][0-9]+)?%$/)
+                        print $3 + $5
+                    exit
+                }')
+        fi
     else
         # Linux: single-shot /proc/stat is lifetime average since boot — not
         # "current" CPU%. Diff against a previous sample cached under cortado-cache
         # (statusline re-renders often → second+ ticks are accurate; first tick
-        # seeds the cache and returns empty so we don't show a bogus % forever).
+        # seeds the cache and renders --).
         local cur prev puser pnice psystem pidle cuser cnice csystem cidle
+        local label remainder
         local duser dnice dsystem didle dtotal
-        cur=$(grep '^cpu ' /proc/stat 2>/dev/null)
-        if [ -n "$cur" ]; then
+        local sample_pattern='^cpu([[:blank:]]+[0-9]+){4}([[:blank:]]|$)'
+        if cur=$(grep '^cpu ' /proc/stat 2>/dev/null) && [[ "$cur" =~ $sample_pattern ]]; then
             init_cache
             local stat_file="${CACHE_DIR}/cpu_stat"
-            if [ -f "$stat_file" ]; then
-                prev=$(cat "$stat_file" 2>/dev/null)
-                # shellcheck disable=SC2086
-                set -- $prev
-                puser=${2:-0}; pnice=${3:-0}; psystem=${4:-0}; pidle=${5:-0}
-                # shellcheck disable=SC2086
-                set -- $cur
-                cuser=${2:-0}; cnice=${3:-0}; csystem=${4:-0}; cidle=${5:-0}
-                duser=$((cuser - puser))
-                dnice=$((cnice - pnice))
-                dsystem=$((csystem - psystem))
-                didle=$((cidle - pidle))
+            if [ -f "$stat_file" ] && prev=$(cat "$stat_file" 2>/dev/null) && [[ "$prev" =~ $sample_pattern ]]; then
+                IFS=$' \t' read -r label puser pnice psystem pidle remainder <<< "$prev"
+                IFS=$' \t' read -r label cuser cnice csystem cidle remainder <<< "$cur"
+                duser=$((10#$cuser - 10#$puser))
+                dnice=$((10#$cnice - 10#$pnice))
+                dsystem=$((10#$csystem - 10#$psystem))
+                didle=$((10#$cidle - 10#$pidle))
                 dtotal=$((duser + dnice + dsystem + didle))
                 if [ "$dtotal" -gt 0 ]; then
                     cpu_usage=$(( (duser + dnice + dsystem) * 100 / dtotal ))
@@ -55,12 +59,14 @@ module_cpu() {
         fi
     fi
 
-    if [ -z "$cpu_usage" ]; then
+    local cpu_int
+    if [ -z "$cpu_usage" ] || ! cpu_int=$(
+        LC_ALL=C
+        printf "%.0f" "$cpu_usage" 2>/dev/null
+    ); then
+        echo "$icon --"
         return
     fi
-
-    # Round to integer
-    local cpu_int=$(printf "%.0f" "$cpu_usage" 2>/dev/null || echo "0")
 
     local result="$icon"
 
