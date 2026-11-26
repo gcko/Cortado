@@ -122,19 +122,11 @@ jobs:
             exit 1
           fi
 
-      - name: Run the suites with macOS system Bash and ${{ matrix.jq == 'apple' && 'Apple' || 'Homebrew' }} jq
-        if: ${{ !cancelled() && steps.tools.outcome == 'success' && runner.os == 'macOS' }}
-        env:
-          JQ_VARIANT: ${{ matrix.jq }}
-        run: /bin/bash tests/run-jq-variants.sh --variant "$JQ_VARIANT"
-
-      - name: Run all suites
-        if: ${{ !cancelled() && steps.tools.outcome == 'success' && runner.os != 'macOS' }}
-        run: /bin/bash tests/run-suites.sh
-
-      # The 250 ms p95 gate is quarantined while tests/flaky.txt lists
-      # ci:render-p95: p50 and p95 are still measured and printed, but the
-      # limit is not enforced. Deleting that entry turns the gate back on.
+      # The timing steps run before the suites, so they time a quiet runner
+      # rather than one still busy with the parallel suites' leftovers.
+      # Listing ci:render-p95 in tests/flaky.txt quarantines the 250 ms p95
+      # gate: p50 and p95 are still measured and printed, but the limit is
+      # not enforced.
       - name: Record default render p50 and p95
         if: ${{ !cancelled() && steps.tools.outcome == 'success' && matrix.jq != 'apple' }}
         continue-on-error: ${{ runner.os != 'macOS' }}
@@ -151,3 +143,13 @@ jobs:
         if: ${{ !cancelled() && steps.tools.outcome == 'success' && matrix.jq != 'apple' }}
         continue-on-error: true
         run: /bin/bash tests/all_modules_timing.sh
+
+      - name: Run the suites with macOS system Bash and ${{ matrix.jq == 'apple' && 'Apple' || 'Homebrew' }} jq
+        if: ${{ !cancelled() && steps.tools.outcome == 'success' && runner.os == 'macOS' }}
+        env:
+          JQ_VARIANT: ${{ matrix.jq }}
+        run: /bin/bash tests/run-jq-variants.sh --variant "$JQ_VARIANT"
+
+      - name: Run all suites
+        if: ${{ !cancelled() && steps.tools.outcome == 'success' && runner.os != 'macOS' }}
+        run: /bin/bash tests/run-suites.sh

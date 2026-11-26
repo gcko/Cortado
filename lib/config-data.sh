@@ -300,6 +300,47 @@ trusted_config_assign() {
     printf -v "$1" '%s' "$2" 2>/dev/null
 }
 
+# The trusted policy and its assignment in one call, for the statusline: the
+# packaged config holds about 160 settings, and each call costs render time.
+# It accepts, refuses and explains exactly as trusted_config_setting_allowed
+# (config_key_type's lookup order, then config_value_fits_type, which a plain
+# string and true or false never need); tests/test_config_data.sh holds the
+# two to that. load_config_data sends the whole read's stderr to /dev/null.
+trusted_config_apply() {
+    local type
+    case "$1" in
+        ''|*[!A-Z0-9_]*|[!A-Z]*) type= ;;
+        *)
+            type="_CORTADO_CORE_KEY_TYPE_$1"
+            type="${!type-}"
+            if [ -z "$type" ]; then
+                type="_CORTADO_KEY_TYPE_$1"
+                type="${!type-}"
+            fi
+            if [ -z "$type" ]; then
+                case "$1" in
+                    MODULE_*) type=bool ;;
+                    *) type="_CORTADO_USER_KEY_TYPE_$1"; type="${!type-}" ;;
+                esac
+            fi
+            ;;
+    esac
+    if [ -z "$type" ]; then
+        CONFIG_POLICY_REASON="$1 is not a Cortado setting" CONFIG_POLICY_KIND=unknown
+        return 1
+    fi
+    case "$type:$2" in
+        string:*|*:|bool:true|bool:false) ;;
+        *)
+            if ! config_value_fits_type "$type" "$2"; then
+                CONFIG_POLICY_REASON="$1 expects a $type value" CONFIG_POLICY_KIND=type
+                return 1
+            fi
+            ;;
+    esac
+    printf -v "$1" '%s' "$2"
+}
+
 # Lines a trusted config holds but the statusline did not apply. Shell code
 # and mistyped values may change the line from what sourcing gave, so they
 # also count in CONFIG_UNREAD_RENDER; an unknown name never reached a module.
@@ -317,7 +358,7 @@ config_record_unread() {
 # Parse an already-checked trusted config. The label names it in reports.
 load_config_data() {
     local _CONFIG_UNREAD_LABEL="${2:-$1}"
-    read_config_kv "$1" trusted_config_setting_allowed trusted_config_assign config_record_unread
+    read_config_kv "$1" trusted_config_apply : config_record_unread 2>/dev/null
 }
 
 # True only when the environment Cortado started with exported the opt-in as 1.

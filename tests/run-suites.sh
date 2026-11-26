@@ -4,12 +4,14 @@
 #   /bin/bash tests/run-suites.sh [suite...]
 #
 # CORTADO_TEST_JOBS caps the parallel jobs (default: the core count).
-# SUITE_TIMEOUT bounds each suite in seconds (default: 300).
+# SUITE_TIMEOUT bounds each suite in seconds (default: 300). A suite past its
+# limit, or whose run is interrupted, has its whole process group stopped:
+# TERM, then KILL after 2 s.
 #
-# Each suite runs standalone with its own TMPDIR, prints one PASS, FAIL or
-# TIMEOUT line as it finishes, and keeps its output in a private file. Failing
-# suites' output is printed afterwards, one whole block per suite, so parallel
-# output never interleaves. The exit status is non-zero when any suite fails.
+# Each suite runs standalone with its own TMPDIR and process group, prints
+# one PASS, FAIL or TIMEOUT line as it finishes, and keeps its output in a
+# private file. Failing suites' output is printed afterwards, one whole block
+# per suite, so parallel output never interleaves. The exit status is non-zero when any suite fails.
 # A suite quarantined in tests/flaky.txt is skipped with a "SKIP (flaky)" line
 # (CORTADO_RUN_FLAKY=1 runs it anyway).
 # Bash 3.2 (macOS /bin/bash) and BSD or GNU xargs.
@@ -20,21 +22,68 @@ if [ "${1:-}" = --worker ]; then
     work="$2" index="$3" suite="$4"
     name="${suite##*/}"
     tmp="$work/tmp/$index"
-    mkdir -p "$tmp" || exit 1
+    # A runner that is gone (its EXIT trap removed the work directory, or it
+    # was killed outright) starts no further suites.
+    kill -0 "${CORTADO_RUNNER_PID:-$PPID}" 2>/dev/null || exit 1
+    mkdir "$tmp" 2>/dev/null || exit 1
     started=$SECONDS
     status=0
-    # perl's alarm survives the exec, so a hang ends as SIGALRM (status 142).
-    TMPDIR="$tmp" perl -e 'alarm shift; exec @ARGV' "${SUITE_TIMEOUT:-300}" \
-        /bin/bash "$suite" < /dev/null > "$work/$index.out" 2>&1 || status=$?
+    # The suite leads its own process group (job control is on only for this
+    # launch), so a timeout can stop everything it started, and its parent
+    # is still this worker. Until the watchdog runs, a stop request (Ctrl-C,
+    # a cancelled job) only marks this worker, which then exits.
+    interrupted=
+    trap 'interrupted=1' INT TERM HUP
+    set -m
+    TMPDIR="$tmp" /bin/bash "$suite" < /dev/null > "$work/$index.out" 2>&1 &
+    pid=$!
+    set +m
+    # The watchdog stops the suite's group at the time limit, when this
+    # worker exits early, or when the runner is gone (its PID or its work
+    # directory): TERM, then up to 2 s for the group to exit, then
+    # KILL until no member is left. It writes the timeout marker before it
+    # stops anything. It starts with INT, TERM and HUP ignored and keeps
+    # them ignored, so a stop request cannot kill it before it acts; the
+    # request ends this worker instead, and the watchdog sees that.
+    # USR1 dismisses it.
+    trap '' INT TERM HUP
+    # shellcheck disable=SC2016 # Perl source, expanded by perl.
+    perl -MTime::HiRes=time -e '
+        my ($limit, $group, $marker, $worker, $runner, $work) = @ARGV;
+        $SIG{$_} = "IGNORE" for qw(INT TERM HUP);
+        my $stop = sub {
+            $SIG{USR1} = "IGNORE";
+            if ($_[0]) { open(my $flag, ">", $marker) and close($flag) }
+            kill "TERM", -$group;
+            for (1 .. 200) { kill(0, -$group) or last; select(undef, undef, undef, 0.01) }
+            for (1 .. 500) { kill("KILL", -$group) or last; select(undef, undef, undef, 0.01) }
+            exit 0;
+        };
+        $SIG{USR1} = sub { exit 0 };
+        my $end = time + $limit;
+        while (time < $end) {
+            $stop->(0) if getppid() != $worker || !kill(0, $runner) || !-d $work;
+            select(undef, undef, undef, 0.25);
+        }
+        $stop->(1);
+    ' "${SUITE_TIMEOUT:-300}" "$pid" "$work/$index.timeout" "$$" "${CORTADO_RUNNER_PID:-$PPID}" "$work" \
+        < /dev/null > /dev/null 2>&1 &
+    watchdog=$!
+    trap - INT TERM HUP
+    [ -z "$interrupted" ] || exit 1
+    wait "$pid" 2>/dev/null || status=$?
+    # A watchdog that is already stopping the group ignores USR1 and finishes.
+    kill -USR1 "$watchdog" 2>/dev/null
+    wait "$watchdog" 2>/dev/null
     elapsed=$((SECONDS - started))
     # Leftovers from a killed suite go with its private TMPDIR.
     rm -rf "$tmp" 2>/dev/null
-    if [ "$status" -eq 0 ]; then
-        result=PASS
-        line="PASS: $name (${elapsed}s)"
-    elif [ "$status" -eq 142 ]; then
+    if [ -e "$work/$index.timeout" ]; then
         result=TIMEOUT
         line="TIMEOUT: $name (over ${SUITE_TIMEOUT:-300}s)"
+    elif [ "$status" -eq 0 ]; then
+        result=PASS
+        line="PASS: $name (${elapsed}s)"
     else
         result=FAIL
         line="FAIL: $name (exit $status, ${elapsed}s)"
@@ -102,7 +151,7 @@ started=$SECONDS
 if [ -n "$order" ]; then
     for i in $order; do
         printf '%s\0%s\0' "$i" "${suites[i]}"
-    done | xargs -0 -n 2 -P "$jobs" /bin/bash "$runner" --worker "$work"
+    done | CORTADO_RUNNER_PID=$$ xargs -0 -n 2 -P "$jobs" /bin/bash "$runner" --worker "$work"
 fi
 
 passed=0 failed=0 timed_out=0

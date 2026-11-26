@@ -161,6 +161,11 @@ case "$TEST_SAMPLE" in
             print "6\n" if open(my $read_end, "<&", 6);
             print "7\n" if open(my $write_end, ">&", 7);
         ' > "$CLAUDE_CONFIG_DIR/curl-payload-fds"
+        # The refresh worker leads this probe's process group; its watchdog
+        # is the one child of the leader that has left the group.
+        group=$(ps -o pgid= -p "$$" | tr -d ' ')
+        ps -A -o ppid=,pgid= | awk -v group="$group" '$1 == group && $2 != group' \
+            > "$CLAUDE_CONFIG_DIR/watchdog-outside"
         printf 'ready\n' > "$CLAUDE_CONFIG_DIR/curl-fds-ready"
         exec sleep 25 ;;
     fail) exit 7 ;;
@@ -190,6 +195,13 @@ case "$TEST_SAMPLE" in
             *wttr.in*) printf '%s\n' '☀️+72°F' ;;
             https://ifconfig.me|https://icanhazip.com) printf '%s\n' '203.0.113.9' ;;
         esac ;;
+    swap-marker|swap-marker-reading)
+        # A clear removes the marker mid-request and a symlink to a regular
+        # file takes its name before the result is published.
+        marker="$CLAUDE_CONFIG_DIR/cortado-cache/.weather-default-u-pending"
+        rm -f "$marker" && ln -s "$CLAUDE_CONFIG_DIR/marker-target" "$marker"
+        [ "$TEST_SAMPLE" = swap-marker-reading ] || exit 7
+        printf '%s\n' '☀️+72°F' ;;
     ipv6) printf '%s\n' '2001:db8::1' ;;
     freezing) printf '%s\n' '❄️-12°C' ;;
 esac
@@ -285,13 +297,26 @@ lock_is_free() {
     perl -MFcntl=:flock -e 'open my $lock, ">>", $ARGV[0] or exit 1; exit !flock($lock, LOCK_EX|LOCK_NB)' "$1"
 }
 
-wait_for_lock() {
-    local i
-    for ((i=0; i<50; i++)); do
-        lock_is_free "$1" && return 0
+# Poll until a command succeeds, for at most a wall-clock ceiling in seconds.
+# A count of fixed sleeps is no ceiling under load, and a short window fails
+# on a busy runner. Every timed-out stub sleeps 20 s or longer, so a 12 s
+# ceiling still tells a killed probe from one left running.
+settles_within() {
+    local stop=$((SECONDS + $1))
+    shift
+    while :; do
+        "$@" && return 0
+        [ "$SECONDS" -lt "$stop" ] || return 1
         sleep 0.05
     done
-    return 1
+}
+
+wait_for_lock() {
+    settles_within 12 lock_is_free "$1"
+}
+
+pid_file_gone() {
+    [ ! -s "$1" ] || ! kill -0 "$(cat "$1")" 2>/dev/null
 }
 
 process_exits() {
@@ -381,6 +406,12 @@ if [[ "$section" = all || "$section" = deadline ]]; then
     sandbox weather
     render_is 'a hung curl returns immediately on the cold render' '--' hang
     if wait_for_file "$sb/curl.pid"; then
+        # The watchdog must outlive its own group kill to repeat it.
+        if wait_for_file "$sb/curl-fds-ready" && [ -s "$sb/watchdog-outside" ]; then
+            pass 'the deadline watchdog runs outside the probe process group'
+        else
+            fail 'the deadline watchdog runs outside the probe process group'
+        fi
         weather_failure 'the refresh deadline also records failure'
         if wait_for_lock "$CACHE_DIR/weather-default-u-lock"; then
             pass 'the deadline releases the refresh lock'
@@ -397,22 +428,30 @@ if [[ "$section" = all || "$section" = deadline ]]; then
         fail 'the hung probe started in the background'
     fi
     sandbox weather
+    # The 1 ms clamp ends the probe at once; without it the alarm disarms
+    # and the probe lives the stub's full 20 s. One 12 s ceiling, counted
+    # from the render, tells the two apart on a busy runner. The refresh
+    # ending is its supervisor exiting: a 1 ms alarm can fire before the
+    # worker creates its pending marker, and then no failure is published
+    # (the hung-curl case above proves the deadline records failure).
+    tiny_stop=$((SECONDS + 12))
     render_is 'a sub-microsecond remaining deadline renders absence' '--' tiny-deadline
-    if wait_for_file "$CACHE_DIR/weather-default-u-failed" 130; then
+    if wait_for_file "$sb/supervisor.pid" &&
+        settles_within $((tiny_stop - SECONDS)) pid_file_gone "$sb/supervisor.pid"; then
         pass 'a sub-microsecond remaining deadline still ends the refresh'
     else
         fail 'a sub-microsecond remaining deadline still ends the refresh'
     fi
-    if wait_for_lock "$CACHE_DIR/weather-default-u-lock"; then
+    if settles_within $((tiny_stop - SECONDS)) lock_is_free "$CACHE_DIR/weather-default-u-lock"; then
         pass 'a sub-microsecond remaining deadline releases the lock'
     else
         fail 'a sub-microsecond remaining deadline releases the lock'
     fi
-    if [ -s "$sb/curl.pid" ] && kill -0 "$(cat "$sb/curl.pid")" 2>/dev/null; then
+    if settles_within $((tiny_stop - SECONDS)) pid_file_gone "$sb/curl.pid"; then
+        pass 'a sub-microsecond remaining deadline leaves no probe running'
+    else
         fail 'a sub-microsecond remaining deadline leaves no probe running'
         kill -KILL "$(cat "$sb/curl.pid")" 2>/dev/null || :
-    else
-        pass 'a sub-microsecond remaining deadline leaves no probe running'
     fi
 
     sandbox weather
@@ -831,47 +870,77 @@ if [[ "$section" = all || "$section" = publication ]]; then
     else
         fail 'publication reaches the rename fixture'
     fi
-    sandbox weather
-    pending="$CACHE_DIR/.weather-default-u-pending"
-    : > "$pending"
-    # Hold the clear lock until the worker clears its old marker. A new
-    # marker unexpectedly occupying that name must never start a probe.
-    perl -MFcntl=:flock -e '
-        my $holder = fork();
-        exit 1 unless defined $holder;
-        exit 0 if $holder;
-        my ($lock, $ready, $release) = @ARGV;
-        alarm 4;
-        umask 077;
-        open(my $handle, ">>", $lock) or exit 1;
-        flock($handle, LOCK_EX) or exit 1;
-        open(my $signal, ">", $ready) or exit 1;
-        print {$signal} "ready\n";
-        close($signal);
-        select(undef, undef, undef, 0.02) until -e $release;
-    ' "$CACHE_DIR/.probe-clear-lock" "$sb/clear-ready" "$sb/clear-release"
-    if wait_for_file "$sb/clear-ready" 40; then
-        render_is 'an occupied pending-marker destination starts with absence' '--' normal
-        for ((i=0; i<40; i++)); do
-            [ -e "$pending" ] || break
-            sleep 0.05
-        done
-        if [ ! -e "$pending" ]; then
-            : > "$pending"
-            : > "$sb/clear-release"
-            if wait_for_lock "$CACHE_DIR/weather-default-u-lock"; then
-                assert_eq 'a preexisting pending marker cannot start a request' 0 "$(calls)"
+    # A symlink that takes the pending marker's name mid-request, whatever it
+    # points to, never lets the request publish a reading or a failure.
+    for sample in swap-marker swap-marker-reading; do
+        sandbox weather
+        printf '%s\n' original > "$sb/marker-target"
+        render_is "a request whose marker becomes a symlink starts with absence ($sample)" '--' "$sample"
+        if wait_for_file "$sb/supervisor.pid" && process_exits "$(cat "$sb/supervisor.pid")"; then
+            assert_eq "a symlinked pending marker publishes no failure ($sample)" no \
+                "$([ -e "$CACHE_DIR/weather-default-u-failed" ] && echo yes || echo no)"
+            assert_eq "a symlinked pending marker publishes no reading ($sample)" no \
+                "$([ -e "$CACHE_DIR/weather-default-u" ] && echo yes || echo no)"
+            assert_eq "a symlinked pending marker leaves its target unchanged ($sample)" original \
+                "$(cat "$sb/marker-target")"
+        else
+            fail "the request with a symlinked marker ends ($sample)"
+        fi
+    done
+
+    # Hold the clear lock until the worker clears its old marker, then plant
+    # a new one. A worker that cannot claim its marker stops quietly: no
+    # request and no failure entry, whether the planted name is a file or a
+    # symlink to one.
+    for planted in file symlink; do
+        sandbox weather
+        pending="$CACHE_DIR/.weather-default-u-pending"
+        printf '%s\n' original > "$sb/marker-target"
+        : > "$pending"
+        perl -MFcntl=:flock -e '
+            my $holder = fork();
+            exit 1 unless defined $holder;
+            exit 0 if $holder;
+            my ($lock, $ready, $release) = @ARGV;
+            alarm 4;
+            umask 077;
+            open(my $handle, ">>", $lock) or exit 1;
+            flock($handle, LOCK_EX) or exit 1;
+            open(my $signal, ">", $ready) or exit 1;
+            print {$signal} "ready\n";
+            close($signal);
+            select(undef, undef, undef, 0.02) until -e $release;
+        ' "$CACHE_DIR/.probe-clear-lock" "$sb/clear-ready" "$sb/clear-release"
+        if wait_for_file "$sb/clear-ready" 40; then
+            render_is 'an occupied pending-marker destination starts with absence' '--' normal
+            for ((i=0; i<40; i++)); do
+                [ -e "$pending" ] || break
+                sleep 0.05
+            done
+            if [ ! -e "$pending" ]; then
+                if [ "$planted" = symlink ]; then
+                    ln -s "$sb/marker-target" "$pending"
+                else
+                    : > "$pending"
+                fi
+                : > "$sb/clear-release"
+                if wait_for_lock "$CACHE_DIR/weather-default-u-lock"; then
+                    assert_eq "a preexisting pending marker cannot start a request ($planted)" 0 "$(calls)"
+                    assert_eq "a worker that cannot claim its marker records no failure ($planted)" no \
+                        "$([ -e "$CACHE_DIR/weather-default-u-failed" ] && echo yes || echo no)"
+                    assert_eq "a planted marker's target is unchanged ($planted)" original "$(cat "$sb/marker-target")"
+                else
+                    fail 'the worker with an occupied marker releases its probe lock'
+                fi
             else
-                fail 'the worker with an occupied marker releases its probe lock'
+                : > "$sb/clear-release"
+                fail 'the worker prepares its pending marker under the probe lock'
             fi
         else
             : > "$sb/clear-release"
-            fail 'the worker prepares its pending marker under the probe lock'
+            fail 'the clear-lock fixture is ready'
         fi
-    else
-        : > "$sb/clear-release"
-        fail 'the clear-lock fixture is ready'
-    fi
+    done
 fi
 
 if [[ "$section" = all || "$section" = keys ]]; then

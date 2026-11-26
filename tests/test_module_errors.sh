@@ -74,6 +74,39 @@ if [ "${TEST_MODEL_WAIT:-false}" = true ]; then
         read -r -t 30 release <&8
     }
 fi
+if [ "${TEST_DEAF_READER:-false}" = true ]; then
+    # Finish this module's capture as load_modules would: close the write
+    # end and reap its reader. One reader per FIFO, as in a real render; two
+    # concurrent readers can both miss EOF on macOS.
+    exec 2>/dev/null
+    wait "$CORTADO_STDERR_READER" 2>/dev/null
+    # Start the next reader so it ignores TERM, as a reader forked a moment
+    # ago still carries the main shell's TERM trap. With no writer it waits
+    # in its FIFO open. Then interrupt the render the way Claude Code stops it.
+    trap '' TERM
+    start_module_stderr
+    trap 'exit 143' TERM
+    printf '%s\n' "$CORTADO_STDERR_READER" > "$CLAUDE_CONFIG_DIR/deaf-reader.pid"
+    kill -TERM "$$"
+fi
+if [ "${TEST_HELD_CAPTURE:-false}" = true ]; then
+    # A background process from this module keeps the capture's write end
+    # open in its own session, outside the render's process group, so the
+    # reader's pipeline never sees EOF. Then interrupt the render.
+    perl -MPOSIX=setsid -e '
+        setsid();
+        open(my $pid, ">", $ARGV[0]) or exit 1;
+        print {$pid} "$$\n";
+        close($pid);
+        sleep 30;
+    ' "$CLAUDE_CONFIG_DIR/holder.pid" &
+    for ((held = 0; held < 200; held++)); do
+        [ ! -s "$CLAUDE_CONFIG_DIR/holder.pid" ] || break
+        sleep 0.02
+    done
+    printf '%s\n' 'diagnostic before the held interruption' >&2
+    kill -TERM "$$"
+fi
 if [ "${TEST_MODEL_FLOOD:-false}" = true ]; then
     module_model() {
         local i
@@ -444,6 +477,79 @@ locked_out=$(sed $'s/\x1b\\[[0-9;]*m//g' "$locked_config/stdout")
 assert_eq 'A capture that cannot be opened does not hang the debug render' 0 "$locked_rc"
 assert_eq 'A capture that cannot be opened still loads and runs the module' '🤖 Opus' "$locked_out"
 assert_eq 'A capture that cannot be opened keeps the render stderr quiet' '' "$(cat "$locked_config/stderr")"
+
+# render_group <tree> <config dir> <alarm seconds>: render in a new process
+# group (pid and group id in $group), stopped by the alarm if it hangs.
+# Sets $group_rc, $group_out, $group_err and $group_left, the members still
+# running 10 s after the render ended. Kills those afterwards.
+render_group() {
+    local tree="$1" config="$2" limit="$3" stop
+    printf '%s' '{"model":{"display_name":"Opus"}}' > "$config/payload"
+    CLAUDE_CONFIG_DIR="$config" CACHE_DIR="$config/cache" TMPDIR="$config" \
+        perl -MPOSIX=setpgid -e 'setpgid(0, 0) or exit 120; alarm shift; exec @ARGV' "$limit" \
+        /bin/bash "$tree/cortado.sh" < "$config/payload" > "$config/stdout" 2> "$config/stderr" &
+    group=$!
+    group_rc=0
+    wait "$group" 2>/dev/null || group_rc=$?
+    # Members that are exiting get a bounded wait; one still there at the
+    # ceiling is a leak.
+    stop=$((SECONDS + 10))
+    while kill -0 -- "-$group" 2>/dev/null && [ "$SECONDS" -lt "$stop" ]; do sleep 0.05; done
+    group_left=$(ps -A -o pgid=,pid=,args= 2>/dev/null | awk -v g="$group" '$1 == g { $1 = ""; print }')
+    kill -KILL -- "-$group" 2>/dev/null
+    group_out=$(sed $'s/\x1b\\[[0-9;]*m//g' "$config/stdout")
+    group_err=$(cat "$config/stderr")
+}
+
+# A debug capture whose read end cannot be opened must not hang the render.
+# With the pipe at mode 200 each new reader's open fails at once, and a
+# writer that still opens the pipe would wait forever for a reader.
+UNREADABLE_TREE="$TEST_BASE/unreadable-capture"
+mkdir -m 700 "$UNREADABLE_TREE"
+cp "$PROJECT_ROOT/cortado.sh" "$PROJECT_ROOT/cortado.conf" "$UNREADABLE_TREE/" || exit 1
+cp -R "$PROJECT_ROOT/modules" "$PROJECT_ROOT/lib" "$UNREADABLE_TREE/" || exit 1
+# shellcheck disable=SC2016
+printf '%s\n' 'chmod 200 "$CORTADO_STDERR_CAPTURE/pipe" 2>/dev/null' \
+    > "$UNREADABLE_TREE/modules/aaa-lock-capture.sh" || exit 1
+unreadable_config="$(mktemp -d "$TEST_BASE/unreadable.XXXXXX")"
+printf '%s\n' 'LAYOUT_MODE="none"' 'MODULE_ORDER="model"' 'DEBUG_MODE=true' > "$unreadable_config/cortado.conf"
+chmod 600 "$unreadable_config/cortado.conf" || exit 1
+render_group "$UNREADABLE_TREE" "$unreadable_config" 20
+assert_eq 'A capture whose read end cannot open does not hang the debug render' 0 "$group_rc"
+assert_eq 'A capture whose read end cannot open still prints the line' '🤖 Opus' "$group_out"
+assert_eq 'A capture whose read end cannot open keeps the render stderr quiet' '' "$group_err"
+assert_eq 'A capture whose read end cannot open leaves no process behind' '' "$group_left"
+
+# A render stopped with TERM leaves no reader behind, even one that does not
+# act on TERM and waits in its FIFO open for a writer that never comes.
+deaf_config="$(mktemp -d "$TEST_BASE/deaf.XXXXXX")"
+printf '%s\n' 'LAYOUT_MODE="none"' 'MODULE_ORDER="model"' 'DEBUG_MODE=true' 'TEST_DEAF_READER=true' \
+    > "$deaf_config/cortado.conf"
+chmod 600 "$deaf_config/cortado.conf" || exit 1
+render_group "$SOURCE_TREE" "$deaf_config" 20
+assert_eq 'A render stopped with TERM exits with 143' 143 "$group_rc"
+if [ -s "$deaf_config/deaf-reader.pid" ]; then
+    pass 'The TERM fixture started a reader that ignores TERM'
+else
+    fail 'The TERM fixture started a reader that ignores TERM'
+fi
+assert_eq 'A render stopped with TERM leaves no reader process' '' "$group_left"
+
+# A reader whose pipeline is still reading (another process holds the write
+# end open) is stopped with everything it started when the render is TERMed.
+held_config="$(mktemp -d "$TEST_BASE/held.XXXXXX")"
+printf '%s\n' 'LAYOUT_MODE="none"' 'MODULE_ORDER="model"' 'DEBUG_MODE=true' 'TEST_HELD_CAPTURE=true' \
+    > "$held_config/cortado.conf"
+chmod 600 "$held_config/cortado.conf" || exit 1
+render_group "$SOURCE_TREE" "$held_config" 20
+if [ -s "$held_config/holder.pid" ]; then
+    kill -KILL "$(cat "$held_config/holder.pid")" 2>/dev/null
+    pass 'The held-capture fixture kept the write end open outside the render'
+else
+    fail 'The held-capture fixture kept the write end open outside the render'
+fi
+assert_eq 'A render stopped with TERM mid-capture exits with 143' 143 "$group_rc"
+assert_eq 'A render stopped with TERM mid-capture leaves no reader pipeline' '' "$group_left"
 
 # A failing module's stderr and its exit status both reach the debug log.
 FAILING_TREE="$TEST_BASE/failing-module"
