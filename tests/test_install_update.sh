@@ -1005,6 +1005,33 @@ ln -s 999999999 "$lock_root/.cortado-update.lock"
 _update_break_stale_lock "$lock_root/.cortado-update.lock" 999999999
 assert_empty "breaking a stale lock removes it and leaves nothing else" "$(LC_ALL=C ls -A "$lock_root")"
 
+# A lock its holder releases between the symlink check and readlink is retried,
+# never reported as a lock that names no installer.
+race_root=$(mktemp -d "$CLAUDE_CONFIG_DIR/race.XXXXXX") || exit 1
+mkdir "$race_root/cfg" "$race_root/bin"
+ln -s 999999999 "$race_root/cfg/.cortado-update.lock"
+# shellcheck disable=SC2016 # The stub body expands when the stub runs.
+{ printf '#!/bin/bash\nfor last in "$@"; do :; done\n'
+  printf 'case "$last" in */.cortado-update.lock)\n'
+  printf '    [ -e %q ] || { : > %q; rm -f "$last"; } ;;\nesac\n' "$race_root/raced" "$race_root/raced"
+  printf 'exec %q "$@"\n' "$(command -v readlink)"; } > "$race_root/bin/readlink"
+chmod 755 "$race_root/bin/readlink"
+race_out=$(PATH="$race_root/bin:$PATH" /bin/bash -c '
+    . "$1" || exit 99
+    _update_begin
+    _update_lock "$2" || exit 1
+    readlink "$2/.cortado-update.lock" > "$3"
+    printf "%s\n" "$$" > "$3.self"
+    _update_end
+' _ "$INSTALL" "$race_root/cfg" "$race_root/held" 2>&1)
+race_rc=$?
+assert_eq "a lock released before it is read is retried" 0 "$race_rc"
+assert_not_contains "a lock released before it is read is not called nameless" "does not name an installer" "$race_out"
+assert_rc "a lock released before it is read is then taken" 0 test -s "$race_root/held"
+assert_eq "a lock released before it is read is then taken by this installer" \
+    "$(cat "$race_root/held.self" 2>/dev/null)" "$(cat "$race_root/held" 2>/dev/null)"
+assert_empty "a lock released before it is read is released afterwards" "$(LC_ALL=C ls -A "$race_root/cfg")"
+
 # ln_stub <body>: run <body> before the real ln; $last is the link path.
 ln_stub() {
     { printf '#!/bin/bash\nfor last in "$@"; do :; done\n'

@@ -509,7 +509,8 @@ _update_lock() {
         [ "$made" = false ] || return 0
         # Gone already: its holder finished, so try again.
         [ -L "$lock" ] || continue
-        holder=$(readlink "$lock" 2>/dev/null)
+        # Released since the check above: try again.
+        holder=$(readlink "$lock" 2>/dev/null) || continue
         case "$holder" in
             ''|0*|*[!0-9]*)
                 print_error "The update lock at $lock does not name an installer process. If no update is running, remove it and run the update again."
