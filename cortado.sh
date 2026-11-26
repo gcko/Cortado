@@ -293,6 +293,32 @@ log_module_stderr() {
     log_debug "$diagnostics"
 }
 
+# with_module_stderr <target> <command...> - run the command in this shell with
+# its stderr in <target>. Opening the debug capture's FIFO for writing blocks
+# until start_module_stderr's reader opens the other end, and that open can
+# fail: bash 3.2 does not restart it when a child exits meanwhile (EINTR), and
+# a removed or unwritable pipe refuses it. A failed open would skip the command
+# and leave the reader waiting forever for a writer, so retry it, and otherwise
+# release the reader and run the command without the capture.
+with_module_stderr() {
+    local _cms_target="$1" _cms_opened=false _cms_try _cms_status=0
+    shift
+    if [ -z "$CORTADO_STDERR_READER" ]; then
+        "$@" 2>|"$_cms_target"
+        return
+    fi
+    for _cms_try in 1 2 3; do
+        [ -p "$_cms_target" ] || break
+        { { _cms_opened=true; "$@"; } 2>|"$_cms_target"; } 2>/dev/null || _cms_status=$?
+        [ "$_cms_opened" = false ] || return "$_cms_status"
+        _cms_status=0
+    done
+    # KILL, because a TERM that lands while the new reader still holds
+    # main's TERM trap is deferred and then dropped when the subshell resets it.
+    kill -KILL "$CORTADO_STDERR_READER" 2>/dev/null
+    "$@" 2>/dev/null
+}
+
 cleanup_module_stderr() {
     if [ -n "$CORTADO_STDERR_READER" ]; then
         kill "$CORTADO_STDERR_READER" 2>/dev/null || :
@@ -310,7 +336,7 @@ load_modules() {
     if [ -f "$MODULES_DIR/utils.sh" ]; then
         start_module_stderr
         # shellcheck source=/dev/null
-        . "$MODULES_DIR/utils.sh" 2>|"$stderr_file"
+        with_module_stderr "$stderr_file" . "$MODULES_DIR/utils.sh"
         log_module_stderr utils
     else
         CACHE_DIR="$CLAUDE_CONFIG_DIR/cortado-cache"
@@ -341,7 +367,7 @@ load_modules() {
         if [ "$module_name" = payload.sh ] && [ -f "$MODULES_DIR/utils.sh" ]; then continue; fi
         start_module_stderr
         # shellcheck source=/dev/null
-        . "$module_file" 2>|"$stderr_file"
+        with_module_stderr "$stderr_file" . "$module_file"
         log_module_stderr "${module_name%.sh}"
     done
 }
@@ -1020,7 +1046,7 @@ render_statusline() {
             # This prevents a single module crash from killing the entire statusline.
             local output
             start_module_stderr
-            output=$(run_module "$module" "$current_dir" "$input" 2>|"$module_stderr") || {
+            output=$(with_module_stderr "$module_stderr" run_module "$module" "$current_dir" "$input") || {
                 log_debug "Module $module failed with exit code $?"
                 output=""
             }

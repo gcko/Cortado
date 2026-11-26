@@ -412,5 +412,30 @@ render "$INCOMPLETE_TREE" "$PATH" clean 'MODULE_ORDER=network,cpu,weather' 'DEBU
     'MODULE_NETWORK=true MODULE_CPU=true MODULE_WEATHER=true NETWORK_SHOW_WAN=true'
 assert_eq 'A missing utils file still shows one absence for each probe module' '🌐 -- | 💻 -- | --' "$out"
 assert_not_contains 'An incomplete install has a cached probe fallback' 'command not found' "$log"
+
+# A debug capture whose write end cannot be opened must not hang the render.
+# bash 3.2 fails the open when a child exits meanwhile (EINTR); mode 400 makes
+# it fail the same way every time, while the next reader still blocks in its
+# open. The render must finish, load every module and keep stderr quiet.
+LOCKED_TREE="$TEST_BASE/locked-capture"
+mkdir -m 700 "$LOCKED_TREE"
+cp "$PROJECT_ROOT/cortado.sh" "$PROJECT_ROOT/cortado.conf" "$LOCKED_TREE/" || exit 1
+cp -R "$PROJECT_ROOT/modules" "$PROJECT_ROOT/lib" "$LOCKED_TREE/" || exit 1
+# shellcheck disable=SC2016
+printf '%s\n' 'chmod 400 "$CORTADO_STDERR_CAPTURE/pipe" 2>/dev/null' \
+    > "$LOCKED_TREE/modules/aaa-lock-capture.sh" || exit 1
+locked_config="$(mktemp -d "$TEST_BASE/locked.XXXXXX")"
+printf '%s\n' 'LAYOUT_MODE="none"' 'MODULE_ORDER="model"' 'DEBUG_MODE=true' > "$locked_config/cortado.conf"
+chmod 600 "$locked_config/cortado.conf" || exit 1
+locked_rc=0
+printf '%s' '{"model":{"display_name":"Opus"}}' > "$locked_config/payload"
+CLAUDE_CONFIG_DIR="$locked_config" CACHE_DIR="$locked_config/cache" TMPDIR="$locked_config" \
+    perl -e 'alarm shift; exec @ARGV' 30 /bin/bash "$LOCKED_TREE/cortado.sh" < "$locked_config/payload" \
+    > "$locked_config/stdout" 2> "$locked_config/stderr" || locked_rc=$?
+locked_out=$(sed $'s/\x1b\\[[0-9;]*m//g' "$locked_config/stdout")
+assert_eq 'A capture that cannot be opened does not hang the debug render' 0 "$locked_rc"
+assert_eq 'A capture that cannot be opened still loads and runs the module' '🤖 Opus' "$locked_out"
+assert_eq 'A capture that cannot be opened keeps the render stderr quiet' '' "$(cat "$locked_config/stderr")"
+
 printf '\nResults: %s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
