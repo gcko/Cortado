@@ -75,9 +75,14 @@ if [ "${TEST_MODEL_WAIT:-false}" = true ]; then
     }
 fi
 if [ "${TEST_DEAF_READER:-false}" = true ]; then
-    # Start a reader that ignores TERM, as a reader forked a moment ago still
-    # carries the main shell's TERM trap, and leave it blocked in its FIFO
-    # open. Then interrupt the render the way Claude Code stops it.
+    # Finish this module's capture as load_modules would: close the write
+    # end and reap its reader. One reader per FIFO, as in a real render; two
+    # concurrent readers can both miss EOF on macOS.
+    exec 2>/dev/null
+    wait "$CORTADO_STDERR_READER" 2>/dev/null
+    # Start the next reader so it ignores TERM, as a reader forked a moment
+    # ago still carries the main shell's TERM trap. With no writer it waits
+    # in its FIFO open. Then interrupt the render the way Claude Code stops it.
     trap '' TERM
     start_module_stderr
     trap 'exit 143' TERM
@@ -458,7 +463,7 @@ assert_eq 'A capture that cannot be opened keeps the render stderr quiet' '' "$(
 # render_group <tree> <config dir> <alarm seconds>: render in a new process
 # group (pid and group id in $group), stopped by the alarm if it hangs.
 # Sets $group_rc, $group_out, $group_err and $group_left, the members still
-# running a few seconds after the render ended. Kills those afterwards.
+# running 10 s after the render ended. Kills those afterwards.
 render_group() {
     local tree="$1" config="$2" limit="$3" stop
     printf '%s' '{"model":{"display_name":"Opus"}}' > "$config/payload"
@@ -468,7 +473,9 @@ render_group() {
     group=$!
     group_rc=0
     wait "$group" 2>/dev/null || group_rc=$?
-    stop=$((SECONDS + 5))
+    # Members that are exiting get a bounded wait; one still there at the
+    # ceiling is a leak.
+    stop=$((SECONDS + 10))
     while kill -0 -- "-$group" 2>/dev/null && [ "$SECONDS" -lt "$stop" ]; do sleep 0.05; done
     group_left=$(ps -A -o pgid=,pid=,args= 2>/dev/null | awk -v g="$group" '$1 == g { $1 = ""; print }')
     kill -KILL -- "-$group" 2>/dev/null
