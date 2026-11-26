@@ -22,7 +22,10 @@ if [ "${1:-}" = --worker ]; then
     work="$2" index="$3" suite="$4"
     name="${suite##*/}"
     tmp="$work/tmp/$index"
-    mkdir -p "$tmp" || exit 1
+    # A runner that is gone (its EXIT trap removed the work directory, or it
+    # was killed outright) starts no further suites.
+    kill -0 "${CORTADO_RUNNER_PID:-$PPID}" 2>/dev/null || exit 1
+    mkdir "$tmp" 2>/dev/null || exit 1
     started=$SECONDS
     status=0
     # The suite leads its own process group (job control is on only for this
@@ -35,8 +38,9 @@ if [ "${1:-}" = --worker ]; then
     TMPDIR="$tmp" /bin/bash "$suite" < /dev/null > "$work/$index.out" 2>&1 &
     pid=$!
     set +m
-    # The watchdog stops the suite's group at the time limit or when this
-    # worker exits early: TERM, then up to 2 s for the group to exit, then
+    # The watchdog stops the suite's group at the time limit, when this
+    # worker exits early, or when the runner is gone (its PID or its work
+    # directory): TERM, then up to 2 s for the group to exit, then
     # KILL until no member is left. It writes the timeout marker before it
     # stops anything. It starts with INT, TERM and HUP ignored and keeps
     # them ignored, so a stop request cannot kill it before it acts; the
@@ -45,7 +49,7 @@ if [ "${1:-}" = --worker ]; then
     trap '' INT TERM HUP
     # shellcheck disable=SC2016 # Perl source, expanded by perl.
     perl -MTime::HiRes=time -e '
-        my ($limit, $group, $marker, $worker) = @ARGV;
+        my ($limit, $group, $marker, $worker, $runner, $work) = @ARGV;
         $SIG{$_} = "IGNORE" for qw(INT TERM HUP);
         my $stop = sub {
             $SIG{USR1} = "IGNORE";
@@ -58,11 +62,12 @@ if [ "${1:-}" = --worker ]; then
         $SIG{USR1} = sub { exit 0 };
         my $end = time + $limit;
         while (time < $end) {
-            $stop->(0) if getppid() != $worker;
+            $stop->(0) if getppid() != $worker || !kill(0, $runner) || !-d $work;
             select(undef, undef, undef, 0.25);
         }
         $stop->(1);
-    ' "${SUITE_TIMEOUT:-300}" "$pid" "$work/$index.timeout" "$$" < /dev/null > /dev/null 2>&1 &
+    ' "${SUITE_TIMEOUT:-300}" "$pid" "$work/$index.timeout" "$$" "${CORTADO_RUNNER_PID:-$PPID}" "$work" \
+        < /dev/null > /dev/null 2>&1 &
     watchdog=$!
     trap - INT TERM HUP
     [ -z "$interrupted" ] || exit 1
@@ -146,7 +151,7 @@ started=$SECONDS
 if [ -n "$order" ]; then
     for i in $order; do
         printf '%s\0%s\0' "$i" "${suites[i]}"
-    done | xargs -0 -n 2 -P "$jobs" /bin/bash "$runner" --worker "$work"
+    done | CORTADO_RUNNER_PID=$$ xargs -0 -n 2 -P "$jobs" /bin/bash "$runner" --worker "$work"
 fi
 
 passed=0 failed=0 timed_out=0

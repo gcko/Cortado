@@ -149,6 +149,27 @@ for signal in INT TERM; do
     kill_recorded "$STATE/kid-interrupted.pid"
 done
 
+# TERM sent to the runner's own PID, not its group, still stops the suite it
+# started, and no further suite starts after the runner is gone.
+fake test_runner_killed.sh 'sleep 30 & echo "$!" > "$STATE/kid-runner-killed.pid"' 'exec sleep 30'
+fake test_after_runner.sh ': > "$STATE/after-runner-started"'
+rm -f "$STATE/after-runner-started"
+CORTADO_TEST_JOBS=1 SUITE_TIMEOUT=60 /bin/bash "$RUNNER" "$s/test_runner_killed.sh" "$s/test_after_runner.sh" \
+    > /dev/null 2>&1 &
+runner_pid=$!
+for ((i = 0; i < 100; i++)); do
+    [ ! -s "$STATE/kid-runner-killed.pid" ] || break
+    sleep 0.05
+done
+kill -TERM "$runner_pid" 2>/dev/null
+wait "$runner_pid" 2>/dev/null
+assert_eq 'a runner sent TERM by PID stops the suite it started' '' \
+    "$(alive_after 5 "$STATE/kid-runner-killed.pid")"
+sleep 1
+assert_eq 'no suite starts after the runner is gone' no \
+    "$([ -e "$STATE/after-runner-started" ] && echo yes || echo no)"
+kill_recorded "$STATE/kid-runner-killed.pid"
+
 # --- suites run in parallel, capped by CORTADO_TEST_JOBS ---------------------
 # Each meeting suite passes only while the other one is running.
 CORTADO_TEST_JOBS=2 run "$s/test_meet_a.sh" "$s/test_meet_b.sh"
