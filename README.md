@@ -221,6 +221,8 @@ Cortado also checks for a newer *release* when you run the from-source installer
 
 If the installer updates by downloading an archive, it verifies `Cortado-source.zip` against the Release's `SHA256SUMS` file before replacing any files. Each asset download has up to 5 seconds to connect and 60 seconds to finish. A timed-out download, a missing checksum, or a checksum mismatch stops the update.
 
+When `settings.json` runs the installed copy at `~/.claude/cortado/cortado.sh`, `--update` also refreshes that copy to the release. It builds the new copy beside the old one, carries over your `cortado.conf` and any other files you added, and then swaps the two. If any step fails, or Ctrl-C or a TERM or HUP signal interrupts the update, the old copy goes back in place. If it cannot go back, the installer keeps it unchanged and prints where it is. `--update` will not refresh a `~/.claude/cortado` that is a symbolic link or not a directory: it changes nothing there and exits with status 1. A link to the source clone you are updating from, or to a Homebrew prefix, is skipped without an error. A `~/.claude` that is itself a symbolic link works as usual.
+
 ### Migrating from Barista
 
 Cortado can read your existing Barista settings.

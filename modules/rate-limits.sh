@@ -149,13 +149,24 @@ _check_backoff() {
     fi
 }
 
+# Set REPLY to the current Unix time, or to "" when the clock is unusable.
+_rate_limits_epoch() {
+    REPLY=$(date +%s 2>/dev/null) || REPLY=
+    case "$REPLY" in
+        ''|0*|*[!0-9]*) REPLY= ;;
+    esac
+}
+
 # Older versions briefly wrote the bearer config to a fixed path. Remove a
 # leftover only after the five-minute grace period for an older render.
 _cleanup_legacy_curl_config() {
     local legacy_config="$CACHE_DIR/rate_limits_curlcfg"
     if [ -f "$legacy_config" ]; then
         local mtime now
-        now=$(date +%s)
+        _rate_limits_epoch
+        now="$REPLY"
+        # Without a usable clock the file's age is unknown; keep it.
+        [ -n "$now" ] || return 0
         mtime=$(_file_mtime "$legacy_config")
         if [ "$mtime" -gt 0 ] && [ "$((now - mtime))" -gt 300 ]; then
             rm -f -- "$legacy_config" 2>/dev/null
@@ -502,10 +513,12 @@ module_rate_limits() {
         eval "$REPLY"
     fi
 
-    local now=$(date +%s)
+    local now
+    _rate_limits_epoch
+    now="$REPLY"
 
     # History rows drive both projections and need two measured percentages.
-    if [ -n "$five_hour" ] && [ -n "$seven_day" ]; then
+    if [ -n "$now" ] && [ -n "$five_hour" ] && [ -n "$seven_day" ]; then
         if [ "$from_payload" = "true" ] && ! cache_get "rate_limits_payload_recorded" "$cache_ttl" >/dev/null; then
             cache_set "rate_limits_payload_recorded" "$now"
             fresh_fetch=true
@@ -522,7 +535,7 @@ module_rate_limits() {
     local seven_day_remaining=0
 
     # Parse 5-hour reset time and calculate projection
-    if [ -n "$five_hour" ] && [ -n "$five_hour_reset" ]; then
+    if [ -n "$now" ] && [ -n "$five_hour" ] && [ -n "$five_hour_reset" ]; then
         local five_hour_reset_epoch=$(_parse_reset_epoch "${five_hour_reset%%.*}")
         five_hour_remaining=$((five_hour_reset_epoch - now))
         if [ "$five_hour_remaining" -gt 18000 ]; then
@@ -550,7 +563,7 @@ module_rate_limits() {
     fi
 
     # Parse 7-day reset time and calculate projection
-    if [ -n "$seven_day" ] && [ -n "$seven_day_reset" ]; then
+    if [ -n "$now" ] && [ -n "$seven_day" ] && [ -n "$seven_day_reset" ]; then
         local seven_day_reset_epoch=$(_parse_reset_epoch "${seven_day_reset%%.*}")
         seven_day_remaining=$((seven_day_reset_epoch - now))
         if [ "$seven_day_remaining" -gt 604800 ]; then

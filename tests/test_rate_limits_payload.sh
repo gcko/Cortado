@@ -424,5 +424,59 @@ for theme in default monochrome; do
 done
 
 echo ""
+echo "=== fresh quota without a usable live clock ==="
+for clock in 'return 1' 'echo invalid' 'echo 0'; do
+    sb=$(sandbox "clock-$clock")
+    printf '%s\n' RATE_SHOW_TIME_REMAINING=true \
+        "date() { if [ \"\$*\" = '+%s' ]; then $clock; else /bin/date \"\$@\"; fi; }" >> "$sb/cortado.conf"
+    assert_eq "measured payload percentages survive an unavailable clock ($clock)" '5h:65% 7d:32%' \
+        "$(render "$sb" "$WITH_LIMITS")"
+    assert_eq "an unavailable clock does not add a payload history row ($clock)" '' \
+        "$(cat "$sb/.usage_history" 2>/dev/null)"
+    assert_eq "an unavailable clock does not throttle the next payload history write ($clock)" '' \
+        "$(cat "$sb/cortado-cache/rate_limits_payload_recorded" 2>/dev/null)"
+done
+
+sb=$(sandbox legacy-cleanup-bad-clock)
+printf '%s\n' RATE_SHOW_TIME_REMAINING=true DEBUG_MODE=true \
+    "date() { if [ \"\$*\" = '+%s' ]; then echo 123abc; else /bin/date \"\$@\"; fi; }" >> "$sb/cortado.conf"
+: > "$sb/cortado-cache/rate_limits_curlcfg"
+legacy_payload=$(printf '{"rate_limits":{"five_hour":{"used_percentage":10,"resets_at":%s},"seven_day":{"used_percentage":20}}}' \
+    "$((NOW + 3600))")
+assert_eq "an invalid clock with a legacy cleanup file still shows measured percentages" '5h:10% 7d:20%' \
+    "$(render "$sb" "$legacy_payload")"
+assert_eq "an invalid clock keeps the legacy cleanup file" yes \
+    "$([ -f "$sb/cortado-cache/rate_limits_curlcfg" ] && echo yes)"
+assert_eq "an invalid clock with a legacy cleanup file adds no history row" '' \
+    "$(cat "$sb/.usage_history" 2>/dev/null)"
+assert_eq "an invalid clock with a legacy cleanup file logs no arithmetic or module error" '' \
+    "$(grep -E 'value too great|syntax error|failed with exit code' "$sb/cortado.log" 2>/dev/null)"
+
+sb=$(sandbox no-clock-api)
+printf '%s\n' RATE_SHOW_TIME_REMAINING=true \
+    'date() { if [ "$*" = +%s ]; then return 1; else /bin/date "$@"; fi; }' >> "$sb/cortado.conf"
+printf '%s\n' '{"claudeAiOauth":{"accessToken":"test-token-REDACTED"}}' > "$sb/.credentials.json"
+chmod 600 "$sb/.credentials.json"
+jq -nc --argjson reset "$((NOW + 3600))" \
+    '{five_hour:{utilization:0,resets_at:($reset|todate)},seven_day:{utilization:3}}' > "$sb/response.json"
+mkdir "$sb/bin"
+cat > "$sb/bin/curl" <<'STUB'
+#!/bin/bash
+while [ "$#" -gt 1 ]; do
+    if [ "$1" = -o ]; then
+        cp "$CLAUDE_CONFIG_DIR/response.json" "$2" || exit 1
+        printf '%s\n' 200
+        exit 0
+    fi
+    shift
+done
+exit 1
+STUB
+chmod +x "$sb/bin/curl"
+assert_eq "fresh API percentages survive an unavailable clock" '5h:0% 7d:3%' \
+    "$(PATH="$sb/bin:$PATH" render "$sb" "$NO_LIMITS")"
+assert_eq "an unavailable clock does not add an API history row" '' \
+    "$(cat "$sb/.usage_history" 2>/dev/null)"
+
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

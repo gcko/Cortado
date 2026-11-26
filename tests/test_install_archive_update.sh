@@ -14,6 +14,11 @@ package="$TEST_BASE/package"
 mkdir -p "$fixture" "$package" "$TEST_BASE/bin" || exit 1
 printf '%s\n' 'verified fixture' > "$fixture/expected-runtime"
 cp "$fixture/expected-runtime" "$package/cortado.sh"
+mkdir "$package/modules" "$package/lib" || exit 1
+printf '%s\n' "# module fixture" > "$package/modules/model.sh"
+# Ship every library a release ships; config-tui.sh stays a marked fixture.
+cp "$REPO_ROOT/lib/"*.sh "$package/lib/" || exit 1
+printf '%s\n' "# library fixture" > "$package/lib/config-tui.sh"
 cat > "$package/install.sh" <<'STUB'
 #!/bin/bash
 printf 'Restarted installer with %s\n' "$*"
@@ -87,6 +92,11 @@ case "$url" in
         ;;
     */SHA256SUMS)
         case "$DOWNLOAD_CASE" in
+            interrupted)
+                printf '%s\n' part > "$output"
+                kill -TERM "$PPID"
+                exit 1
+                ;;
             manifest-stall) sleep 0.01; exit 28 ;;
             missing-manifest) printf '%s\n' 'HTTP 404' > "$output"; exit 22 ;;
             manifest-http-error) cp "$RELEASE_ASSETS/SHA256SUMS" "$output"; exit 22 ;;
@@ -127,12 +137,57 @@ case "$url" in
 esac
 STUB
 unzip_bin=$(command -v unzip) || exit 1
+mktemp_bin=$(command -v mktemp) || exit 1
 cat > "$TEST_BASE/bin/unzip" <<'STUB'
 #!/bin/bash
 printf '%s\n' 'unzip' >> "$UNZIP_LOG"
 exec "$UNZIP_BIN" "$@"
 STUB
-chmod +x "$TEST_BASE/bin/curl" "$TEST_BASE/bin/unzip"
+cat > "$TEST_BASE/bin/mktemp" <<'STUB'
+#!/bin/bash
+# Deliver TERM while the staging directory exists but before its name returns.
+created=$("$MKTEMP_BIN" "$@") || exit 1
+printf '%s\n' "$created"
+if [ "$DOWNLOAD_CASE" = staging-term ]; then
+    case "$created" in */cortado-update.*) kill -TERM "$INSTALLER_PID" ;; esac
+fi
+STUB
+cat > "$TEST_BASE/bin/cp" <<'STUB'
+#!/bin/bash
+case "$DOWNLOAD_CASE" in
+    backup-term|backup-fail)
+        for dest in "$@"; do :; done
+        case "$dest" in
+            */source.backup.*)
+                mkdir -p "$dest" || exit 1
+                printf '%s\n' 'partial backup' > "$dest/partial"
+                [ "$DOWNLOAD_CASE" = backup-fail ] || kill -TERM "$INSTALLER_PID"
+                exit 1
+                ;;
+        esac
+        ;;
+esac
+if [ "$DOWNLOAD_CASE" = copy-term ]; then
+    for dest in "$@"; do :; done
+    case "$dest" in */source/) kill -TERM "$INSTALLER_PID"; exit 1 ;; esac
+fi
+if [ "$DOWNLOAD_CASE" = partial-copy ]; then
+    for arg in "$@"; do
+        case "$arg" in
+            */cortado-update.*/Cortado-*/VERSION) version="$arg" ;;
+            */cortado-update.*/Cortado-*/cortado.sh) fail_copy=true ;;
+        esac
+        dest="$arg"
+    done
+    if [ "${fail_copy:-false}" = true ]; then
+        if [ -n "${version:-}" ]; then /bin/cp "$version" "$dest"; fi
+        printf '%s\n' 'simulated copy failure' >&2
+        exit 1
+    fi
+fi
+exec /bin/cp "$@"
+STUB
+chmod +x "$TEST_BASE/bin/curl" "$TEST_BASE/bin/unzip" "$TEST_BASE/bin/cp" "$TEST_BASE/bin/mktemp"
 
 run_archive_update() {
     local download_case="$1" flag="${2:---update}" version="${3:-$fixture_version}" sandbox
@@ -141,6 +196,26 @@ run_archive_update() {
     cp -R "$REPO_ROOT/install.sh" "$REPO_ROOT/VERSION" "$REPO_ROOT/lib" "$sandbox/source/"
     printf '%s\n' 'installed fixture' > "$sandbox/config/cortado/cortado.sh"
     printf '%s\n' '{"statusLine":{"type":"command","command":"fixture"}}' > "$sandbox/config/settings.json"
+    case "$download_case" in
+        managed|managed-stale|managed-obsolete)
+            # shellcheck disable=SC2016 # $path is a jq variable.
+            jq -n --arg path "$sandbox/config/cortado/cortado.sh" \
+                '{statusLine:{type:"command",command:($path|@sh)},padding:11}' > "$sandbox/config/settings.json"
+            printf '%s\n' 'custom generated config' > "$sandbox/config/cortado/cortado.conf"
+            chmod 600 "$sandbox/config/cortado/cortado.conf"
+            cp "$REPO_ROOT/VERSION" "$sandbox/config/cortado/"
+            if [ "$download_case" = managed-obsolete ]; then
+                mkdir -p "$sandbox/source/modules" "$sandbox/config/cortado/modules"
+                printf '%s\n' '# retired module' > "$sandbox/source/modules/zz-retired.sh"
+                cp "$sandbox/source/modules/zz-retired.sh" "$sandbox/config/cortado/modules/"
+            fi
+            if [ "$download_case" = managed-stale ]; then
+                printf '%s\n' "$version" > "$sandbox/source/VERSION"
+                cp -R "$package/modules" "$package/lib" "$sandbox/source/"
+                cp "$fixture/expected-runtime" "$sandbox/source/cortado.sh"
+            fi
+            ;;
+    esac
     chmod 600 "$sandbox/config/settings.json"
     cp -R "$sandbox/source" "$sandbox/source.before"
     cp -R "$sandbox/config" "$sandbox/config.before"
@@ -154,12 +229,12 @@ run_archive_update() {
     fi
     local args=(--no-color --no-emoji)
     [ "$flag" != interactive ] && args=("$flag" "${args[@]}")
-    update_output=$(printf '\n\n' |
+    update_output=$(printf '%s\n%s\n' "${UPDATE_REPLY:-}" "${UPDATE_REPLY:-}" |
         CLAUDE_CONFIG_DIR="$sandbox/config" CACHE_DIR="$sandbox/config/cortado-cache" TMPDIR="$temp_parent" \
         PATH="$TEST_BASE/bin:${UPDATE_PATH:-$PATH}" FIXTURE="$fixture" REQUEST_LOG="$request_log" \
-        UNZIP_BIN="$unzip_bin" UNZIP_LOG="$unzip_log" \
+        UNZIP_BIN="$unzip_bin" UNZIP_LOG="$unzip_log" MKTEMP_BIN="$mktemp_bin" \
         RELEASE_BODY="{\"tag_name\":\"v$version\"}" RELEASE_ASSETS="$fixture/$version" DOWNLOAD_CASE="$download_case" \
-        /bin/bash "$sandbox/source/install.sh" "${args[@]}" 2>&1)
+        /bin/bash -c 'export INSTALLER_PID=$$; exec /bin/bash "$@"' -- "$sandbox/source/install.sh" "${args[@]}" 2>&1)
     update_status=$?
     update_sandbox="$sandbox"
 }
@@ -266,6 +341,130 @@ STUB
 chmod +x "$TEST_BASE/failing-hash/shasum"
 UPDATE_PATH="$TEST_BASE/failing-hash:$PATH" run_archive_update valid
 assert_refused 'a checksum tool that fails after printing a digest' 'Could not compute SHA-256 for Cortado-source.zip'
+
+run_archive_update partial-copy
+assert_eq 'a partial source copy exits unsuccessfully' 1 "$update_status"
+assert_contains 'a partial source copy diagnoses the copy failure' 'Could not copy the release' "$update_output"
+assert_not_contains 'a partial source copy does not announce an update' 'Updated to version' "$update_output"
+assert_rc 'a partial source copy leaves the source version eligible for retry' 0 \
+    cmp "$update_sandbox/source.before/VERSION" "$update_sandbox/source/VERSION"
+assert_empty 'a failed source copy removes staging' "$(ls -A "$update_sandbox/tmp")"
+
+assert_eq 'a partial source copy keeps one completed recovery backup' 1 \
+    "$(find "$update_sandbox" -maxdepth 1 -name 'source.backup.*' | awk 'END {print NR}')"
+assert_rc 'the recovery backup of a partial source copy holds the original source' 0 \
+    diff -r "$update_sandbox/source.before" "$(find "$update_sandbox" -maxdepth 1 -name 'source.backup.*')"
+
+run_archive_update interrupted
+assert_eq 'TERM during a release download preserves the signal status' 143 "$update_status"
+assert_empty 'TERM during a release download removes staging' "$(ls -A "$update_sandbox/tmp")"
+
+assert_unwound() {
+    local desc="$1" status="$2"
+    assert_eq "$desc exits $status" "$status" "$update_status"
+    assert_empty "$desc removes staging" "$(ls -A "$update_sandbox/tmp")"
+    assert_empty "$desc leaves no partial source backup" \
+        "$(find "$update_sandbox" -maxdepth 1 -name 'source.backup.*')"
+    assert_rc "$desc keeps the original source" 0 diff -r "$update_sandbox/source.before" "$update_sandbox/source"
+    assert_not_contains "$desc never announces success" 'Updated to version' "$update_output"
+}
+run_archive_update staging-term
+assert_unwound 'TERM while the staging directory is allocated' 143
+run_archive_update backup-term
+assert_unwound 'TERM during the source backup' 143
+run_archive_update backup-fail
+assert_unwound 'a failed source backup' 1
+assert_contains 'a failed source backup explains the refusal' 'Could not back up the source' "$update_output"
+
+run_archive_update copy-term
+assert_eq 'TERM while copying the release into the source exits 143' 143 "$update_status"
+assert_eq 'TERM while copying the release into the source keeps the completed backup' 1 \
+    "$(find "$update_sandbox" -maxdepth 1 -name 'source.backup.*' | awk 'END {print NR}')"
+assert_rc 'the backup kept after TERM during the release copy holds the original source' 0 \
+    diff -r "$update_sandbox/source.before" "$(find "$update_sandbox" -maxdepth 1 -name 'source.backup.*')"
+assert_empty 'TERM while copying the release into the source removes staging' "$(ls -A "$update_sandbox/tmp")"
+
+# TERM part-way through removing the finished source backup, once.
+mkdir "$TEST_BASE/rm-term" || exit 1
+cat > "$TEST_BASE/rm-term/rm" <<'STUB'
+#!/bin/bash
+for last in "$@"; do :; done
+case "$last" in
+    */source.backup.*)
+        if [ ! -e "$RM_TERM_MARK" ]; then
+            : > "$RM_TERM_MARK"
+            /bin/rm -f "$last/VERSION"
+            kill -TERM "$INSTALLER_PID"
+            exit 143
+        fi
+        ;;
+esac
+exec /bin/rm "$@"
+STUB
+chmod +x "$TEST_BASE/rm-term/rm"
+export RM_TERM_MARK="$TEST_BASE/rm-term.mark"
+UPDATE_PATH="$TEST_BASE/rm-term:$PATH" run_archive_update valid
+assert_eq 'TERM while removing the finished source backup exits 143' 143 "$update_status"
+assert_empty 'TERM while removing the finished source backup leaves no partial backup' \
+    "$(find "$update_sandbox" -maxdepth 1 -name 'source.backup.*')"
+assert_empty 'TERM while removing the finished source backup removes staging' "$(ls -A "$update_sandbox/tmp")"
+
+for scenario in managed managed-stale managed-obsolete; do
+    run_archive_update "$scenario"
+    assert_eq "explicit update succeeds for $scenario" 0 "$update_status"
+    assert_rc "explicit update refreshes the active runtime for $scenario" 0 \
+        cmp "$fixture/expected-runtime" "$update_sandbox/config/cortado/cortado.sh"
+    assert_eq "explicit update refreshes the active version for $scenario" "$fixture_version" \
+        "$(cat "$update_sandbox/config/cortado/VERSION")"
+    assert_rc "explicit update preserves settings for $scenario" 0 \
+        cmp "$update_sandbox/config.before/settings.json" "$update_sandbox/config/settings.json"
+    assert_rc "explicit update preserves the generated config for $scenario" 0 \
+        cmp "$update_sandbox/config.before/cortado/cortado.conf" "$update_sandbox/config/cortado/cortado.conf"
+    assert_eq "explicit update installs exactly the release modules for $scenario" model.sh \
+        "$(ls "$update_sandbox/config/cortado/modules" 2>/dev/null | tr '\n' ' ' | sed 's/ $//')"
+done
+
+# GNU syntax first: GNU stat -f succeeds (it reports the filesystem), so a BSD-first
+# fallback would never run there. BSD stat rejects -c and falls through.
+file_mode() {
+    stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1"
+}
+
+caller_umask=$(umask)
+umask 002
+run_archive_update managed
+umask "$caller_umask"
+assert_eq 'a refresh under umask 002 succeeds' 0 "$update_status"
+for path in "$update_sandbox/config/cortado" "$update_sandbox/config/cortado/modules" \
+    "$update_sandbox/config/cortado/lib" "$update_sandbox/config/cortado/cortado.sh" \
+    "$update_sandbox/config/cortado/VERSION" "$update_sandbox/config/cortado/modules/model.sh" \
+    "$update_sandbox/config/cortado/lib/config-tui.sh"; do
+    mode=$(file_mode "$path")
+    if [ -n "$mode" ] && (( (8#$mode & 8#022) == 0 )); then
+        pass "a refresh under umask 002 publishes ${path##*/config/} without group or other write"
+    else
+        fail "a refresh under umask 002 publishes ${path##*/config/} without group or other write ($mode)"
+    fi
+done
+assert_eq 'a refresh keeps the generated config owner-only' 600 \
+    "$(file_mode "$update_sandbox/config/cortado/cortado.conf")"
+
+run_archive_update managed --check
+assert_eq 'an update accepted from --check exits 0' 0 "$update_status"
+assert_rc 'an update accepted from --check publishes the release runtime' 0 \
+    cmp "$fixture/expected-runtime" "$update_sandbox/config/cortado/cortado.sh"
+assert_eq 'an update accepted from --check publishes the release VERSION' "$fixture_version" \
+    "$(cat "$update_sandbox/config/cortado/VERSION")"
+assert_rc 'an update accepted from --check keeps settings byte-identical' 0 \
+    cmp "$update_sandbox/config.before/settings.json" "$update_sandbox/config/settings.json"
+assert_rc 'an update accepted from --check keeps the generated config' 0 \
+    cmp "$update_sandbox/config.before/cortado/cortado.conf" "$update_sandbox/config/cortado/cortado.conf"
+UPDATE_REPLY=n run_archive_update managed --check
+assert_eq 'an update declined at --check exits 0' 0 "$update_status"
+assert_rc 'an update declined at --check changes no source file' 0 \
+    diff -r "$update_sandbox/source.before" "$update_sandbox/source"
+assert_rc 'an update declined at --check leaves the installed runtime and settings' 0 \
+    diff -r "$update_sandbox/config.before" "$update_sandbox/config"
 
 run_archive_update binary-entry
 assert_archived_release 'a verified uppercase binary entry' "$fixture_version"

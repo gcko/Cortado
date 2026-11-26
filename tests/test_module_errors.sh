@@ -27,6 +27,10 @@ without_tool() {
 }
 
 without_tool "$TEST_BASE/no-grep" grep
+without_tool "$TEST_BASE/no-dd" dd
+if [ ! -x "$TEST_BASE/no-dd/python3" ]; then
+    ln -s "$(command -v python3)" "$TEST_BASE/no-dd/python3" || exit 1
+fi
 without_tool "$TEST_BASE/no-jq" jq
 # Supply a battery reading even on hosts without pmset.
 rm -f "$TEST_BASE/no-grep/pmset"
@@ -241,6 +245,16 @@ assert_eq 'Unusable TMPDIR keeps process stderr quiet' '' "$err"
 assert_contains 'Unusable TMPDIR still logs the prefixed runtime diagnostic' \
     'uptime: TMPDIR diagnostic' "$log"
 
+render "$SOURCE_TREE" "$TEST_BASE/no-dd" clean 'MODULE_ORDER=model' 'DEBUG_MODE=true' 'TEST_MODEL_DIAGNOSTIC=true'
+assert_eq 'Missing dd leaves the model reading intact' '🤖 Opus' "$out"
+assert_eq 'Missing dd keeps process stderr quiet' '' "$err"
+assert_contains 'Missing dd still logs the prefixed module diagnostic' 'model: model runtime diagnostic' "$log"
+
+render "$SOURCE_TREE" "$TEST_BASE/no-dd" clean 'MODULE_ORDER=model' 'DEBUG_MODE=true' 'TEST_OMITTED_BYTES=1'
+assert_eq 'Missing dd still renders after the capture fills' '🤖 Opus' "$out"
+assert_file_contains 'Missing dd still logs the exact number of omitted bytes' \
+    'model: [truncated 1 bytes]' "$sb/cortado.log"
+
 check_capture_cleanup() (
     set -m
     local signal="$1" location="$2" expected="$3" dir config tmp capture_root pid retry rc=0
@@ -259,8 +273,21 @@ check_capture_cleanup() (
         > "$config/cortado.conf"
     chmod 600 "$config/cortado.conf" || return 1
     printf '%s' "$PAYLOAD" > "$dir/payload"
+    local launcher=(/bin/bash)
+    if [ "$signal" = HUP ]; then
+        # Bash cannot trap HUP if it starts with SIG_IGN. Force that inheritance
+        # and reset it in a fresh process before launching the Bash under test.
+        launcher=(/bin/bash -c 'trap "" HUP; exec "$@"' -- python3 -c '
+import os
+import signal
+import sys
+
+signal.signal(signal.SIGHUP, signal.SIG_DFL)
+os.execv(sys.argv[1], sys.argv[1:])
+' /bin/bash)
+    fi
     CLAUDE_CONFIG_DIR="$config" CACHE_DIR="$config/cache" TMPDIR="$tmp" \
-        /bin/bash "$SOURCE_TREE/cortado.sh" < "$dir/payload" > "$dir/stdout" 2> "$dir/stderr" \
+        "${launcher[@]}" "$SOURCE_TREE/cortado.sh" < "$dir/payload" > "$dir/stdout" 2> "$dir/stderr" \
         8<> "$dir/module-hold" &
     pid=$!
     trap 'kill -KILL -- "-$pid" 2>/dev/null || :' EXIT
