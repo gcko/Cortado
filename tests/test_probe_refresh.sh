@@ -190,6 +190,13 @@ case "$TEST_SAMPLE" in
             *wttr.in*) printf '%s\n' '☀️+72°F' ;;
             https://ifconfig.me|https://icanhazip.com) printf '%s\n' '203.0.113.9' ;;
         esac ;;
+    swap-marker|swap-marker-reading)
+        # A clear removes the marker mid-request and a symlink to a regular
+        # file takes its name before the result is published.
+        marker="$CLAUDE_CONFIG_DIR/cortado-cache/.weather-default-u-pending"
+        rm -f "$marker" && ln -s "$CLAUDE_CONFIG_DIR/marker-target" "$marker"
+        [ "$TEST_SAMPLE" = swap-marker-reading ] || exit 7
+        printf '%s\n' '☀️+72°F' ;;
     ipv6) printf '%s\n' '2001:db8::1' ;;
     freezing) printf '%s\n' '❄️-12°C' ;;
 esac
@@ -831,47 +838,77 @@ if [[ "$section" = all || "$section" = publication ]]; then
     else
         fail 'publication reaches the rename fixture'
     fi
-    sandbox weather
-    pending="$CACHE_DIR/.weather-default-u-pending"
-    : > "$pending"
-    # Hold the clear lock until the worker clears its old marker. A new
-    # marker unexpectedly occupying that name must never start a probe.
-    perl -MFcntl=:flock -e '
-        my $holder = fork();
-        exit 1 unless defined $holder;
-        exit 0 if $holder;
-        my ($lock, $ready, $release) = @ARGV;
-        alarm 4;
-        umask 077;
-        open(my $handle, ">>", $lock) or exit 1;
-        flock($handle, LOCK_EX) or exit 1;
-        open(my $signal, ">", $ready) or exit 1;
-        print {$signal} "ready\n";
-        close($signal);
-        select(undef, undef, undef, 0.02) until -e $release;
-    ' "$CACHE_DIR/.probe-clear-lock" "$sb/clear-ready" "$sb/clear-release"
-    if wait_for_file "$sb/clear-ready" 40; then
-        render_is 'an occupied pending-marker destination starts with absence' '--' normal
-        for ((i=0; i<40; i++)); do
-            [ -e "$pending" ] || break
-            sleep 0.05
-        done
-        if [ ! -e "$pending" ]; then
-            : > "$pending"
-            : > "$sb/clear-release"
-            if wait_for_lock "$CACHE_DIR/weather-default-u-lock"; then
-                assert_eq 'a preexisting pending marker cannot start a request' 0 "$(calls)"
+    # A symlink that takes the pending marker's name mid-request, whatever it
+    # points to, never lets the request publish a reading or a failure.
+    for sample in swap-marker swap-marker-reading; do
+        sandbox weather
+        printf '%s\n' original > "$sb/marker-target"
+        render_is "a request whose marker becomes a symlink starts with absence ($sample)" '--' "$sample"
+        if wait_for_file "$sb/supervisor.pid" && process_exits "$(cat "$sb/supervisor.pid")"; then
+            assert_eq "a symlinked pending marker publishes no failure ($sample)" no \
+                "$([ -e "$CACHE_DIR/weather-default-u-failed" ] && echo yes || echo no)"
+            assert_eq "a symlinked pending marker publishes no reading ($sample)" no \
+                "$([ -e "$CACHE_DIR/weather-default-u" ] && echo yes || echo no)"
+            assert_eq "a symlinked pending marker leaves its target unchanged ($sample)" original \
+                "$(cat "$sb/marker-target")"
+        else
+            fail "the request with a symlinked marker ends ($sample)"
+        fi
+    done
+
+    # Hold the clear lock until the worker clears its old marker, then plant
+    # a new one. A worker that cannot claim its marker stops quietly: no
+    # request and no failure entry, whether the planted name is a file or a
+    # symlink to one.
+    for planted in file symlink; do
+        sandbox weather
+        pending="$CACHE_DIR/.weather-default-u-pending"
+        printf '%s\n' original > "$sb/marker-target"
+        : > "$pending"
+        perl -MFcntl=:flock -e '
+            my $holder = fork();
+            exit 1 unless defined $holder;
+            exit 0 if $holder;
+            my ($lock, $ready, $release) = @ARGV;
+            alarm 4;
+            umask 077;
+            open(my $handle, ">>", $lock) or exit 1;
+            flock($handle, LOCK_EX) or exit 1;
+            open(my $signal, ">", $ready) or exit 1;
+            print {$signal} "ready\n";
+            close($signal);
+            select(undef, undef, undef, 0.02) until -e $release;
+        ' "$CACHE_DIR/.probe-clear-lock" "$sb/clear-ready" "$sb/clear-release"
+        if wait_for_file "$sb/clear-ready" 40; then
+            render_is 'an occupied pending-marker destination starts with absence' '--' normal
+            for ((i=0; i<40; i++)); do
+                [ -e "$pending" ] || break
+                sleep 0.05
+            done
+            if [ ! -e "$pending" ]; then
+                if [ "$planted" = symlink ]; then
+                    ln -s "$sb/marker-target" "$pending"
+                else
+                    : > "$pending"
+                fi
+                : > "$sb/clear-release"
+                if wait_for_lock "$CACHE_DIR/weather-default-u-lock"; then
+                    assert_eq "a preexisting pending marker cannot start a request ($planted)" 0 "$(calls)"
+                    assert_eq "a worker that cannot claim its marker records no failure ($planted)" no \
+                        "$([ -e "$CACHE_DIR/weather-default-u-failed" ] && echo yes || echo no)"
+                    assert_eq "a planted marker's target is unchanged ($planted)" original "$(cat "$sb/marker-target")"
+                else
+                    fail 'the worker with an occupied marker releases its probe lock'
+                fi
             else
-                fail 'the worker with an occupied marker releases its probe lock'
+                : > "$sb/clear-release"
+                fail 'the worker prepares its pending marker under the probe lock'
             fi
         else
             : > "$sb/clear-release"
-            fail 'the worker prepares its pending marker under the probe lock'
+            fail 'the clear-lock fixture is ready'
         fi
-    else
-        : > "$sb/clear-release"
-        fail 'the clear-lock fixture is ready'
-    fi
+    done
 fi
 
 if [[ "$section" = all || "$section" = keys ]]; then

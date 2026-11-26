@@ -382,7 +382,9 @@ cached_probe() {
                 my ($target, $value) = @_;
                 my $guard = cache_lock($transaction) or return 1;
                 flock($guard, LOCK_EX) or return 1;
-                return 0 unless -f $pending;
+                # lstat, so a symlink in place of the marker reads as a clear.
+                my @marker = lstat($pending);
+                return 0 unless @marker && S_ISREG($marker[2]);
                 fcntl($guard, F_SETFD, 0) or return 1;
                 exec "/bin/bash", "-c", $write, "publish", $utils, $dir, $target, $value;
                 return 1;
@@ -393,7 +395,9 @@ cached_probe() {
                 {
                     my $guard = cache_lock($transaction) or return 1;
                     flock($guard, LOCK_EX) or return 1;
-                    sysopen(my $marker, $pending, O_WRONLY|O_CREAT|O_EXCL, 0600) or return 1;
+                    # A marker this worker cannot claim is not its own: stop
+                    # quietly, without a request or a failure entry.
+                    sysopen(my $marker, $pending, O_WRONLY|O_CREAT|O_EXCL, 0600) or return 0;
                 }
                 open(my $result, "-|", "/bin/bash", "-c", $run, "probe", $module, @probe)
                     or return 1;
