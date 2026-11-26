@@ -15,5 +15,4 @@
 #
 # One entry per line, fields separated by two or more spaces:
 # <suite>[:<section or check>]  <date first seen>  <evidence: run id / PR>  <one-line symptom>
-ci:render-p95  2026-11-26  #94; PR #102 run 45813466031 measured first on the runner: 447 ms (Homebrew job) vs 85 ms Ubuntu, after cutting the #33 config parse  macOS runner default-render p95 varies 134-447 ms run to run; the 250 ms limit is unchanged
-test_payload_parse.sh  2026-11-26  #94; PR #101 run 45812203776 (Apple jq job, passed on rerun)  "the renderer emits no diagnostics": payload.sh line 251 reports its cortado-json temp file missing
+test_module_errors.sh:capture-cleanup  2026-11-26  #94; PR #104 runs 45822390564 (Ubuntu, HUP tmp) and 45825439936 (macOS Homebrew, TERM config), each passed on rerun  "<signal> removes the capture from <location>" fails intermittently under parallel CI
