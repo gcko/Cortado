@@ -318,8 +318,24 @@ cached_probe() {
                     my $group = $$;
                     my $watchdog = fork();
                     defined($watchdog) or _exit(1);
+                    # Both sides set it, so the watchdog is outside the group
+                    # before the task starts.
+                    setpgid($watchdog, $watchdog) if $watchdog;
                     if (!$watchdog) {
-                        my $terminate = sub { kill "KILL", -$group; _exit(1) };
+                        # A process that is forking can miss a group kill (seen
+                        # on macOS), and its child then runs on in the group.
+                        # The watchdog leaves the group so it can repeat the
+                        # kill until no member is left, keeping its inherited
+                        # locks until then.
+                        setpgid(0, 0);
+                        my $terminate = sub {
+                            alarm 0;
+                            for (1 .. 200) {
+                                kill("KILL", -$group) or last;
+                                select(undef, undef, undef, 0.01);
+                            }
+                            _exit(1);
+                        };
                         $SIG{ALRM} = $terminate;
                         alarm $seconds;
                         # EOF means the supervisor died. The alarm still applies.

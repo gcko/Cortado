@@ -49,32 +49,53 @@ assert_eq "USE_ICONS=false, default style"   "NAME" "$(USE_ICONS=false _format_p
 # broken one does not.
 #
 # We spawn a real long-running process with a distinctive argv so pgrep -f
-# can find it.  Cleanup is guaranteed via a subshell so a failing assert
-# cannot leak the process.
-(
-  bash -c 'exec -a "yarn dev testproject" sleep 60' &
-  _DEV_PID=$!
-  sleep 0.4
+# can find it. pgrep -P $$ looks only at this shell's own children, so other
+# sessions' processes cannot change the outcome: decoys started outside them
+# (a dev server, and another session's pgrep with the corrected pattern in
+# its argv, which the legacy pattern matches) must not count.
+FIXED_PATTERN="npm.*dev|yarn.*dev|pnpm.*dev|bun.*dev"
+LEGACY_PATTERN="npm.*dev\|yarn.*dev\|pnpm.*dev\|bun.*dev"
+_scratch=$(mktemp -d) || exit 1
+_pids=()
+trap 'kill ${_pids[@]+"${_pids[@]}"} 2>/dev/null; rm -rf "$_scratch"' EXIT
 
-  # Corrected pattern (unescaped pipes): must match the fake yarn dev process.
-  pgrep -f "npm.*dev|yarn.*dev|pnpm.*dev|bun.*dev" >/dev/null 2>&1 \
-    && echo "fixed_pattern_match" || echo "fixed_pattern_nomatch"
+# settles <seconds> <command...>: poll until the command succeeds or time runs out.
+settles() {
+  local stop=$((SECONDS + $1))
+  shift
+  until "$@"; do
+    [ "$SECONDS" -lt "$stop" ] || return 1
+    sleep 0.05
+  done
+}
+# The parent of a decoy exits at once, so the decoy is not this shell's child.
+start_decoy() {
+  ( (exec -a "$1" sleep 60) & echo "$!" > "$_scratch/decoy" )
+  _pids+=("$(cat "$_scratch/decoy")")
+}
+start_decoy "npm run dev decoy-$$"
+start_decoy "pgrep -f $FIXED_PATTERN decoy-$$"
+settles 10 pgrep -f "^npm run dev decoy-$$" >/dev/null 2>&1
+settles 10 pgrep -f "^pgrep -f .* decoy-$$" >/dev/null 2>&1
 
-  # Legacy pattern (escaped pipes): must NOT match on this platform,
-  # documenting that the bug was real and the fix was necessary.
-  pgrep -f "npm.*dev\|yarn.*dev\|pnpm.*dev\|bun.*dev" >/dev/null 2>&1 \
-    && echo "legacy_pattern_match" || echo "legacy_pattern_nomatch"
+pgrep -P "$$" -f "$FIXED_PATTERN" >/dev/null 2>&1 && _before=match || _before=nomatch
+assert_eq "no dev server among this shell's children before one starts" "nomatch" "$_before"
 
-  kill "$_DEV_PID" 2>/dev/null
-  wait "$_DEV_PID" 2>/dev/null
-) > /tmp/_devpgrep_check.$$
+bash -c 'exec -a "yarn dev testproject" sleep 60' &
+_pids+=("$!")
+# Wait for the exec, not a fixed time: until then the argv is bash's.
+settles 10 pgrep -P "$$" -f "^yarn dev testproject" >/dev/null 2>&1
 
-_fixed=$(sed -n '1p' /tmp/_devpgrep_check.$$ 2>/dev/null)
-_legacy=$(sed -n '2p' /tmp/_devpgrep_check.$$ 2>/dev/null)
-rm -f /tmp/_devpgrep_check.$$
+# Corrected pattern (unescaped pipes): must match the fake yarn dev process.
+pgrep -P "$$" -f "$FIXED_PATTERN" >/dev/null 2>&1 && _fixed=fixed_pattern_match || _fixed=fixed_pattern_nomatch
+# Legacy pattern (escaped pipes): must NOT match on this platform,
+# documenting that the bug was real and the fix was necessary.
+pgrep -P "$$" -f "$LEGACY_PATTERN" >/dev/null 2>&1 && _legacy=legacy_pattern_match || _legacy=legacy_pattern_nomatch
 
-assert_eq "corrected dev-server pattern matches running process" "fixed_pattern_match"  "${_fixed:-}"
-assert_eq "legacy escaped-pipe pattern does not match"           "legacy_pattern_nomatch" "${_legacy:-}"
+assert_eq "corrected dev-server pattern matches running process" "fixed_pattern_match"  "$_fixed"
+assert_eq "legacy escaped-pipe pattern does not match"           "legacy_pattern_nomatch" "$_legacy"
+kill "${_pids[@]}" 2>/dev/null
+wait 2>/dev/null
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

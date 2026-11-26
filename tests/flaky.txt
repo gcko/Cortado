@@ -8,14 +8,10 @@
 #   - a ci:<name> entry: the CI step that names it reports but does not enforce
 # CORTADO_RUN_FLAKY=1 runs quarantined suites and sections anyway, to work on a fix.
 #
-# Each entry is tracked for a fix in one GitHub issue: #94. Fixing an entry
-# means deleting its line in the pull request that fixes it.
+# Each entry is tracked for a fix in a GitHub issue, named in its evidence.
+# Fixing an entry means deleting its line in the pull request that fixes it.
 # tests/test_run_suites.sh fails when an entry names a suite, section or CI
 # check that no longer exists, so stale entries are noticed.
 #
 # One entry per line, fields separated by two or more spaces:
 # <suite>[:<section or check>]  <date first seen>  <evidence: run id / PR>  <one-line symptom>
-
-test_probe_refresh.sh:deadline  2026-11-26  main runs 45787956722 (5574e63) and 45791523447 (4157e6c), PR #84 run 45790918835 (b27e164)  "a sub-microsecond remaining deadline releases the lock" and "...leaves no probe running" fail in the macOS Homebrew job
-ci:render-p95  2026-11-26  main run 45787956722 (253 ms after #59), PR #84 (289 ms and 376 ms)  default-render p95 exceeds the 250 ms limit when timed right after the parallel suites
-test_project.sh  2026-11-26  parallel gate run on 2026-11-26 (failed once, passed 2/2 alone)  pgrep dev-server detection can see other sessions' processes

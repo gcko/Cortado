@@ -161,6 +161,11 @@ case "$TEST_SAMPLE" in
             print "6\n" if open(my $read_end, "<&", 6);
             print "7\n" if open(my $write_end, ">&", 7);
         ' > "$CLAUDE_CONFIG_DIR/curl-payload-fds"
+        # The refresh worker leads this probe's process group; its watchdog
+        # is the one child of the leader that has left the group.
+        group=$(ps -o pgid= -p "$$" | tr -d ' ')
+        ps -A -o ppid=,pgid= | awk -v group="$group" '$1 == group && $2 != group' \
+            > "$CLAUDE_CONFIG_DIR/watchdog-outside"
         printf 'ready\n' > "$CLAUDE_CONFIG_DIR/curl-fds-ready"
         exec sleep 25 ;;
     fail) exit 7 ;;
@@ -292,13 +297,26 @@ lock_is_free() {
     perl -MFcntl=:flock -e 'open my $lock, ">>", $ARGV[0] or exit 1; exit !flock($lock, LOCK_EX|LOCK_NB)' "$1"
 }
 
-wait_for_lock() {
-    local i
-    for ((i=0; i<50; i++)); do
-        lock_is_free "$1" && return 0
+# Poll until a command succeeds, for at most a wall-clock ceiling in seconds.
+# A count of fixed sleeps is no ceiling under load, and a short window fails
+# on a busy runner. Every timed-out stub sleeps 20 s or longer, so a 12 s
+# ceiling still tells a killed probe from one left running.
+settles_within() {
+    local stop=$((SECONDS + $1))
+    shift
+    while :; do
+        "$@" && return 0
+        [ "$SECONDS" -lt "$stop" ] || return 1
         sleep 0.05
     done
-    return 1
+}
+
+wait_for_lock() {
+    settles_within 12 lock_is_free "$1"
+}
+
+pid_file_gone() {
+    [ ! -s "$1" ] || ! kill -0 "$(cat "$1")" 2>/dev/null
 }
 
 process_exits() {
@@ -388,6 +406,12 @@ if [[ "$section" = all || "$section" = deadline ]]; then
     sandbox weather
     render_is 'a hung curl returns immediately on the cold render' '--' hang
     if wait_for_file "$sb/curl.pid"; then
+        # The watchdog must outlive its own group kill to repeat it.
+        if wait_for_file "$sb/curl-fds-ready" && [ -s "$sb/watchdog-outside" ]; then
+            pass 'the deadline watchdog runs outside the probe process group'
+        else
+            fail 'the deadline watchdog runs outside the probe process group'
+        fi
         weather_failure 'the refresh deadline also records failure'
         if wait_for_lock "$CACHE_DIR/weather-default-u-lock"; then
             pass 'the deadline releases the refresh lock'
@@ -404,22 +428,30 @@ if [[ "$section" = all || "$section" = deadline ]]; then
         fail 'the hung probe started in the background'
     fi
     sandbox weather
+    # The 1 ms clamp ends the probe at once; without it the alarm disarms
+    # and the probe lives the stub's full 20 s. One 12 s ceiling, counted
+    # from the render, tells the two apart on a busy runner. The refresh
+    # ending is its supervisor exiting: a 1 ms alarm can fire before the
+    # worker creates its pending marker, and then no failure is published
+    # (the hung-curl case above proves the deadline records failure).
+    tiny_stop=$((SECONDS + 12))
     render_is 'a sub-microsecond remaining deadline renders absence' '--' tiny-deadline
-    if wait_for_file "$CACHE_DIR/weather-default-u-failed" 130; then
+    if wait_for_file "$sb/supervisor.pid" &&
+        settles_within $((tiny_stop - SECONDS)) pid_file_gone "$sb/supervisor.pid"; then
         pass 'a sub-microsecond remaining deadline still ends the refresh'
     else
         fail 'a sub-microsecond remaining deadline still ends the refresh'
     fi
-    if wait_for_lock "$CACHE_DIR/weather-default-u-lock"; then
+    if settles_within $((tiny_stop - SECONDS)) lock_is_free "$CACHE_DIR/weather-default-u-lock"; then
         pass 'a sub-microsecond remaining deadline releases the lock'
     else
         fail 'a sub-microsecond remaining deadline releases the lock'
     fi
-    if [ -s "$sb/curl.pid" ] && kill -0 "$(cat "$sb/curl.pid")" 2>/dev/null; then
+    if settles_within $((tiny_stop - SECONDS)) pid_file_gone "$sb/curl.pid"; then
+        pass 'a sub-microsecond remaining deadline leaves no probe running'
+    else
         fail 'a sub-microsecond remaining deadline leaves no probe running'
         kill -KILL "$(cat "$sb/curl.pid")" 2>/dev/null || :
-    else
-        pass 'a sub-microsecond remaining deadline leaves no probe running'
     fi
 
     sandbox weather
