@@ -315,8 +315,9 @@ for name in cpu directory; do
 done
 assert_eq "project show omits global WAN settings" "" "$(printf '%s\n' "$out" | sed -n '/^NETWORK_SHOW_WAN=/p')"
 out=$(/bin/bash "$CORTADO" config --show)
-assert_eq "global show still recognizes the trusted CPU alias" "[on ] cpu" \
-    "$(printf '%s\n' "$out" | awk '/\] cpu / {print $1, $2, $3}')"
+# The statusline reads only true as on, so show reports the yes alias as off.
+assert_eq "global show reports the trusted CPU alias as the statusline renders it" "[off] cpu" \
+    "$(printf '%s\n' "$out" | sed -n 's/^ *\(\[[a-z ]*\]\) *cpu .*/\1 cpu/p')"
 rc=0
 project_config --toggle cpu > "$TEST_BASE/result" 2>&1 || rc=$?
 assert_eq "project toggle rejects enabling the CPU alias" "2" "$rc"

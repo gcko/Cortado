@@ -80,12 +80,11 @@ _cfg_module_enabled() {
         is_module_enabled "$name"
         return
     fi
+    # The statusline runs a module only when its flag is exactly true, so a
+    # yes, 1 or on spelling is reported as off, as it renders.
     var=$(_cfg_module_var "$name")
     val="${!var:-false}"
-    case "$val" in
-        true|TRUE|1|yes|YES|on|ON) return 0 ;;
-        *) return 1 ;;
-    esac
+    [ "$val" = true ]
 }
 
 _cfg_set_module() {
@@ -503,14 +502,12 @@ _cfg_stage_conf() {
 
 # Record what the menu starts from, so a save writes only what the user changed.
 _cfg_menu_snapshot() {
-    local mod_def name var
+    local mod_def name
     _CFG_BASE_THEME="${COLOR_THEME:-}" _CFG_BASE_ORDER="${MODULE_ORDER:-}"
     _CFG_BASE_SHOW_WAN="${NETWORK_SHOW_WAN:-}" _CFG_BASE_WAN_REDACT="${NETWORK_WAN_REDACT:-}"
-    _CFG_BASE_SHOWN=() _CFG_BASE_RAW=()
+    _CFG_BASE_SHOWN=()
     for mod_def in "${_CFG_ALL_MODULES[@]}"; do
         name=$(_cfg_mod_name "$mod_def")
-        var=$(_cfg_module_var "$name")
-        _CFG_BASE_RAW+=("${!var-}")
         if _cfg_module_enabled "$name"; then
             _CFG_BASE_SHOWN+=(true)
         else
@@ -531,10 +528,8 @@ _cfg_save_menu() {
             var=$(_cfg_module_var "$name")
             state=false
             ! _cfg_module_enabled "$name" || state=true
-            # Write a flag the user changed. The renderer reads only true as on,
-            # so a flag the menu showed on as yes, 1 or on is saved as true too.
-            if [ "$state" != "${_CFG_BASE_SHOWN[i]}" ] ||
-                { [ "$state" = true ] && [ "${_CFG_BASE_RAW[i]}" != true ]; }; then
+            # Write only a flag the user changed.
+            if [ "$state" != "${_CFG_BASE_SHOWN[i]}" ]; then
                 flags+=("$var=$state")
                 _cfg_sync_module_order "$name"
             fi

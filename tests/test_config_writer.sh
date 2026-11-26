@@ -523,9 +523,20 @@ fi
 if section_is menu; then
     echo "=== menu save and sourced shell options ==="
     if command -v script >/dev/null 2>&1; then
-        printf '%s\n' 'MODULE_CPU=yes' > "$config"
+        # The statusline reads only true as on, so the menu and --show report a
+        # yes flag as off, and a save that changes nothing leaves it alone.
+        printf '%s\n' 'MODULE_ORDER="model,cpu"' 'MODULE_CPU=yes' 'COLOR_THEME=monochrome' > "$config"
+        cp "$config" "$before"
+        yes_line=$(printf '%s' '{"model":{"display_name":"Opus"}}' | /bin/bash "$CORTADO" 2>/dev/null |
+            sed $'s/\x1b\\[[0-9;]*m//g')
+        assert_eq 'the statusline does not render a yes flag' 'MODEL: Opus' "$yes_line"
+        assert_rc 'show runs with a yes flag' 0 config_edit --show
+        assert_eq 'show reports a yes flag as off, as the statusline renders it' '[off] cpu' \
+            "$(sed -n 's/^ *\(\[[a-z ]*\]\) *cpu .*/\1 cpu/p' "$stdout")"
         menu_save >/dev/null 2>&1
-        assert_eq 'a menu save stores a yes flag as true' 'MODULE_CPU="true"' "$(grep '^MODULE_CPU=' "$config")"
+        assert_rc 'a menu save without edits leaves a yes flag as written' 0 cmp -s "$before" "$config"
+        assert_rc 'toggle turns the yes flag on' 0 config_edit --toggle cpu
+        assert_eq 'toggle stores the flag as true' 'MODULE_CPU="true"' "$(grep '^MODULE_CPU=' "$config")"
     else
         echo "SKIP: script is not installed"
     fi
