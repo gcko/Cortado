@@ -37,6 +37,13 @@ assert_gt "prerelease suffix is equal to its numeric release"     "1.8.0-rc1" "1
 assert_gt "build metadata does not change numeric precedence"     "2.1.3+45"  "2.1.3" "1"
 assert_gt "nonnumeric patch is treated as zero"                   "1.8.x"     "1.7.9" "0"
 
+# The module finds lib/semver.sh however it is named when sourced, including
+# by its bare filename from its own directory.
+for source_name in update.sh ./update.sh "$SCRIPT_DIR/modules/update.sh"; do
+    sourced=$(cd "$SCRIPT_DIR/modules" && PATH=/usr/bin:/bin /bin/bash -c '. "$1" && type -t version_lt' _ "$source_name" 2>&1)
+    assert_eq "sourcing update.sh as $source_name from modules/ defines version_lt" function "$sourced"
+done
+
 # --- Render through cortado.sh using a stubbed release API ---
 mkdir -p "$TEST_DIR/bin"
 cat > "$TEST_DIR/bin/curl" <<'STUB'

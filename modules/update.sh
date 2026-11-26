@@ -20,8 +20,17 @@
 #   UPDATE_ICON             - Icon for update notification (default: arrow up)
 # =============================================================================
 
-# shellcheck source=lib/semver.sh
-. "${BASH_SOURCE[0]%/*}/../lib/semver.sh"
+# Bash names a file sourced from the current directory without a slash.
+case "${BASH_SOURCE[0]}" in
+    */*)
+        # shellcheck source=lib/semver.sh
+        . "${BASH_SOURCE[0]%/*}/../lib/semver.sh"
+        ;;
+    *)
+        # shellcheck source=lib/semver.sh
+        . ../lib/semver.sh
+        ;;
+esac
 
 _check_cortado_update() {
     local repo="${UPDATE_REPO:-gcko/Cortado}"
