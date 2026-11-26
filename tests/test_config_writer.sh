@@ -13,7 +13,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 section="${WRITER_TEST_SECTION:-all}"
 if [ "$section" = all ]; then
     run_sections WRITER_TEST_SECTION "${WRITER_TEST_JOBS:-4}" "${BASH_SOURCE[0]}" \
-        refused modules permissions failed umask lines order shell later menu project
+        refused modules permissions failed umask lines usermodule order shell later menu project
 fi
 
 TEST_BASE=$(mktemp -d) || exit 1
@@ -53,6 +53,17 @@ with_umask() (
     umask "$1"
     shift
     "$@"
+)
+# Drive the real menu through a terminal and save at once.
+menu_save() (
+    export TERM=xterm NO_COLOR=1
+    if [ "$(uname)" = Darwin ]; then
+        script -q /dev/null /bin/bash "$CORTADO" config <<< s
+    else
+        # The shell started by script expands this path.
+        # shellcheck disable=SC2016
+        CORTADO_MENU_SCRIPT="$CORTADO" script -q -c 'exec /bin/bash "$CORTADO_MENU_SCRIPT" config' /dev/null <<< s
+    fi
 )
 
 if section_is lines; then
@@ -422,16 +433,6 @@ fi
 
 if section_is menu; then
     echo "=== menu save and sourced shell options ==="
-    menu_save() (
-        export TERM=xterm NO_COLOR=1
-        if [ "$(uname)" = Darwin ]; then
-            script -q /dev/null /bin/bash "$CORTADO" config <<< s
-        else
-            # The shell started by script expands this path.
-            # shellcheck disable=SC2016
-            CORTADO_MENU_SCRIPT="$CORTADO" script -q -c 'exec /bin/bash "$CORTADO_MENU_SCRIPT" config' /dev/null <<< s
-        fi
-    )
     if command -v script >/dev/null 2>&1; then
         printf '%s\n' 'MODULE_CPU=yes' > "$config"
         menu_save >/dev/null 2>&1
@@ -448,6 +449,45 @@ if section_is menu; then
     assert_rc 'a project save works under a noclobber user config' 0 project_edit --set MODULE_MODEL=off
     assert_rc 'the project file gets the change under noclobber' 0 cmp -s "$expected" "$project"
     rm -f "$project" "$project.bak"
+fi
+
+if section_is usermodule; then
+    echo "=== settings a user module declares (#81) ==="
+    user_modules="$CLAUDE_CONFIG_DIR/cortado-modules"
+    mkdir -m 700 "$user_modules"
+    # shellcheck disable=SC2016 # The module source keeps its expansion literal.
+    printf '%s\n' '# @cortado-module mine' '# @default true' '# @args none' \
+        '# @config MINE_LABEL:string' '# @config MINE_COUNT:int' '# @config OTHER_LABEL:string' \
+        '# @config BASH_ENV:string' '# @description Mine' \
+        'module_mine() { printf "MINE=%s\n" "${MINE_LABEL:-default}"; }' > "$user_modules/mine.sh"
+    # A module may claim BASH_* only under its own prefix, and BASH* stays reserved.
+    # shellcheck disable=SC2016 # The module source keeps its expansion literal.
+    printf '%s\n' '# @cortado-module bash' '# @default false' '# @args none' \
+        '# @config BASH_ENV:string' '# @description Reserved' 'module_bash() { :; }' > "$user_modules/bash.sh"
+    chmod 600 "$user_modules/mine.sh" "$user_modules/bash.sh"
+    printf '%s\n' '# my modules' 'MODULE_ORDER="model,mine"' 'COLOR_THEME=monochrome' > "$config"
+    cp "$config" "$before"
+    { cat "$before"; printf '%s\n' 'MINE_LABEL="hello"'; } > "$expected"
+    assert_rc 'set accepts a setting the user module declares' 0 config_edit --set MINE_LABEL=hello
+    assert_rc 'the user module setting is appended and nothing else changes' 0 cmp -s "$expected" "$config"
+    mine_line=$(printf '%s' '{"model":{"display_name":"Opus"}}' | /bin/bash "$CORTADO" 2>/dev/null |
+        sed $'s/\x1b\\[[0-9;]*m//g')
+    assert_eq 'the statusline renders the saved user module setting' 'MODEL: Opus | MINE=hello' "$mine_line"
+    assert_rc 'set refuses a mistyped value for a user module int' 2 config_edit --set MINE_COUNT=lots
+    assert_contains 'the type refusal names the type' 'MINE_COUNT expects a int value' "$(cat "$stderr")"
+    cp "$config" "$before"
+    for key in NOT_A_KEY OTHER_LABEL BASH_ENV; do
+        assert_rc "set still refuses $key" 2 config_edit --set "$key=x"
+        assert_contains "the $key refusal names the key" "unknown or invalid key: $key" "$(cat "$stderr")"
+    done
+    assert_rc 'refused keys leave the config byte-identical' 0 cmp -s "$before" "$config"
+    assert_rc 'toggle saves with a user module setting present' 0 config_edit --toggle cpu
+    assert_eq 'toggle keeps the user module setting' 'MINE_LABEL="hello"' "$(grep '^MINE_LABEL=' "$config")"
+    if command -v script >/dev/null 2>&1; then
+        menu_save >/dev/null 2>&1
+        assert_eq 'a menu save keeps the user module setting' 'MINE_LABEL="hello"' "$(grep '^MINE_LABEL=' "$config")"
+    fi
+    rm -rf "$user_modules" "$config" "$config.bak"
 fi
 
 if section_is umask; then
