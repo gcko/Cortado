@@ -184,8 +184,14 @@ _cfg_load_into_shell() {
 }
 
 _cfg_load_project_value() {
-    # The accepted lines seed a new .cortado.conf from a legacy .barista.conf.
-    _CFG_PROJECT_SETTINGS+=("$3")
+    # The accepted settings seed a new .cortado.conf from a legacy .barista.conf.
+    # Keep each as a clean line, the last value per key, never the raw line:
+    # the legacy file may be a link to a file of the user's.
+    local line settings=()
+    for line in "${_CFG_PROJECT_SETTINGS[@]+"${_CFG_PROJECT_SETTINGS[@]}"}"; do
+        [ "${line%%=*}" = "$1" ] || settings+=("$line")
+    done
+    _CFG_PROJECT_SETTINGS=("${settings[@]+"${settings[@]}"}" "$1=\"$(_cfg_shell_quote "$2")\"")
     project_config_assign "$1" "$2"
 }
 

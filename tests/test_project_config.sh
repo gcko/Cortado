@@ -221,7 +221,7 @@ assert_eq "invalid legacy edit leaves no project file" "absent" "$(if [ ! -e "$P
 rc=0
 project_config --set COLOR_THEME=minimal >/dev/null 2>&1 || rc=$?
 assert_eq "valid legacy edit succeeds" "0" "$rc"
-assert_eq "legacy edit migrates only allowed settings" $'SEPARATOR=legacy\nCOLOR_THEME="minimal"' \
+assert_eq "legacy edit migrates only allowed settings" $'SEPARATOR="legacy"\nCOLOR_THEME="minimal"' \
     "$(sed -n '/^[A-Z_0-9]*=/p' "$PROJECT_FILE")"
 
 echo "=== first and empty project saves ==="

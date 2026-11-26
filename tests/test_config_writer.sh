@@ -245,9 +245,24 @@ if section_is project; then
     # parser accepted, never the bytes of a file the repository links elsewhere.
     printf '%s\n' 'TOKEN=test-token-REDACTED' 'SEPARATOR=legacy' > "$TEST_BASE/home/private.conf"
     ln -s ../home/private.conf "$TEST_BASE/project/.barista.conf"
-    printf '%s\n' '# Cortado project configuration' 'SEPARATOR=legacy' 'COLOR_THEME="minimal"' > "$expected"
+    printf '%s\n' '# Cortado project configuration' 'SEPARATOR="legacy"' 'COLOR_THEME="minimal"' > "$expected"
     assert_rc 'project set migrates a linked legacy config' 0 project_edit --set COLOR_THEME=minimal
     assert_rc 'the new project file holds only accepted legacy settings and the edit' 0 cmp -s "$expected" "$project"
+    rm -f "$project" "$TEST_BASE/project/.barista.conf" "$TEST_BASE/home/private.conf"
+
+    # The seed is rebuilt from parsed values, one line per key with the last
+    # value winning; an accepted line's comment or spelling never carries over.
+    printf '%s\n' 'COLOR_THEME=monochrome # PRIVATE-MARKER' 'SEPARATOR=first' 'SEPARATOR=second' \
+        > "$TEST_BASE/home/private.conf"
+    ln -s ../home/private.conf "$TEST_BASE/project/.barista.conf"
+    printf '%s\n' '# Cortado project configuration' 'COLOR_THEME="monochrome"' 'SEPARATOR="second"' \
+        'MODULE_CPU="false"' > "$expected"
+    assert_rc 'project set migrates a legacy config with a comment and a duplicate' 0 \
+        project_edit --set MODULE_CPU=false
+    assert_rc 'the seed holds each legacy setting once, as a clean line' 0 cmp -s "$expected" "$project"
+    assert_not_contains 'no legacy comment bytes reach the project file' PRIVATE-MARKER "$(cat "$project")"
+    assert_eq 'the last legacy value of a duplicated key wins, once' 'SEPARATOR="second"' \
+        "$(grep '^SEPARATOR=' "$project")"
     rm -f "$project" "$TEST_BASE/project/.barista.conf" "$TEST_BASE/home/private.conf"
 
     # A project file is never sourced, so a group-writable one is saved owner-only.
