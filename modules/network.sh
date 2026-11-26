@@ -20,7 +20,7 @@
 #                         When true, shows e.g. "203.0.xxx.xxx" instead of full IP
 #                         Set to "false" to display full public IP
 #   NETWORK_SHOW_SSID   - Show WiFi SSID (default: false)
-#   NETWORK_COMPACT     - Compact mode (default: false)
+#   NETWORK_COMPACT     - Compact mode: WAN only when LAN and SSID are off (default: false)
 #
 # Privacy note: When NETWORK_SHOW_WAN is enabled, this module contacts
 # external services (ifconfig.me / icanhazip.com) to determine your
@@ -179,8 +179,9 @@ module_network() {
         fi
     fi
 
-    # WAN lookup is opt-in because it contacts a third-party service.
-    if [ "$show_wan" = "true" ] && ! is_compact "$compact"; then
+    # WAN lookup is opt-in because it contacts a third-party service. Compact
+    # mode leaves it out beside LAN/SSID, but shows it when it is the only field.
+    if [ "$show_wan" = "true" ] && { [ "$attempted" = false ] || ! is_compact "$compact"; }; then
         attempted=true
         cached_probe network_wan 300 15 "${BASH_SOURCE[0]}" _wan_ip_probe
         local wan_ip="$REPLY" first rest

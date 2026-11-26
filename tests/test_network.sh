@@ -58,6 +58,12 @@ check_render 'network shows absence when only SSID is requested on Linux' 'NET: 
     normal '' 'NETWORK_SHOW_LAN=false' 'NETWORK_SHOW_SSID=true'
 check_probe 'network keeps the LAN address when SSID is unavailable on Linux' 'NET: 192.0.2.8' \
     normal 'network-local-true-false' 'NETWORK_SHOW_SSID=true'
+check_probe 'compact network still shows WAN when it is the only field enabled' 'NET: 203.0.xxx.xxx' \
+    normal 'network_wan' 'NETWORK_SHOW_LAN=false' 'NETWORK_SHOW_WAN=true' 'NETWORK_COMPACT=true'
+check_probe 'compact network marks a missing WAN when it is the only field enabled' 'NET: --' \
+    failed 'network_wan' 'NETWORK_SHOW_LAN=false' 'NETWORK_SHOW_WAN=true' 'NETWORK_COMPACT=true'
+check_probe 'compact network keeps leaving WAN out beside LAN' 'NET: 192.0.2.8' \
+    normal 'network-local-true-false' 'NETWORK_SHOW_WAN=true' 'NETWORK_COMPACT=true'
 check_render 'network is empty when every field is disabled' '' \
     normal '' 'NETWORK_SHOW_LAN=false' 'NETWORK_SHOW_WAN=false' 'NETWORK_SHOW_SSID=false'
 
