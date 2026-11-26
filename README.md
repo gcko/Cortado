@@ -537,7 +537,7 @@ MODULE_MYCUSTOM="true"
 MODULE_ORDER="model,mycustom"
 ```
 
-Then make the files private. A shell with umask `002`, the default on Ubuntu, creates them group-writable. Cortado skips a group- or world-writable module or module directory and leaves it off the statusline with no notice; with `DEBUG_MODE="true"`, `cortado.log` names what it refused. A refused `cortado.conf`, including one in a group- or world-writable Claude config directory, shows `Config refused` at the start of the statusline instead; see [Config file not loading](#config-file-not-loading).
+Then make the files private. A shell with umask `002`, the default on Ubuntu, creates them group-writable. Cortado skips a group- or world-writable module or module directory (on macOS, also one with an ACL entry that lets others write it) and leaves it off the statusline with no notice; with `DEBUG_MODE="true"`, `cortado.log` names what it refused. A refused `cortado.conf`, including one in a group- or world-writable Claude config directory, shows `Config refused` at the start of the statusline instead; see [Config file not loading](#config-file-not-loading).
 
 ```bash
 dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
@@ -572,7 +572,7 @@ To contribute a module to Cortado, place the same file in the checkout's `module
 
 - `Config partly read` means Cortado skipped lines it could not read as data, or values of the wrong type. Run `cortado config --show` to see each one, or `cortado config --migrate --dry-run` for a list with line numbers.
 - `Config refused` in the statusline means Cortado skipped a whole config file. Run `cortado config --show` in a terminal for the file and reason on stderr. The same details go to `cortado.log` when a trusted config enables debug logging.
-- For a symlink, check the resolved file and its immediate parent. The file must belong to your user and have no group or world write bits. Root ownership is also allowed for the packaged config. The parent must belong to your user or root and may be group- or world-writable only with the sticky bit. Missing or unreadable permission metadata causes a refusal.
+- For a symlink, check the resolved file and its immediate parent. The file must belong to your user and have no group or world write bits. Root ownership is also allowed for the packaged config. The parent must belong to your user or root and may be group- or world-writable only with the sticky bit. On macOS, an ACL entry that lets anyone but you change the file or its parent is refused the same way (`ls -le` lists them; `chmod -N` removes them); entries that only read, deny, or name your own user are fine. Missing or unreadable permission metadata causes a refusal.
 - A Claude config directory you cannot search (after `chmod 600` on the directory, say) also shows `Config refused`, because Cortado cannot tell whether a config is there. Run `chmod 700` on the directory to fix it. A config directory that does not exist is not an error. `cortado.log` lives in that directory, so in this case the reason appears only on stderr.
 - For a user-owned file, `chmod 600 /path/to/resolved/cortado.conf` removes extra write access. A private file can still be replaced through a writable parent. If you own that directory and can remove its shared write access, run `chmod go-w /path/to/resolved/parent`. Leave a deliberately shared directory's permissions to its owner.
 - Per-directory `.cortado.conf` uses the same data parser, with the narrower project allowlist.

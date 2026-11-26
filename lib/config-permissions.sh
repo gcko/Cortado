@@ -6,18 +6,52 @@ _config_permission_error() {
     return 1
 }
 
+# Refuse a macOS ACL entry that lets anyone but the current user change a path.
+# The mode bits do not show ACLs. Only read-class rights and inheritance flags
+# are harmless; any other right, or an entry this cannot read, counts as a
+# write. Deny entries never widen access.
+_check_config_acl() {
+    local listing entry who rights right me=''
+    local pattern='^ [0-9]+: (.+) (allow|deny) ([a-z_,]+)$'
+    listing=$(/bin/ls -led -- "$@") ||
+        { _config_permission_error 'could not read access control lists'; return; }
+    while IFS= read -r entry; do
+        case "$entry" in
+            ' '[0-9]*': '*) ;;
+            *) continue ;;
+        esac
+        [[ "$entry" =~ $pattern ]] ||
+            { _config_permission_error 'an access control entry could not be read'; return; }
+        [ "${BASH_REMATCH[2]}" = allow ] || continue
+        who="${BASH_REMATCH[1]% inherited}" rights="${BASH_REMATCH[3]},"
+        while [ -n "$rights" ]; do
+            right="${rights%%,*}" rights="${rights#*,}"
+            case "$right" in
+                read|readattr|readextattr|readsecurity|execute|search|list) ;;
+                file_inherit|directory_inherit|limit_inherit|only_inherit) ;;
+                *)
+                    [ -n "$me" ] || me=$(/usr/bin/id -un) ||
+                        { _config_permission_error 'could not read the current user name'; return; }
+                    [ "$who" = "user:$me" ] ||
+                        { _config_permission_error 'an access control entry lets others write'; return; }
+                    ;;
+            esac
+        done
+    done <<< "$listing"
+}
+
 # Check the immediate physical parent and, when supplied, the resolved file.
 # Print a reason on failure so stderr and the renderer's debug log can agree.
 _check_config_metadata() {
     local scope="$1"; shift
-    local metadata mode entry pattern file_mode file_owner dir_mode dir_owner
+    local metadata mode entry pattern file_mode file_owner dir_mode dir_owner acl=false
     local LC_ALL=C
 
     # OSTYPE can be overridden by the environment or by loaded config.
     case "${BASH_VERSINFO[5]}" in
         *-darwin*)
             # BSD %Lp omits the sticky bit. %p includes it and the file type.
-            mode='[0-7]{5,6}'
+            mode='[0-7]{5,6}' acl=true
             metadata=$(/usr/bin/stat -f '%p:%u' "$@") ||
                 { _config_permission_error 'could not read permission metadata'; return; }
             ;;
@@ -59,6 +93,7 @@ _check_config_metadata() {
         (( (8#$dir_mode & 022) == 0 || (8#$dir_mode & 01000) != 0 )) ||
             { _config_permission_error 'parent is group- or world-writable without the sticky bit'; return; }
     fi
+    [ "$acl" = false ] || _check_config_acl "$@"
 }
 
 _trusted_config_path() (

@@ -334,6 +334,90 @@ assert_contains 'A missing config directory still renders the model' 'Opus' "$re
 assert_not_contains 'A missing config directory shows no refusal' 'Config refused' "$rendered"
 assert_empty 'A missing config directory prints no refusal' "$(cat "$TEST_BASE/stderr")"
 
+# A macOS ACL can grant write access the mode bits do not show (#79).
+acl_probe="$TEST_BASE/acl-probe"
+if : > "$acl_probe" && chmod +a 'everyone allow read' "$acl_probe" 2>/dev/null; then
+    rm -f "$acl_probe"
+    me=$(id -un)
+    write_module() {
+        mkdir -m 700 "$CLAUDE_CONFIG_DIR/cortado-modules" 2>/dev/null
+        printf '%s\n' '# @cortado-module mine' '# @default true' '# @args none' \
+            'module_mine() { printf "MINE\n"; }' > "$CLAUDE_CONFIG_DIR/cortado-modules/mine.sh"
+        chmod 600 "$CLAUDE_CONFIG_DIR/cortado-modules/mine.sh"
+        printf '%s\n' 'MODULE_ORDER="model,mine"' 'MODULE_MODEL="true"' 'MODEL_ICON="OVERRIDE"' > "$config"
+        chmod 600 "$config"
+    }
+
+    for entry in 'everyone allow write,append' 'everyone allow writeattr' 'staff allow chown' \
+        "everyone allow read,delete"; do
+        new_sandbox
+        write_override "$config"
+        chmod +a "$entry" "$config" || exit 1
+        render
+        assert_refused "A config with the ACL entry '$entry'"
+        assert_file_contains "The ACL refusal for '$entry' names the entry" \
+            'an access control entry lets others write' "$TEST_BASE/stderr"
+    done
+
+    # A listing line this cannot read fails closed, here one forged by a file name.
+    new_sandbox
+    forged="$CLAUDE_CONFIG_DIR/user.conf"$'\n'' 0: forged entry'
+    write_override "$forged"
+    ln -s "$forged" "$config"
+    render
+    assert_refused 'A config whose ACL listing has an unreadable entry'
+    assert_file_contains 'The unreadable entry is named as the reason' \
+        'an access control entry could not be read' "$TEST_BASE/stderr"
+
+    new_sandbox
+    write_override "$config"
+    chmod +a 'everyone allow add_file,delete_child' "$CLAUDE_CONFIG_DIR" || exit 1
+    render
+    assert_refused 'A config whose directory has a write ACL entry'
+    assert_contains 'A directory ACL refusal shows the notice' 'Config refused' "$rendered"
+
+    new_sandbox
+    write_override "$config"
+    chmod +a "user:$me allow write,append" "$config" || exit 1
+    chmod +a 'everyone deny write,delete' "$config" || exit 1
+    chmod +a 'everyone allow read,readattr,readextattr,readsecurity' "$config" || exit 1
+    render
+    assert_eq 'An owner, deny or read-only ACL entry keeps the override' 'OVERRIDE Opus' "$rendered"
+
+    new_sandbox
+    chmod +a "user:$me allow write,file_inherit" "$CLAUDE_CONFIG_DIR" || exit 1
+    chmod +a 'everyone allow list,search,file_inherit' "$CLAUDE_CONFIG_DIR" || exit 1
+    write_override "$config"
+    render
+    assert_contains 'The config inherited its owner entry' "user:$me inherited allow write" \
+        "$(/bin/ls -le "$config")"
+    assert_eq 'Inherited owner and read-only entries keep the override' 'OVERRIDE Opus' "$rendered"
+
+    new_sandbox
+    write_module
+    render
+    assert_eq 'A private user module renders' 'OVERRIDE Opus | MINE' "$rendered"
+    chmod +a 'everyone allow write,append' "$CLAUDE_CONFIG_DIR/cortado-modules/mine.sh" || exit 1
+    render
+    assert_eq 'A user module with a write ACL entry does not run' 'OVERRIDE Opus' "$rendered"
+
+    new_sandbox
+    write_module
+    chmod +a 'everyone allow add_file,delete_child' "$CLAUDE_CONFIG_DIR/cortado-modules" || exit 1
+    render
+    assert_eq 'A user module in a directory with a write ACL entry does not run' 'OVERRIDE Opus' "$rendered"
+
+    new_sandbox
+    write_module
+    chmod +a "user:$me allow write,append" "$CLAUDE_CONFIG_DIR/cortado-modules/mine.sh" || exit 1
+    chmod +a 'everyone allow read' "$CLAUDE_CONFIG_DIR/cortado-modules/mine.sh" || exit 1
+    render
+    assert_eq 'A user module with owner and read-only ACL entries runs' 'OVERRIDE Opus | MINE' "$rendered"
+else
+    rm -f "$acl_probe"
+    printf '  SKIP: chmod +a is not available (macOS ACL cases)\n'
+fi
+
 mkdir -m 700 "$TEST_BASE/safe target" "$TEST_BASE/shared target"
 write_override "$TEST_BASE/safe target/override"
 write_override "$TEST_BASE/shared target/override"
