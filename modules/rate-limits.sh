@@ -57,13 +57,8 @@ _credentials_file_is_private() {
     local file="$1"
     local mode=""
 
-    # Use the platform stat directly on macOS so a Homebrew GNU stat earlier in
-    # PATH cannot reinterpret BSD flags. If mode discovery fails, fail closed.
-    if [[ "${OSTYPE:-}" == darwin* ]]; then
-        mode=$(/usr/bin/stat -f %Lp "$file" 2>/dev/null) || return 1
-    else
-        mode=$(stat -c %a "$file" 2>/dev/null) || return 1
-    fi
+    # If mode discovery fails, fail closed.
+    mode=$(cortado_file_mode "$file") || return 1
 
     case "$mode" in
         ""|*[!0-7]*) return 1 ;;
@@ -209,26 +204,12 @@ _get_claude_usage() (
     trap 'rm -rf -- "$request_dir" 2>/dev/null' EXIT
     local tmp_file="$request_dir/response"
     local tmp_headers="$request_dir/headers"
-    # On Git Bash / MSYS, some mingw curl builds (notably 8.8 shipped with
-    # recent Git for Windows) hit libcurl error 43 on this endpoint due to a
-    # schannel TLS-renegotiation bug. Windows' system curl.exe works fine.
-    local curl_bin="curl"
-    case "$(uname -s 2>/dev/null)" in
-        MINGW*|MSYS*|CYGWIN*)
-            local sys_curl=""
-            if command -v cygpath >/dev/null 2>&1 && [ -n "$SYSTEMROOT" ]; then
-                sys_curl="$(cygpath -u "$SYSTEMROOT" 2>/dev/null)/System32/curl.exe"
-            fi
-            [ -x "${sys_curl:-/c/Windows/System32/curl.exe}" ] && \
-                curl_bin="${sys_curl:-/c/Windows/System32/curl.exe}"
-            ;;
-    esac
 
     local http_code
     # Send authorization only through stdin. Disable the default curl config
     # so its trace options cannot log the header.
     http_code=$(printf 'header = "Authorization: Bearer %s"\n' "$token" | \
-        "$curl_bin" -q -s --max-time 5 --proto =https --max-redirs 3 \
+        curl -q -s --max-time 5 --proto =https --max-redirs 3 \
             -o "$tmp_file" -D "$tmp_headers" -w "%{http_code}" \
             --config - \
             "https://api.anthropic.com/api/oauth/usage" \
@@ -391,16 +372,6 @@ _read_usage_cache() {
     return 1
 }
 
-# Parse an ISO-8601 resets_at timestamp (UTC, fractional seconds stripped by the
-# caller) to epoch seconds. `date -j -f` is BSD/macOS-only; GNU date (Linux,
-# Git Bash on Windows) needs -d. Try both so time-remaining works everywhere.
-_parse_reset_epoch() {
-    local ts="$1"
-    date -u -j -f "%Y-%m-%dT%H:%M:%S" "$ts" +%s 2>/dev/null || \
-        date -u -d "$ts" +%s 2>/dev/null || \
-        echo 0
-}
-
 # Render the placeholder line shown when no 5-hour or 7-day usage is available.
 _render_placeholder() {
     local show_5h="$1"
@@ -536,7 +507,7 @@ module_rate_limits() {
 
     # Parse 5-hour reset time and calculate projection
     if [ -n "$now" ] && [ -n "$five_hour" ] && [ -n "$five_hour_reset" ]; then
-        local five_hour_reset_epoch=$(_parse_reset_epoch "${five_hour_reset%%.*}")
+        local five_hour_reset_epoch=$(cortado_utc_epoch "${five_hour_reset%%.*}")
         five_hour_remaining=$((five_hour_reset_epoch - now))
         if [ "$five_hour_remaining" -gt 18000 ]; then
             five_hour_remaining=18000
@@ -564,7 +535,7 @@ module_rate_limits() {
 
     # Parse 7-day reset time and calculate projection
     if [ -n "$now" ] && [ -n "$seven_day" ] && [ -n "$seven_day_reset" ]; then
-        local seven_day_reset_epoch=$(_parse_reset_epoch "${seven_day_reset%%.*}")
+        local seven_day_reset_epoch=$(cortado_utc_epoch "${seven_day_reset%%.*}")
         seven_day_remaining=$((seven_day_reset_epoch - now))
         if [ "$seven_day_remaining" -gt 604800 ]; then
             seven_day_remaining=604800

@@ -43,7 +43,7 @@ exec /usr/bin/grep "$@"
 STUB
 cat > "$TEST_BASE/bin/sleep" <<'STUB'
 #!/bin/bash
-if [ "${TEST_OS:-}" = Linux ] && [ "$*" = 1 ]; then exit 0; fi
+if [ "${TEST_OS:-}" = linux ] && [ "$*" = 1 ]; then exit 0; fi
 exec /bin/sleep "$@"
 STUB
 chmod +x "$TEST_BASE/bin/"*
@@ -53,18 +53,9 @@ render() (
     sb=$(mktemp -d "$TEST_BASE/render.XXXXXX")
     mkdir "$sb/cortado-cache"
     chmod 700 "$sb/cortado-cache"
-    # Force render-OS detection through uname while keeping config checks on the host OS.
-    printf '%s\n' 'MODULE_ORDER="cpu"' 'MODULE_CPU="true"' 'OSTYPE=fixture' \
+    # Force the module platform; config permission checks stay on the host OS.
+    printf '%s\n' 'MODULE_ORDER="cpu"' 'MODULE_CPU="true"' "CORTADO_OS=$1" \
         "COLOR_THEME=${3:-monochrome}" 'TERMINAL_WIDTH=200' > "$sb/cortado.conf"
-    cat >> "$sb/cortado.conf" <<'CONFIG'
-uname() {
-    if [ "${FUNCNAME[1]:-}" = main ] && [ "${1:-}" = -s ]; then
-        printf '%s\n' "$TEST_OS"
-    else
-        command uname "$@"
-    fi
-}
-CONFIG
     chmod 600 "$sb/cortado.conf" || exit 1
     case "$2" in
         linux-empty) : > "$sb/stat-before" ;;
@@ -103,13 +94,13 @@ check() {
     assert_eq "$desc" "$expected" "$actual"
 }
 
-check "failing iostat shows absence" "CPU: --" Darwin failed
-check "empty iostat output shows absence" "CPU: --" Darwin empty
-check "a partial sample from failing iostat shows absence" "CPU: --" Darwin partial
-check "a CPU line with missing numbers shows absence" "CPU: --" Darwin missing
-check "non-numeric CPU readings show themed absence" "💻 --" Darwin invalid default
-check "a measured zero from iostat stays zero" "CPU: 0% [OK]" Darwin zero
-LC_ALL=C check "the interval sample is used in the C locale" "CPU: 18% [OK]" Darwin normal
+check "failing iostat shows absence" "CPU: --" darwin failed
+check "empty iostat output shows absence" "CPU: --" darwin empty
+check "a partial sample from failing iostat shows absence" "CPU: --" darwin partial
+check "a CPU line with missing numbers shows absence" "CPU: --" darwin missing
+check "non-numeric CPU readings show themed absence" "💻 --" darwin invalid default
+check "a measured zero from iostat stays zero" "CPU: 0% [OK]" darwin zero
+LC_ALL=C check "the interval sample is used in the C locale" "CPU: 18% [OK]" darwin normal
 comma_locale=$(
     locale -a | while IFS= read -r candidate; do
         if [ "$(LC_ALL="$candidate" locale decimal_point 2>/dev/null)" = "," ]; then
@@ -120,23 +111,23 @@ comma_locale=$(
 )
 if [ -n "$comma_locale" ]; then
     LC_ALL="$comma_locale" check "the interval sample is used in a comma-decimal locale" \
-        "CPU: 18% [OK]" Darwin normal
+        "CPU: 18% [OK]" darwin normal
 else
     printf 'SKIP: no installed comma-decimal locale\n'
 fi
-check "empty Linux procfs shows absence" "CPU: --" Linux linux-empty
-check "a measured zero Linux CPU delta stays zero" "CPU: 0% [OK]" Linux linux-zero
-check "a truncated first Linux sample shows absence" "CPU: --" Linux linux-truncated-first
-check "a truncated second Linux sample shows absence" "CPU: --" Linux linux-truncated-second
-check "a counter reset does not produce a reassuring zero" "CPU: --" Linux linux-backwards
-check "no change in Linux counters shows absence" "CPU: --" Linux linux-no-delta
+check "empty Linux procfs shows absence" "CPU: --" linux linux-empty
+check "a measured zero Linux CPU delta stays zero" "CPU: 0% [OK]" linux linux-zero
+check "a truncated first Linux sample shows absence" "CPU: --" linux linux-truncated-first
+check "a truncated second Linux sample shows absence" "CPU: --" linux linux-truncated-second
+check "a counter reset does not produce a reassuring zero" "CPU: --" linux linux-backwards
+check "no change in Linux counters shows absence" "CPU: --" linux linux-no-delta
 
-check 'unaccounted iostat CPU time does not report a healthy zero' 'CPU: --' Darwin zero-interval
-check 'an out of range busy total invalidates the interval' 'CPU: --' Darwin invalid-busy
+check 'unaccounted iostat CPU time does not report a healthy zero' 'CPU: --' darwin zero-interval
+check 'an out of range busy total invalidates the interval' 'CPU: --' darwin invalid-busy
 assert_eq 'an out of range busy total cannot populate the cache' '' "$(cat "$TEST_BASE/invalid-busy.cache" 2>/dev/null)"
-check 'an excessive sum invalidates the interval' 'CPU: --' Darwin excess-total
-check 'an out of range idle column invalidates the interval' 'CPU: --' Darwin invalid-idle
-check 'integer rounding in an iostat interval preserves the reading' 'CPU: 17% [OK]' Darwin rounded
-check 'a corrupt cached CPU percentage does not display' 'CPU: --' Darwin corrupt
+check 'an excessive sum invalidates the interval' 'CPU: --' darwin excess-total
+check 'an out of range idle column invalidates the interval' 'CPU: --' darwin invalid-idle
+check 'integer rounding in an iostat interval preserves the reading' 'CPU: 17% [OK]' darwin rounded
+check 'a corrupt cached CPU percentage does not display' 'CPU: --' darwin corrupt
 printf 'Results: %s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

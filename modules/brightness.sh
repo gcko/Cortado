@@ -25,7 +25,7 @@ _brightness_probe() (
     set -o pipefail
     local LC_ALL=C reading brightness
     export LC_ALL
-    if [ "$1" = Darwin ]; then
+    if [ "$1" = darwin ]; then
         if reading=$(brightness -l); then
             brightness=$(awk '
                 /brightness [0-9.]+$/ {
@@ -88,7 +88,7 @@ module_brightness() {
     local show_bar="${BRIGHTNESS_SHOW_BAR:-false}"
     local bar_width="${BRIGHTNESS_BAR_WIDTH:-5}"
 
-    local os="${render_os-$(uname)}"
+    local os="${CORTADO_OS:-}"
     cached_probe brightness 10 5 "${BASH_SOURCE[0]}" _brightness_probe "$os"
     local brightness_int="$REPLY"
     if ! [[ "$brightness_int" =~ ^[0-9]{1,3}$ ]] || (( 10#$brightness_int > 100 )); then

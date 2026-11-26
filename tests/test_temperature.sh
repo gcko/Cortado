@@ -5,7 +5,7 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=tests/lib/render.sh
 . "$PROJECT_ROOT/tests/lib/render.sh" temperature
 
-RENDER_OS=Darwin
+RENDER_OS=darwin
 cat > "$TEST_BASE/bin/osx-cpu-temp" <<'STUB'
 #!/bin/bash
 case "$TEST_SAMPLE" in

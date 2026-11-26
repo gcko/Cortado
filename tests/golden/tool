@@ -31,11 +31,6 @@ case "${0##*/}:$*" in
     'node:--version') printf '%s\n' 'v20.0.0' ;;
     curl:*wttr.in/*) printf '%s\n' '☀️+42°F' ;;
     curl:*) exit 1 ;;
-    uname:*)
-        if [ "${CORTADO_GOLDEN_DARWIN:-}" = true ]; then
-            printf '%s\n' Darwin
-        else
-            exec "$CORTADO_GOLDEN_UNAME" "$@"
-        fi ;;
+    uname:*) exec "$CORTADO_GOLDEN_UNAME" "$@" ;;
     *) exit 1 ;;
 esac

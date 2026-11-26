@@ -158,8 +158,8 @@ DIR: myproject | CTX: ####---- 50%[OK] | GIT: main      # ASCII mode
 - **jq** - JSON processor (required)
 - **bc** - Basic calculator used by the opt-in temperature module (usually pre-installed)
 - **Perl** - Runs background probes and handles Git and session cache metadata (pre-installed on macOS)
-- The battery module requires macOS. Rate-limit tracking works on macOS and Linux.
-- Windows: not supported
+- The battery and sandbox modules run only on macOS; on Linux they are left out of the line. Rate-limit tracking works on macOS and Linux, including WSL.
+- Windows: not supported. On a platform other than macOS or Linux (Git Bash, Cygwin, BSD) the statusline reads `cortado: unsupported platform`. To try the Linux modules there anyway, set `CORTADO_OS=linux` in the environment or in `cortado.conf`.
 
 ```bash
 # Install dependencies on macOS

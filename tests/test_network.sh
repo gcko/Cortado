@@ -5,7 +5,7 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=tests/lib/render.sh
 . "$PROJECT_ROOT/tests/lib/render.sh" network
 
-RENDER_OS=Linux
+RENDER_OS=linux
 cat > "$TEST_BASE/bin/hostname" <<'STUB'
 #!/bin/bash
 [ "$*" = "-I" ] || exit 2
@@ -80,7 +80,7 @@ done
 (umask 077; printf '%s\n' '2001:db8::1' > "$sb/cortado-cache/network_wan")
 check_render 'a valid IPv6 cache can display in full' 'NET: 2001:db8::1' failed '' \
     "CLAUDE_CONFIG_DIR='$sb'" 'NETWORK_SHOW_LAN=false NETWORK_SHOW_WAN=true NETWORK_WAN_REDACT=false'
-RENDER_OS=Darwin
+RENDER_OS=darwin
 (umask 077; printf '%s\n' '192.0.2.9|Private Wi-Fi' > "$sb/cortado-cache/network-local-v2-true-true")
 check_render 'a valid LAN and multi-word SSID both display' 'NET: 192.0.2.9 (Private Wi-Fi)' failed '' \
     "CLAUDE_CONFIG_DIR='$sb'" 'NETWORK_SHOW_SSID=true'

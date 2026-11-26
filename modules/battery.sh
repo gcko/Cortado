@@ -4,7 +4,7 @@
 # @args none
 # @ttl 0
 # @timeout-ms 0
-# @platforms darwin,linux
+# @platforms darwin
 # @menu core 12
 # @description Battery (macOS)
 # @config BATTERY_ICON:string

@@ -36,6 +36,8 @@ CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 . "$SCRIPT_DIR/lib/config-permissions.sh"
 # shellcheck source=lib/module-registry.sh
 . "$SCRIPT_DIR/lib/module-registry.sh"
+# shellcheck source=lib/platform.sh
+. "$SCRIPT_DIR/lib/platform.sh"
 
 # =============================================================================
 # CONFIGURATION LOADING
@@ -206,6 +208,10 @@ else
     load_config "$USER_CONFIG"
 fi
 
+# Decide the platform once, after the trusted configs (which may force it) and
+# before modules load or the untrusted project config is read.
+cortado_resolve_os
+
 # =============================================================================
 # LOAD MODULES
 # =============================================================================
@@ -354,21 +360,15 @@ get_module_function() {
 # already runs this in a subshell so user source and module side effects stay local.
 run_module() {
     local module_name="$1" current_dir="$2" input_json="$3"
-    local func_name path dispatch args platforms platform
+    local func_name path dispatch args platforms
     registered_module_key "$module_name" || return 0
     path="_CORTADO_SOURCE_${REPLY#_CORTADO_MODULE_}"
     dispatch="${!REPLY}"
     dispatch="${dispatch#*|}"
     args="${dispatch%%|*}"
     platforms="${dispatch#*|}"
-    case "$render_os" in
-        Darwin) platform=darwin ;;
-        Linux) platform=linux ;;
-        *) platform= ;;
-    esac
-    if [ -n "$platform" ]; then
-        case ",$platforms," in *",$platform,"*) ;; *) return 0 ;; esac
-    fi
+    # An empty CORTADO_OS (unsupported platform) matches no platform list.
+    case ",$platforms," in *",${CORTADO_OS:-},"*) ;; *) return 0 ;; esac
     if [ -n "${!path-}" ]; then
         # An untrusted project may suppress or reorder already selected user
         # modules. Only the trusted order can authorize sourcing a new one.
@@ -921,15 +921,12 @@ main() {
     fi
     report_module_refusals
 
-    # Resolve the OS in main so trusted configs can supply a uname hook.
-    # Issue #31 will replace render_os with CORTADO_OS.
-    local render_os
-    if [[ "${OSTYPE:-}" == darwin* && "${BASH_VERSINFO[5]}" == *-darwin* ]]; then
-        render_os=Darwin
-    elif [[ "${OSTYPE:-}" == linux* && "${BASH_VERSINFO[5]}" == *-linux* ]]; then
-        render_os=Linux
-    else
-        render_os=$(uname -s 2>/dev/null)
+    if [ -n "${CORTADO_OS_REFUSED:-}" ]; then
+        log_debug "CORTADO_OS=$CORTADO_OS_REFUSED is not a supported platform; using ${CORTADO_OS:-none}"
+    fi
+    if [ -z "${CORTADO_OS:-}" ]; then
+        printf '%s\n' 'cortado: unsupported platform'
+        return 0
     fi
 
     # Keep the original JSON argument for module hooks. A raw NUL is invalid

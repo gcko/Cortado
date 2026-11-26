@@ -26,7 +26,7 @@
 _cpu_probe() {
     local LC_ALL=C
     export LC_ALL
-    if [ "$1" = Darwin ]; then
+    if [ "$1" = darwin ]; then
         local samples
         # iostat samples aggregate CPU counters without enumerating processes.
         # Its first reading is since boot, so take the following interval.
@@ -70,7 +70,7 @@ module_cpu() {
     local crit_thresh="${CPU_CRITICAL_THRESHOLD:-80}"
     local show_status="${CPU_SHOW_STATUS:-true}"
 
-    local os="${render_os-$(uname)}"
+    local os="${CORTADO_OS:-}"
     cached_probe cpu 5 5 "${BASH_SOURCE[0]}" _cpu_probe "$os"
     local cpu_int="$REPLY"
     if ! [[ "$cpu_int" =~ ^[0-9]{1,3}$ ]] || (( 10#$cpu_int > 100 )); then

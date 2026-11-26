@@ -25,7 +25,7 @@ module_uptime() {
 
     local uptime_str=""
 
-    if [ "${render_os-$(uname)}" = Darwin ]; then
+    if [ "${CORTADO_OS:-}" = darwin ]; then
         # macOS: parse boot time
         local boot_time=$(sysctl -n kern.boottime 2>/dev/null | awk '{print $4}' | tr -d ',')
         if [ -n "$boot_time" ]; then

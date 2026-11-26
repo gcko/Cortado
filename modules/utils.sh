@@ -11,29 +11,16 @@
 . "${BASH_SOURCE[0]%utils.sh}payload.sh"
 
 # =============================================================================
-# PORTABLE FILE STAT HELPERS
+# PLATFORM
 # =============================================================================
-# Call `/usr/bin/stat` with an absolute path on Darwin so GNU coreutils
-# (brew `gnubin` in PATH) cannot shadow BSD stat — GNU's `-f` means
-# `--file-system`, which returns garbage and silently breaks cache age /
-# rate-limit backoff / history-size math.
-# Fall back to GNU `stat -c` on Linux and to `0` on any failure.
-
-# _file_stat <bsd_fmt> <gnu_fmt> <file> — shared portable-stat core:
-# existence check, Darwin/Linux branch, and `0` fallback on any failure.
-_file_stat() {
-    local fmt_bsd="$1" fmt_gnu="$2" f="$3"
-    [ -e "$f" ] || { echo 0; return; }
-    if [[ "${BASH_VERSINFO[5]}" == *-darwin* ]]; then
-        /usr/bin/stat -f "$fmt_bsd" "$f" 2>/dev/null || echo 0
-    else
-        stat -c "$fmt_gnu" "$f" 2>/dev/null || echo 0
-    fi
-}
-
-_file_mtime() {
-    _file_stat %m %Y "$1"
-}
+# CORTADO_OS and the BSD/GNU stat and epoch helpers live in lib/platform.sh.
+# cortado.sh loads it and resolves CORTADO_OS once, before modules load. A
+# module sourced on its own (tests) gets the helpers here and sets CORTADO_OS
+# itself. Do not reload over a trusted config's replacement of a helper.
+if ! declare -F cortado_resolve_os >/dev/null; then
+    # shellcheck source=lib/platform.sh
+    . "${BASH_SOURCE[0]%utils.sh}../lib/platform.sh"
+fi
 
 # =============================================================================
 # CACHE SYSTEM

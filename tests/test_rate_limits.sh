@@ -1,6 +1,6 @@
 #!/bin/bash
-# ABOUTME: Tests for modules/rate-limits.sh -- _parse_reset_epoch (the #38 resets_at
-# ABOUTME: ISO-8601 -> epoch parser that works on BSD/macOS and GNU/Linux date) and
+# ABOUTME: Tests for modules/rate-limits.sh -- cortado_utc_epoch (the #38 resets_at
+# ABOUTME: ISO-8601 -> epoch parser in lib/platform.sh, BSD/macOS and GNU/Linux date) and
 # ABOUTME: credential-file permission enforcement, no-Keychain fallback, and
 # ABOUTME: _check_backoff (the post-429 cooldown-state file reader).
 # ABOUTME: Run with: bash tests/test_rate_limits.sh
@@ -9,25 +9,27 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=tests/lib/assert.sh
 . "$SCRIPT_DIR/tests/lib/assert.sh" indented
 
-# Load the module under test (_parse_reset_epoch only uses `date`, no other deps).
+# Load the module under test and the platform helpers it parses resets_at with.
 . "$SCRIPT_DIR/modules/rate-limits.sh"
+# shellcheck source=lib/platform.sh
+. "$SCRIPT_DIR/lib/platform.sh"
 
 # -----------------------------------------------------------------------------
-# _parse_reset_epoch <iso-8601-utc-timestamp>
+# cortado_utc_epoch <iso-8601-utc-timestamp>
 # Converts a UTC ISO-8601 timestamp (fractional seconds already stripped by the
 # caller via ${reset%%.*}) to epoch seconds. It must work on BOTH BSD `date -j -f`
-# (macOS) and GNU `date -d` (Linux / Git Bash on Windows) -- #38 added the GNU
+# (macOS) and GNU `date -d` (Linux) -- #38 added the GNU
 # fallback so time-remaining stopped vanishing off macOS -- and emit 0 when the
 # timestamp is unparseable. The expected epochs are UTC and identical on both date
 # variants. (The caller guards empty input with `[ -n ... ]`; the empty-string case,
 # which GNU `date -d ""` resolves to midnight-today rather than 0, is unreachable
 # and intentionally not asserted here.)
 # -----------------------------------------------------------------------------
-echo "=== _parse_reset_epoch Tests ==="
-assert_eq "parses a UTC midnight timestamp to epoch"   "1767225600" "$(_parse_reset_epoch '2026-01-01T00:00:00')"
-assert_eq "parses a different year (not hardcoded)"    "1735689600" "$(_parse_reset_epoch '2025-01-01T00:00:00')"
-assert_eq "parses the time-of-day, not just the date"  "1767270600" "$(_parse_reset_epoch '2026-01-01T12:30:00')"
-assert_eq "unparseable input falls back to 0"          "0"          "$(_parse_reset_epoch 'not-a-date')"
+echo "=== cortado_utc_epoch Tests ==="
+assert_eq "parses a UTC midnight timestamp to epoch"   "1767225600" "$(cortado_utc_epoch '2026-01-01T00:00:00')"
+assert_eq "parses a different year (not hardcoded)"    "1735689600" "$(cortado_utc_epoch '2025-01-01T00:00:00')"
+assert_eq "parses the time-of-day, not just the date"  "1767270600" "$(cortado_utc_epoch '2026-01-01T12:30:00')"
+assert_eq "unparseable input falls back to 0"          "0"          "$(cortado_utc_epoch 'not-a-date')"
 
 # Load utils.sh too -- _check_backoff needs _file_mtime + CACHE_DIR from it.
 # shellcheck source=/dev/null

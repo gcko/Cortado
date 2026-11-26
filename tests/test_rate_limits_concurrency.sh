@@ -96,12 +96,7 @@ case "$REQUEST_ID" in
     *) printf '200' ;;
 esac
 STUB
-# Keep platform selection deterministic, including on Git Bash.
-cat > "$TEST_BASE/bin/uname" <<'STUB'
-#!/bin/bash
-echo CortadoConcurrencyTest
-STUB
-chmod +x "$TEST_BASE/bin/curl" "$TEST_BASE/bin/uname"
+chmod +x "$TEST_BASE/bin/curl"
 
 echo "=== a fresh API response can omit a reading ==="
 sb=$(sandbox)

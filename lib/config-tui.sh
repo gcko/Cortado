@@ -435,11 +435,7 @@ _cfg_resolve_target() {
 
 _cfg_target_mode() {
     local target="$1" mode
-    if [ "$(uname -s)" = Darwin ]; then
-        mode=$(/usr/bin/stat -f '%Lp' "$target") || return 1
-    else
-        mode=$(stat -c '%a' "$target") || return 1
-    fi
+    mode=$(cortado_file_mode "$target") || return 1
     case "$mode" in ''|*[!0-7]*) return 1 ;; esac
     printf '%s' "$mode"
 }

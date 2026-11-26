@@ -4,7 +4,7 @@
 # @args none
 # @ttl 0
 # @timeout-ms 0
-# @platforms darwin,linux
+# @platforms darwin
 # @menu core 1
 # @description Sandbox lock indicator
 # @config SANDBOX_ICON:string
