@@ -339,9 +339,7 @@ fixture_git() {
 git_release_case() {
     local root="$CLAUDE_CONFIG_DIR/git-cases/$1"
     src="$root/source"
-    cfg="$root/config"
-    active="$cfg/cortado"
-    mkdir -p "$src/modules" "$src/lib" "$active/modules" "$active/lib" "$root/bin" || exit 1
+    mkdir -p "$src/modules" "$src/lib" || exit 1
     # A real source tree: the installer loads its libraries from lib/.
     cp "$REPO_ROOT/install.sh" "$src/"
     cp "$REPO_ROOT/lib/"*.sh "$src/lib/"
@@ -371,14 +369,25 @@ RENDER
         fixture_git clone -q --bare "$src" "$root/origin.git" &&
         fixture_git -C "$src" remote add origin "$root/origin.git" || exit 1
 
-    printf '#!/bin/bash\necho installed\n' > "$active/cortado.sh"
-    chmod 755 "$active/cortado.sh"
-    printf '%s\n' '# old module' > "$active/modules/model.sh"
+    managed_runtime "$root"
     if [ "${2:-}" = retired ]; then
         fixture_git -C "$src" checkout -q --detach HEAD~1 || exit 1
         cp "$src/cortado.sh" "$active/cortado.sh"
         cp "$src/modules/zz-retired.sh" "$active/modules/"
     fi
+}
+
+# managed_runtime <root>: a managed 1.0.0 runtime at <root>/config/cortado with a
+# generated config, named by settings.json. Sets cfg, active, launcher, case_bin.
+managed_runtime() {
+    local root="$1"
+    cfg="$root/config"
+    active="$cfg/cortado"
+    case_bin="$root/bin"
+    mkdir -p "$active/modules" "$active/lib" "$case_bin" || exit 1
+    printf '#!/bin/bash\necho installed\n' > "$active/cortado.sh"
+    chmod 755 "$active/cortado.sh"
+    printf '%s\n' '# old module' > "$active/modules/model.sh"
     printf '%s\n' '# old library' > "$active/lib/config-tui.sh"
     printf '1.0.0\n' > "$active/VERSION"
     printf '%s\n' 'custom generated config' > "$active/cortado.conf"
@@ -390,15 +399,16 @@ RENDER
     launcher=$(jq -r '.statusLine.command' "$cfg/settings.json")
     cp "$cfg/settings.json" "$root/settings.before"
     cp "$active/cortado.conf" "$root/conf.before"
-    case_bin="$root/bin"
 }
 
 stub_bin="$CLAUDE_CONFIG_DIR/bin"
+# Stubs signal the installer through INSTALLER_PID.
+update_launcher=(/bin/bash -c 'export INSTALLER_PID=$$; exec /bin/bash "$@"' --)
 run_git_update() {
     git_update_output=$(PATH="$case_bin:$stub_bin:$PATH" CLAUDE_CONFIG_DIR="$cfg" \
         CACHE_DIR="$cfg/cortado-cache" RELEASE_HTTP=200 RELEASE_BODY='{"tag_name":"v2.0.0"}' \
         RELEASE_CURL_STATUS=0 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
-        /bin/bash "$src/install.sh" --update --no-color --no-emoji 2>&1)
+        "${update_launcher[@]}" "$src/install.sh" --update --no-color --no-emoji 2>&1)
     git_update_status=$?
     active_output=$(printf '{}\n' | /bin/sh -c "$launcher" 2>/dev/null)
     active_status=$?
@@ -475,6 +485,340 @@ assert_eq "--update leaves a runtime that a custom command does not use" "" "$(l
 assert_eq "--update leaves that runtime's VERSION" 1.0.0 "$(cat "$active/VERSION")"
 assert_rc "--update keeps a custom command byte-identical" 0 \
     cmp "${cfg%/config}/settings.before" "$cfg/settings.json"
+
+# --- the runtime swap: what it refuses, and that the old runtime is never lost ---
+git_release_case swap-source
+swap_src="$src"
+export REAL_MKTEMP
+REAL_MKTEMP=$(command -v mktemp)
+
+# swap_case <name>: a fresh managed 1.0.0 runtime updated from the shared v2.0.0 source.
+swap_case() {
+    src="$swap_src"
+    managed_runtime "$CLAUDE_CONFIG_DIR/git-cases/swap-$1"
+}
+
+# mv_stub <body>: run <body> before the real mv; $last is the destination.
+mv_stub() {
+    { printf '#!/bin/bash\nfor last in "$@"; do :; done\n'
+      printf '%s\n' "$1"
+      printf 'exec /bin/mv "$@"\n'; } > "$case_bin/mv"
+    chmod 755 "$case_bin/mv"
+}
+
+file_mode() {
+    stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1"
+}
+
+swap_leaks() {
+    find "$1" -maxdepth 1 -name '.cortado-*'
+}
+
+# assert_old_runtime <desc>: the 1.0.0 runtime still answers, with its config.
+assert_old_runtime() {
+    assert_eq "$1 keeps the old command output" installed "$active_output"
+    assert_eq "$1 keeps the old VERSION" 1.0.0 "$(cat "$active/VERSION" 2>/dev/null)"
+    assert_rc "$1 keeps cortado.conf byte-identical" 0 cmp "${cfg%/config}/conf.before" "$active/cortado.conf"
+    assert_empty "$1 leaves no swap directories" "$(swap_leaks "$cfg")"
+}
+
+# assert_new_runtime <desc>: the release runtime answers, with the carried config.
+assert_new_runtime() {
+    assert_eq "$1 exits 0" 0 "$git_update_status"
+    assert_eq "$1 renders the release" released "$active_output"
+    assert_eq "$1 installs the release VERSION" 2.0.0 "$(cat "$active/VERSION" 2>/dev/null)"
+    assert_empty "$1 leaves no swap directories" "$(swap_leaks "$cfg")"
+}
+
+swap_case dev-symlink
+dev="${cfg%/config}/dev"
+mv "$active" "$dev"
+printf '%s\n' '# uncommitted work' > "$dev/modules/wip.sh"
+printf '%s\n' '# uncommitted library' > "$dev/lib/wip-lib.sh"
+printf '%s\n' 'echo local edit' >> "$dev/cortado.sh"
+cp -pR "$dev" "$dev.before"
+ln -s "$dev" "$active"
+run_git_update
+assert_eq "a symlinked runtime is refused" 1 "$git_update_status"
+assert_contains "a symlinked runtime is named as a symbolic link" "$active is a symbolic link" "$git_update_output"
+assert_rc "a symlinked runtime leaves the linked checkout untouched" 0 diff -r "$dev.before" "$dev"
+assert_rc "a symlinked runtime keeps the link" 0 test -L "$active"
+assert_empty "a symlinked runtime stages nothing in the config directory" "$(swap_leaks "$cfg")"
+assert_empty "a symlinked runtime stages nothing beside the link target" "$(swap_leaks "${cfg%/config}")"
+
+swap_case regular-file
+rm -rf "$active"
+printf '%s\n' 'not a runtime, user data' > "$active"
+cp "$active" "${cfg%/config}/file.before"
+run_git_update
+assert_eq "a regular file at the runtime path is refused" 1 "$git_update_status"
+assert_contains "a regular file at the runtime path is named" "$active is not a directory" "$git_update_output"
+assert_rc "a regular file at the runtime path stays byte-identical" 0 cmp "${cfg%/config}/file.before" "$active"
+assert_empty "a regular file at the runtime path stages nothing" "$(swap_leaks "$cfg")"
+
+swap_case dangling-link
+rm -rf "$active"
+ln -s "${cfg%/config}/missing-runtime" "$active"
+run_git_update
+assert_eq "a dangling runtime link is refused" 1 "$git_update_status"
+assert_contains "a dangling runtime link is named as a symbolic link" "$active is a symbolic link" "$git_update_output"
+assert_empty "a dangling runtime link prints no raw mv error" "$(printf '%s\n' "$git_update_output" | grep '^mv:')"
+assert_eq "a dangling runtime link is left unchanged" "${cfg%/config}/missing-runtime" "$(readlink "$active")"
+assert_empty "a dangling runtime link stages nothing" "$(swap_leaks "$cfg")"
+
+swap_case config-dir-link
+mv "$cfg" "${cfg%/config}/real-config"
+ln -s "${cfg%/config}/real-config" "$cfg"
+run_git_update
+assert_new_runtime "a symlinked CLAUDE_CONFIG_DIR"
+assert_rc "a symlinked CLAUDE_CONFIG_DIR keeps the generated config" 0 \
+    cmp "${cfg%/config}/conf.before" "$active/cortado.conf"
+assert_empty "a symlinked CLAUDE_CONFIG_DIR leaves nothing in the real directory" \
+    "$(swap_leaks "${cfg%/config}/real-config")"
+
+swap_case link-to-source
+rm -rf "$active"
+ln -s "$src" "$active"
+printf '%s\n' 'scratch' > "$src/untracked-note.txt"
+run_git_update
+assert_eq "a runtime linked to the source clone is skipped" 0 "$git_update_status"
+assert_eq "a runtime linked to the source clone keeps untracked files" scratch "$(cat "$src/untracked-note.txt" 2>/dev/null)"
+assert_rc "a runtime linked to the source clone keeps the link" 0 test -L "$active"
+assert_empty "a runtime linked to the source clone stages nothing" "$(swap_leaks "$cfg")"
+rm -f "$src/untracked-note.txt"
+
+swap_case link-to-homebrew
+brew_runtime="${cfg%/config}/homebrew/opt/cortado"
+mkdir -p "${brew_runtime%/cortado}"
+mv "$active" "$brew_runtime"
+cp -pR "$brew_runtime" "$brew_runtime.before"
+ln -s "$brew_runtime" "$active"
+run_git_update
+assert_eq "a runtime linked to a Homebrew prefix is skipped" 0 "$git_update_status"
+assert_rc "a runtime linked to a Homebrew prefix is left to Homebrew" 0 diff -r "$brew_runtime.before" "$brew_runtime"
+assert_empty "a runtime linked to a Homebrew prefix stages nothing" "$(swap_leaks "$cfg")"
+
+swap_case source-at-runtime
+rm -rf "$active"
+if ! { fixture_git clone -q "${swap_src%/source}/origin.git" "$active" &&
+    fixture_git -C "$active" checkout -q v2.0.0; }; then
+    exit 1
+fi
+# Uncommitted work, including a deleted library, so the runtime looks incomplete.
+printf '%s\n' 'echo local edit' >> "$active/cortado.sh"
+rm "$active/lib/config-tui.sh"
+src="$active"
+run_git_update
+src="$swap_src"
+assert_eq "a source clone at the runtime path is skipped" 0 "$git_update_status"
+assert_file_contains "a source clone at the runtime path keeps its local edit" 'local edit' "$active/cortado.sh"
+assert_eq "a source clone at the runtime path keeps its uncommitted deletion" "" \
+    "$(ls "$active/lib/config-tui.sh" 2>/dev/null)"
+assert_rc "a source clone at the runtime path keeps its Git directory" 0 test -d "$active/.git"
+assert_empty "a source clone at the runtime path stages nothing" "$(swap_leaks "$cfg")"
+
+# _publish_managed_runtime re-checks the path itself before staging anything.
+swap_case publish-guard
+publish_target="${cfg%/config}/linked-runtime"
+mv "$active" "$publish_target"
+ln -s "$publish_target" "$active"
+cp -pR "$publish_target" "$publish_target.before"
+assert_rc "publishing over a symlinked runtime is refused" 1 _publish_managed_runtime "$swap_src" "$active" 2.0.0
+assert_rc "publishing over a symlinked runtime keeps the link" 0 test -L "$active"
+assert_rc "publishing over a symlinked runtime leaves its target untouched" 0 \
+    diff -r "$publish_target.before" "$publish_target"
+rm "$active"
+printf '%s\n' 'user data' > "$active"
+assert_rc "publishing over a regular file is refused" 1 _publish_managed_runtime "$swap_src" "$active" 2.0.0
+assert_eq "publishing over a regular file leaves it byte-identical" 'user data' "$(cat "$active")"
+assert_empty "a refused publish stages nothing" "$(swap_leaks "$cfg")"
+
+for interruption in TERM:143 INT:130 HUP:129; do
+    sig="${interruption%%:*}"
+    swap_case "between-$sig"
+    mv_stub "case \"\$last\" in */.cortado-previous.*/runtime) /bin/mv \"\$@\" || exit \$?; kill -$sig \"\$INSTALLER_PID\"; exit 0 ;; esac"
+    if [ "$sig" = HUP ]; then
+        # Bash cannot trap a HUP it inherited as ignored; reset it before the installer starts.
+        update_launcher=(/bin/bash -c 'trap "" HUP; exec "$@"' -- python3 -c '
+import os, signal, sys
+signal.signal(signal.SIGHUP, signal.SIG_DFL)
+os.environ["INSTALLER_PID"] = str(os.getpid())
+os.execv(sys.argv[1], sys.argv[1:])
+' /bin/bash)
+    fi
+    run_git_update
+    update_launcher=(/bin/bash -c 'export INSTALLER_PID=$$; exec /bin/bash "$@"' --)
+    assert_eq "$sig between the renames exits ${interruption#*:}" "${interruption#*:}" "$git_update_status"
+    assert_old_runtime "$sig between the renames"
+done
+
+swap_case publish-fails
+# shellcheck disable=SC2016 # The stub body expands when the stub runs.
+mv_stub 'case "$2" in */.cortado-runtime.*) echo "simulated publish failure" >&2; exit 1 ;; esac'
+run_git_update
+assert_eq "a failed publish rename fails the update" 1 "$git_update_status"
+assert_old_runtime "a failed publish rename"
+
+swap_case move-aside-fails
+# shellcheck disable=SC2016 # The stub body expands when the stub runs.
+mv_stub 'case "$last" in */.cortado-previous.*/runtime) echo "simulated move failure" >&2; exit 1 ;; esac'
+run_git_update
+assert_eq "a failed move-aside fails the update" 1 "$git_update_status"
+assert_contains "a failed move-aside explains the failure" "Could not move the current runtime" "$git_update_output"
+assert_old_runtime "a failed move-aside"
+
+swap_case restore-fails
+# shellcheck disable=SC2016 # The stub body expands when the stub runs.
+mv_stub 'case "$2" in */.cortado-runtime.*|*/.cortado-previous.*/runtime) echo "simulated rename failure" >&2; exit 1 ;; esac'
+run_git_update
+kept=$(find "$cfg" -maxdepth 1 -name '.cortado-previous.*')
+assert_eq "a failed publish and restore fails the update" 1 "$git_update_status"
+assert_rc "a failed publish and restore keeps the old cortado.conf byte-identical" 0 \
+    cmp "${cfg%/config}/conf.before" "$kept/runtime/cortado.conf"
+assert_contains "a failed publish and restore names the kept runtime" "${kept##*/}/runtime" "$git_update_output"
+assert_empty "a failed publish and restore removes the staged runtime" "$(find "$cfg" -maxdepth 1 -name '.cortado-runtime.*')"
+
+swap_case cross-device
+# A mount-point runtime: mv copies the tree, empties the source, then cannot remove it.
+# shellcheck disable=SC2016 # The stub body expands when the stub runs.
+mv_stub 'case "$last" in */.cortado-previous.*/runtime)
+    /bin/cp -pR "$2" "$last" && /bin/rm -rf "$2"/* "$2"/.[!.]* 2>/dev/null
+    echo "mv: cannot remove $2: Resource busy" >&2; exit 1 ;; esac'
+run_git_update
+kept=$(find "$cfg" -name cortado.conf -path '*/.cortado-previous.*')
+assert_eq "a cross-device move-aside fails the update" 1 "$git_update_status"
+assert_rc "a cross-device move-aside keeps the old cortado.conf byte-identical" 0 \
+    cmp "${cfg%/config}/conf.before" "$kept"
+kept="${kept%/runtime/cortado.conf}"
+assert_contains "a cross-device move-aside names the kept runtime" "${kept##*/}/runtime" "$git_update_output"
+
+swap_case success-shape
+chmod 775 "$active"
+printf '%s\n' 'user notes' > "$active/notes.txt"
+chmod 664 "$active/notes.txt"
+run_git_update
+assert_new_runtime "a successful refresh"
+assert_rc "a successful refresh carries the generated config" 0 cmp "${cfg%/config}/conf.before" "$active/cortado.conf"
+assert_eq "a successful refresh leaves exactly the release and the user's files" \
+    "VERSION cortado.conf cortado.sh lib modules notes.txt" "$(LC_ALL=C ls -A "$active" | tr '\n' ' ' | sed 's/ $//')"
+assert_eq "a successful refresh drops group write from a 0775 runtime" 755 "$(file_mode "$active")"
+assert_eq "a successful refresh drops group write from a carried 0664 file" 644 "$(file_mode "$active/notes.txt")"
+
+swap_case private-runtime
+chmod 700 "$active"
+run_git_update
+assert_new_runtime "a refresh of a 0700 runtime"
+assert_eq "a refresh keeps a 0700 runtime private" 700 "$(file_mode "$active")"
+
+swap_case absent-runtime
+rm -rf "$active"
+run_git_update
+assert_new_runtime "a refresh of a removed runtime directory"
+
+swap_case carry-fails
+cat > "$case_bin/cp" <<'STUB'
+#!/bin/bash
+for last in "$@"; do :; done
+case "$2:$last" in */cortado.conf:*/.cortado-runtime.*) echo "simulated carry failure" >&2; exit 1 ;; esac
+exec /bin/cp "$@"
+STUB
+chmod 755 "$case_bin/cp"
+run_git_update
+assert_eq "a failed carry-over fails the update" 1 "$git_update_status"
+assert_contains "a failed carry-over names the file" "Could not carry cortado.conf" "$git_update_output"
+assert_old_runtime "a failed carry-over"
+
+swap_case current-without-entry-point
+printf '2.0.0\n' > "$active/VERSION"
+rm "$active/cortado.sh"
+run_git_update
+assert_new_runtime "a current VERSION without cortado.sh"
+
+swap_case current-without-library
+printf '2.0.0\n' > "$active/VERSION"
+rm "$active/lib/config-tui.sh"
+run_git_update
+assert_new_runtime "a current VERSION without lib/config-tui.sh"
+assert_rc "a current VERSION without lib/config-tui.sh restores the library" 0 test -f "$active/lib/config-tui.sh"
+
+for outcome in success publish-fails; do
+    swap_case "read-only-$outcome"
+    mkdir "$active/user-ro"
+    printf '%s\n' 'user data' > "$active/user-ro/data.txt"
+    chmod 500 "$active/user-ro"
+    if [ "$outcome" = publish-fails ]; then
+        # shellcheck disable=SC2016 # The stub body expands when the stub runs.
+        mv_stub 'case "$2" in */.cortado-runtime.*) exit 1 ;; esac'
+    fi
+    run_git_update
+    if [ "$outcome" = success ]; then
+        assert_new_runtime "a refresh over a read-only user directory"
+    else
+        assert_eq "a failed publish over a read-only user directory fails the update" 1 "$git_update_status"
+        assert_old_runtime "a failed publish over a read-only user directory"
+    fi
+    assert_empty "a $outcome over a read-only user directory prints no rm error" \
+        "$(printf '%s\n' "$git_update_output" | grep 'rm:')"
+    assert_eq "a $outcome over a read-only user directory keeps the user's file" 'user data' \
+        "$(cat "$active/user-ro/data.txt" 2>/dev/null)"
+    chmod -R u+rwX "${cfg%/config}"
+done
+
+# TERM kills mktemp ("killed"), or lands just after it made the directory ("made").
+for allocation in runtime:killed previous:killed runtime:made previous:made; do
+    swap_case "mktemp-term-${allocation%%:*}-${allocation#*:}"
+    # shellcheck disable=SC2016 # The stub body expands when the stub runs.
+    if [ "${allocation#*:}" = killed ]; then
+        allocate='kill -TERM "$INSTALLER_PID"; exit 143'
+    else
+        allocate='"$REAL_MKTEMP" "$@" && kill -TERM "$INSTALLER_PID"; exit 0'
+    fi
+    # shellcheck disable=SC2016 # The stub body expands when the stub runs.
+    { printf '#!/bin/bash\nfor last in "$@"; do :; done\n'
+      printf 'case "$last" in */.cortado-%s.*) %s ;; esac\n' "${allocation%%:*}" "$allocate"
+      printf 'exec "$REAL_MKTEMP" "$@"\n'; } > "$case_bin/mktemp"
+    chmod 755 "$case_bin/mktemp"
+    run_git_update
+    desc="TERM while allocating the ${allocation%%:*} directory (${allocation#*:})"
+    assert_eq "$desc exits 143" 143 "$git_update_status"
+    assert_not_contains "$desc reports no staging failure" "Could not stage" "$git_update_output"
+    assert_old_runtime "$desc"
+done
+
+swap_case term-after-publish
+# shellcheck disable=SC2016 # The stub body expands when the stub runs.
+mv_stub 'case "$2" in */.cortado-runtime.*) /bin/mv "$@" || exit $?; kill -TERM "$INSTALLER_PID"; exit 0 ;; esac'
+run_git_update
+assert_eq "TERM just after the publish rename exits 143" 143 "$git_update_status"
+assert_eq "TERM just after the publish rename keeps the published release" released "$active_output"
+assert_rc "TERM just after the publish rename keeps the carried config" 0 \
+    cmp "${cfg%/config}/conf.before" "$active/cortado.conf"
+assert_empty "TERM just after the publish rename removes the previous runtime" "$(swap_leaks "$cfg")"
+
+swap_case int-during-restore
+# shellcheck disable=SC2016 # The stub body expands when the stub runs.
+mv_stub 'case "$last" in */.cortado-previous.*/runtime) /bin/mv "$@" || exit $?; kill -TERM "$INSTALLER_PID"; exit 0 ;; esac
+case "$2" in */.cortado-previous.*/runtime) kill -INT "$INSTALLER_PID" ;; esac'
+run_git_update
+assert_eq "INT during the restore after a TERM keeps the TERM status" 143 "$git_update_status"
+assert_old_runtime "INT during the restore after a TERM"
+
+swap_case unreadable-runtime
+chmod 600 "$active"
+run_git_update
+chmod 700 "$active"
+active_output=$(printf '{}\n' | /bin/sh -c "$launcher" 2>/dev/null)
+assert_eq "an unreadable runtime fails the update" 1 "$git_update_status"
+assert_contains "an unreadable runtime is named" "Could not read the current runtime" "$git_update_output"
+assert_old_runtime "an unreadable runtime"
+
+remove_root=$(mktemp -d "$CLAUDE_CONFIG_DIR/remove-tree.XXXXXX")
+mkdir "$remove_root/target"
+printf '%s\n' 'kept' > "$remove_root/target/file"
+ln -s "$remove_root/target" "$remove_root/link"
+assert_rc "removing an update directory refuses a symlink" 1 _update_remove_tree "$remove_root/link"
+assert_rc "a refused removal keeps the symlink" 0 test -L "$remove_root/link"
+assert_eq "a refused removal keeps what the symlink points to" kept "$(cat "$remove_root/target/file")"
 
 # --- migrate_legacy_user_config (Barista -> Cortado) ---
 MIG_TMP=$(mktemp -d)

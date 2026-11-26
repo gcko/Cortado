@@ -330,21 +330,37 @@ _UPD_BACKUP_DONE=false
 _UPD_RT_DEST=""
 _UPD_RT_STAGE=""
 _UPD_RT_PREV=""
+_UPD_RT_PUBLISHED=false
 _UPD_REFRESHED=false
+
+# Remove a directory tree this update created, including read-only parts.
+_update_remove_tree() {
+    [ -n "$1" ] || return 0
+    [ ! -L "$1" ] || return 1
+    chmod -R u+rwX -- "$1" 2>/dev/null
+    rm -rf -- "$1"
+}
 
 _update_cleanup() {
     if [ -n "$_UPD_RT_PREV" ]; then
-        # Roll back a swap that moved the working runtime aside but did not finish.
-        if [ -d "$_UPD_RT_PREV/runtime" ] && [ ! -e "$_UPD_RT_DEST" ] && [ ! -L "$_UPD_RT_DEST" ]; then
-            mv -- "$_UPD_RT_PREV/runtime" "$_UPD_RT_DEST"
+        # The old runtime is deleted only once the new one is published or the
+        # old one is back in place. Otherwise keep it and say where it is.
+        if [ ! -e "$_UPD_RT_PREV/runtime" ] && [ ! -L "$_UPD_RT_PREV/runtime" ]; then
+            _update_remove_tree "$_UPD_RT_PREV"
+        elif [ "$_UPD_RT_PUBLISHED" = true ]; then
+            _update_remove_tree "$_UPD_RT_PREV"
+        elif [ ! -e "$_UPD_RT_DEST" ] && [ ! -L "$_UPD_RT_DEST" ] &&
+            mv -- "$_UPD_RT_PREV/runtime" "$_UPD_RT_DEST"; then
+            _update_remove_tree "$_UPD_RT_PREV"
+        else
+            print_error "Could not put the previous Cortado runtime back at $_UPD_RT_DEST. It is kept, unchanged, at $_UPD_RT_PREV/runtime; move it back to recover it and its cortado.conf."
         fi
-        rm -rf -- "$_UPD_RT_PREV"
     fi
-    [ -z "$_UPD_RT_STAGE" ] || rm -rf -- "$_UPD_RT_STAGE"
-    [ -z "$_UPD_TMP" ] || rm -rf -- "$_UPD_TMP"
-    [ -z "$_UPD_RUNTIME_TMP" ] || rm -rf -- "$_UPD_RUNTIME_TMP"
-    if [ -n "$_UPD_BACKUP" ] && [ "$_UPD_BACKUP_DONE" != true ]; then
-        rm -rf -- "$_UPD_BACKUP"
+    _update_remove_tree "$_UPD_RT_STAGE"
+    _update_remove_tree "$_UPD_TMP"
+    _update_remove_tree "$_UPD_RUNTIME_TMP"
+    if [ "$_UPD_BACKUP_DONE" != true ]; then
+        _update_remove_tree "$_UPD_BACKUP"
     fi
     _UPD_TMP=""
     _UPD_RUNTIME_TMP=""
@@ -353,6 +369,7 @@ _update_cleanup() {
     _UPD_RT_DEST=""
     _UPD_RT_STAGE=""
     _UPD_RT_PREV=""
+    _UPD_RT_PUBLISHED=false
 }
 
 # Restore the caller's traps after cleanup.
@@ -362,11 +379,14 @@ _update_restore_traps() {
     _UPD_DEPTH=0
 }
 
+# A second signal during cleanup is held, so cleanup never re-enters itself
+# and the first signal sets the exit status.
 _update_on_signal() {
     if [ "$_UPD_DEFER" = true ]; then
         _UPD_SIGNAL="$1"
         return
     fi
+    _UPD_DEFER=true
     _update_cleanup
     _update_restore_traps
     exit "$1"
@@ -406,6 +426,8 @@ _update_end() {
     [ "$_UPD_DEPTH" -gt 0 ] || return 0
     _UPD_DEPTH=$((_UPD_DEPTH - 1))
     [ "$_UPD_DEPTH" -eq 0 ] || return 0
+    # Deliver a signal held during the last step, such as the publish rename.
+    _update_take_signal
     _update_cleanup
     _update_restore_traps
 }
@@ -454,7 +476,10 @@ _publish_release_archive() {
                 # Keep the completed backup for recovery.
                 _UPD_BACKUP=""
             else
-                rm -rf -- "$_UPD_BACKUP"
+                # Mark the backup removable before deleting it, so a signal
+                # part-way through removes the rest.
+                _UPD_BACKUP_DONE=false
+                _update_remove_tree "$_UPD_BACKUP"
                 _UPD_BACKUP=""
                 rc=0
                 # Build the runtime from the verified tree, not the overlaid source.
@@ -502,34 +527,54 @@ _stage_release_tree() {
 
 # Set REPLY to the runtime directory when settings.json runs exactly this
 # installer's managed command; fail for a custom command or no settings.
+# Only the config directory is resolved, never the runtime path itself:
+# return 2 when that path is a symlink or something other than a directory.
 _managed_runtime_dest() {
-    local dest="$CORTADO_DIR" parent
+    local dest parent
     [ -f "$SETTINGS_FILE" ] || return 1
-    if [ -d "$CORTADO_DIR" ]; then
-        dest=$(CDPATH='' cd -- "$CORTADO_DIR" && pwd -P) || return 1
-    elif parent=$(CDPATH='' cd -- "$CLAUDE_DIR" 2>/dev/null && pwd -P); then
-        dest="$parent/cortado"
-    fi
+    parent=$(CDPATH='' cd -- "$CLAUDE_DIR" 2>/dev/null && pwd -P) || return 1
+    dest="$parent/cortado"
     # shellcheck disable=SC2016 # $path is a jq variable.
     jq -e --arg path "$dest/cortado.sh" --arg configured "$CORTADO_DIR/cortado.sh" '
         .statusLine | select(.type == "command") | .command as $command
         | [$path, $configured, ($path | @sh), ($configured | @sh)] | index($command) != null
     ' "$SETTINGS_FILE" >/dev/null 2>&1 || return 1
     REPLY="$dest"
+    if [ -L "$dest" ] || { [ -e "$dest" ] && [ ! -d "$dest" ]; }; then
+        return 2
+    fi
+}
+
+# Set REPLY to the mode for the runtime published at $1: its current mode
+# without group or other write when it is a directory, else the umask default.
+_runtime_mode() {
+    local current=""
+    if [ -d "$1" ]; then
+        current=$(stat -c '%a' "$1" 2>/dev/null) || current=$(stat -f '%Lp' "$1" 2>/dev/null)
+    fi
+    case "$current" in
+        ''|*[!0-7]*) REPLY=$(printf '%o' $(( 8#777 & ~8#$(umask) ))) ;;
+        *) REPLY=$(printf '%o' $(( (8#$current & 8#777 & ~8#022) | 8#700 ))) ;;
+    esac
 }
 
 # Publish release tree $1 (version $3) as the runtime at $2. The new runtime
 # is assembled and validated beside $2, then swapped in with two renames; the
 # working runtime is moved back if the swap fails or a signal arrives.
 _publish_managed_runtime() {
-    local tree="$1" dest="$2" version="$3" parent entry staged_version mode
+    local tree="$1" dest="$2" version="$3" parent entry staged_version mode status
     parent="${dest%/*}"
+    if [ -L "$dest" ] || { [ -e "$dest" ] && [ ! -d "$dest" ]; }; then
+        print_error "Will not replace $dest: it is not a runtime directory."
+        return 1
+    fi
     _update_begin
     _UPD_RT_DEST="$dest"
     if ! _update_mktemp_dir _UPD_RT_STAGE "$parent/.cortado-runtime.XXXXXX" ||
         ! _update_take_signal ||
         ! _update_mktemp_dir _UPD_RT_PREV "$parent/.cortado-previous.XXXXXX" ||
         ! _update_take_signal; then
+        _update_take_signal
         print_error "Could not stage a runtime beside $dest."
         _update_end
         return 1
@@ -540,6 +585,11 @@ _publish_managed_runtime() {
         return 1
     fi
     # Carry over everything the release does not own, such as cortado.conf.
+    if [ -d "$dest" ] && { [ ! -r "$dest" ] || [ ! -x "$dest" ]; }; then
+        print_error "Could not read the current runtime at $dest, so its files cannot be carried over."
+        _update_end
+        return 1
+    fi
     if [ -d "$dest" ]; then
         for entry in "$dest"/* "$dest"/.[!.]* "$dest"/..?*; do
             [ -e "$entry" ] || [ -L "$entry" ] || continue
@@ -557,7 +607,8 @@ _publish_managed_runtime() {
     if [ -f "$_UPD_RT_STAGE/VERSION" ]; then
         staged_version=$(tr -d '[:space:]' < "$_UPD_RT_STAGE/VERSION")
     fi
-    mode=$(printf '%o' $(( 8#777 & ~8#$(umask) )))
+    _runtime_mode "$dest"
+    mode="$REPLY"
     if [ ! -x "$_UPD_RT_STAGE/cortado.sh" ] || [ ! -f "$_UPD_RT_STAGE/lib/config-tui.sh" ] ||
         [ "$staged_version" != "$version" ] ||
         ! chmod "$mode" "$_UPD_RT_STAGE" || ! chmod -R go-w "$_UPD_RT_STAGE"; then
@@ -570,12 +621,21 @@ _publish_managed_runtime() {
         _update_end
         return 1
     fi
-    if ! mv -- "$_UPD_RT_STAGE" "$dest"; then
+    # Record the publish together with the rename, so cleanup never restores
+    # over (or deletes the old runtime before) a half-recorded publish.
+    _UPD_DEFER=true
+    status=0
+    mv -- "$_UPD_RT_STAGE" "$dest" || status=$?
+    if [ "$status" -eq 0 ]; then
+        _UPD_RT_PUBLISHED=true
+        _UPD_RT_STAGE=""
+    fi
+    _UPD_DEFER=false
+    if [ "$status" -ne 0 ]; then
         print_error "Could not publish the staged runtime at $dest."
         _update_end
         return 1
     fi
-    _UPD_RT_STAGE=""
     _update_end
 }
 
@@ -583,11 +643,27 @@ _publish_managed_runtime() {
 # staged release tree $2 when the caller has one. Preserves its config and
 # the statusLine command that Claude Code already uses.
 _refresh_managed_runtime() {
-    local tag="$1" tree="${2:-}" dest source_dir installed_version="" rc=1
+    local tag="$1" tree="${2:-}" dest source_dir target installed_version="" rc=1 status=0
     _UPD_REFRESHED=false
-    _managed_runtime_dest || return 0
-    dest="$REPLY"
+    _managed_runtime_dest || status=$?
+    case "$status" in
+        0|2) dest="$REPLY" ;;
+        *) return 0 ;;
+    esac
     source_dir=$(CDPATH='' cd -- "$SCRIPT_DIR" && pwd -P) || return 1
+    if [ "$status" -eq 2 ]; then
+        # A link to this source clone or to Homebrew is used in place, as before.
+        if [ -L "$dest" ] && target=$(CDPATH='' cd -- "$dest" 2>/dev/null && pwd -P) &&
+            { [ "$target" = "$source_dir" ] || _is_homebrew_prefix "$target"; }; then
+            return 0
+        fi
+        if [ -L "$dest" ]; then
+            print_error "$CORTADO_DIR is a symbolic link. Cortado will not replace it or what it points to; update that runtime yourself, or remove the link and run ./install.sh."
+        else
+            print_error "$CORTADO_DIR is not a directory. Cortado will not replace it; move it aside and run ./install.sh."
+        fi
+        return 1
+    fi
     if [ "$source_dir" = "$dest" ] || _is_homebrew_prefix "$dest"; then
         return 0
     fi

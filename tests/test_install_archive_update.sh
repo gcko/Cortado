@@ -167,6 +167,10 @@ case "$DOWNLOAD_CASE" in
         esac
         ;;
 esac
+if [ "$DOWNLOAD_CASE" = copy-term ]; then
+    for dest in "$@"; do :; done
+    case "$dest" in */source/) kill -TERM "$INSTALLER_PID"; exit 1 ;; esac
+fi
 if [ "$DOWNLOAD_CASE" = partial-copy ]; then
     for arg in "$@"; do
         case "$arg" in
@@ -371,6 +375,39 @@ assert_unwound 'TERM during the source backup' 143
 run_archive_update backup-fail
 assert_unwound 'a failed source backup' 1
 assert_contains 'a failed source backup explains the refusal' 'Could not back up the source' "$update_output"
+
+run_archive_update copy-term
+assert_eq 'TERM while copying the release into the source exits 143' 143 "$update_status"
+assert_eq 'TERM while copying the release into the source keeps the completed backup' 1 \
+    "$(find "$update_sandbox" -maxdepth 1 -name 'source.backup.*' | awk 'END {print NR}')"
+assert_rc 'the backup kept after TERM during the release copy holds the original source' 0 \
+    diff -r "$update_sandbox/source.before" "$(find "$update_sandbox" -maxdepth 1 -name 'source.backup.*')"
+assert_empty 'TERM while copying the release into the source removes staging' "$(ls -A "$update_sandbox/tmp")"
+
+# TERM part-way through removing the finished source backup, once.
+mkdir "$TEST_BASE/rm-term" || exit 1
+cat > "$TEST_BASE/rm-term/rm" <<'STUB'
+#!/bin/bash
+for last in "$@"; do :; done
+case "$last" in
+    */source.backup.*)
+        if [ ! -e "$RM_TERM_MARK" ]; then
+            : > "$RM_TERM_MARK"
+            /bin/rm -f "$last/VERSION"
+            kill -TERM "$INSTALLER_PID"
+            exit 143
+        fi
+        ;;
+esac
+exec /bin/rm "$@"
+STUB
+chmod +x "$TEST_BASE/rm-term/rm"
+export RM_TERM_MARK="$TEST_BASE/rm-term.mark"
+UPDATE_PATH="$TEST_BASE/rm-term:$PATH" run_archive_update valid
+assert_eq 'TERM while removing the finished source backup exits 143' 143 "$update_status"
+assert_empty 'TERM while removing the finished source backup leaves no partial backup' \
+    "$(find "$update_sandbox" -maxdepth 1 -name 'source.backup.*')"
+assert_empty 'TERM while removing the finished source backup removes staging' "$(ls -A "$update_sandbox/tmp")"
 
 for scenario in managed managed-stale managed-obsolete; do
     run_archive_update "$scenario"
