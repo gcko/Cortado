@@ -174,31 +174,44 @@ assert_rc "failed explicit updates leave source files intact" 0 diff -rq "$updat
 assert_rc "failed explicit updates leave installed files intact" 0 diff -rq "$CORTADO_DIR.before" "$CORTADO_DIR"
 
 # An installer that cannot load its libraries must not claim to be current.
+# Each library the installer loads is removed alone, so no later stop can stand
+# in for the one under test.
 partial_source="$CLAUDE_CONFIG_DIR/partial-source"
 mkdir -p "$partial_source"
 cp "$INSTALL" "$REPO_ROOT/VERSION" "$partial_source/"
-for flag in --check-update --update; do
-    INSTALL="$partial_source/install.sh" run_update_check "$flag" 200 '{"tag_name":"v9.9.9"}'
-    assert_eq "$flag without lib/semver.sh exits 1" 1 "$update_status"
-    assert_contains "$flag without lib/semver.sh names the missing library" \
-        "$partial_source/lib/semver.sh" "$update_output"
-    assert_eq "$flag without lib/semver.sh makes no version claim" "" \
-        "$(printf '%s\n' "$update_output" | sed -nE '/You have the latest version|Already up to date|Update Available!|Latest version:/p')"
-    assert_empty "$flag without lib/semver.sh makes no release lookup" "$(cat "$curl_calls")"
+
+# source_partial: source the partial installer in a fresh Bash; prints its output
+# and "after rc=N" when the source returns instead of exiting the shell.
+source_partial() {
+    CLAUDE_CONFIG_DIR="$CLAUDE_CONFIG_DIR" /bin/bash -c '. "$1"; echo "after rc=$?"' _ \
+        "$partial_source/install.sh" 2>&1
+}
+
+for missing in semver.sh config-permissions.sh module-registry.sh; do
+    rm -rf "${partial_source:?}/lib"
+    mkdir "$partial_source/lib"
+    cp "$REPO_ROOT/lib/"*.sh "$partial_source/lib/"
+    rm "$partial_source/lib/$missing"
+    for flag in --check-update --update; do
+        INSTALL="$partial_source/install.sh" run_update_check "$flag" 200 '{"tag_name":"v9.9.9"}'
+        assert_eq "$flag without lib/$missing exits 1" 1 "$update_status"
+        assert_contains "$flag without lib/$missing names the missing library" \
+            "cannot load $partial_source/lib/$missing" "$update_output"
+        assert_eq "$flag without lib/$missing makes no version claim" "" \
+            "$(printf '%s\n' "$update_output" | sed -nE '/You have the latest version|Already up to date|Update Available!|Latest version:/p')"
+        assert_empty "$flag without lib/$missing makes no release lookup" "$(cat "$curl_calls")"
+    done
+    partial_output=$(source_partial)
+    assert_contains "sourcing without lib/$missing returns 1 instead of exiting" "after rc=1" "$partial_output"
+    assert_contains "sourcing without lib/$missing names the missing library" \
+        "cannot load $partial_source/lib/$missing" "$partial_output"
+    partial_output=$(printf 'n\n' | PATH="$CLAUDE_CONFIG_DIR/bin:$PATH" POSIXLY_CORRECT=1 \
+        /bin/bash "$partial_source/install.sh" --check-update --no-color 2>&1)
+    assert_contains "a POSIX-mode run without lib/$missing prints the installer's message" \
+        "cannot load $partial_source/lib/$missing" "$partial_output"
+    assert_not_contains "a POSIX-mode run without lib/$missing prints no raw shell error" \
+        "No such file" "$partial_output"
 done
-mkdir "$partial_source/lib"
-cp "$REPO_ROOT/lib/semver.sh" "$partial_source/lib/"
-INSTALL="$partial_source/install.sh" run_update_check --check-update 200 '{"tag_name":"v9.9.9"}'
-assert_eq "--check-update without lib/config-permissions.sh exits 1" 1 "$update_status"
-assert_contains "--check-update without lib/config-permissions.sh names the missing library" \
-    "$partial_source/lib/config-permissions.sh" "$update_output"
-assert_empty "--check-update without lib/config-permissions.sh makes no release lookup" "$(cat "$curl_calls")"
-cp "$REPO_ROOT/lib/config-permissions.sh" "$partial_source/lib/"
-INSTALL="$partial_source/install.sh" run_update_check --check-update 200 '{"tag_name":"v9.9.9"}'
-assert_eq "--check-update without lib/module-registry.sh exits 1" 1 "$update_status"
-assert_contains "--check-update without lib/module-registry.sh names the missing library" \
-    "$partial_source/lib/module-registry.sh" "$update_output"
-assert_empty "--check-update without lib/module-registry.sh makes no release lookup" "$(cat "$curl_calls")"
 
 run_update_check --update 200 "$installed_release"
 assert_eq "an explicit update with a confirmed current release exits 0" "0" "$update_status"
@@ -761,12 +774,34 @@ rm "$active/cortado.sh"
 run_git_update
 assert_new_runtime "a current VERSION without cortado.sh"
 
-swap_case current-without-library
-printf '2.0.0\n' > "$active/VERSION"
-rm "$active/lib/config-tui.sh"
+# current_runtime: the swap runtime already holds every file the release ships.
+current_runtime() {
+    cp "$swap_src/cortado.sh" "$swap_src/VERSION" "$active/" &&
+        cp "$swap_src/lib/"*.sh "$active/lib/" &&
+        cp "$swap_src/modules/"*.sh "$active/modules/" || exit 1
+}
+
+swap_case current-complete
+current_runtime
 run_git_update
-assert_new_runtime "a current VERSION without lib/config-tui.sh"
-assert_rc "a current VERSION without lib/config-tui.sh restores the library" 0 test -f "$active/lib/config-tui.sh"
+assert_eq "a complete current runtime exits 0" 0 "$git_update_status"
+assert_not_contains "a complete current runtime is not refreshed" Refreshed "$git_update_output"
+assert_eq "a complete current runtime still renders" released "$active_output"
+
+# Every library the release ships is required, not a fixed list.
+for lib_file in "$swap_src/lib/"*.sh; do
+    lib_name=${lib_file##*/}
+    swap_case "current-without-$lib_name"
+    current_runtime
+    rm "$active/lib/$lib_name"
+    run_git_update
+    assert_contains "a current VERSION without lib/$lib_name is refreshed" Refreshed "$git_update_output"
+    assert_new_runtime "a current VERSION without lib/$lib_name"
+    assert_rc "a current VERSION without lib/$lib_name restores the library" 0 test -f "$active/lib/$lib_name"
+done
+for lib_name in config-permissions.sh module-registry.sh semver.sh; do
+    assert_rc "the release fixture ships lib/$lib_name" 0 test -f "$swap_src/lib/$lib_name"
+done
 
 for outcome in success publish-fails; do
     swap_case "read-only-$outcome"

@@ -69,20 +69,21 @@ _installer_lib_missing() {
         "$1" >&2
 }
 # Exits when run, returns when sourced (return fails outside a sourced file).
+# The -r test comes first because POSIX mode aborts on "." of a missing file.
 # shellcheck source=lib/semver.sh disable=SC2317
-. "$SCRIPT_DIR/lib/semver.sh" || {
+{ [ -r "$SCRIPT_DIR/lib/semver.sh" ] && . "$SCRIPT_DIR/lib/semver.sh"; } || {
     _installer_lib_missing "$SCRIPT_DIR/lib/semver.sh"
     return 1 2>/dev/null || exit 1
 }
 # Exits when run, returns when sourced (return fails outside a sourced file).
 # shellcheck source=lib/config-permissions.sh disable=SC2317
-. "$SCRIPT_DIR/lib/config-permissions.sh" || {
+{ [ -r "$SCRIPT_DIR/lib/config-permissions.sh" ] && . "$SCRIPT_DIR/lib/config-permissions.sh"; } || {
     _installer_lib_missing "$SCRIPT_DIR/lib/config-permissions.sh"
     return 1 2>/dev/null || exit 1
 }
 # Exits when run, returns when sourced (return fails outside a sourced file).
 # shellcheck source=lib/module-registry.sh disable=SC2317
-. "$SCRIPT_DIR/lib/module-registry.sh" || {
+{ [ -r "$SCRIPT_DIR/lib/module-registry.sh" ] && . "$SCRIPT_DIR/lib/module-registry.sh"; } || {
     _installer_lib_missing "$SCRIPT_DIR/lib/module-registry.sh"
     return 1 2>/dev/null || exit 1
 }
@@ -688,9 +689,14 @@ _refresh_managed_runtime() {
     if [ -f "$dest/VERSION" ]; then
         installed_version=$(tr -d '[:space:]' < "$dest/VERSION")
     fi
-    if [ "$installed_version" = "${tag#v}" ] && [ -f "$dest/cortado.sh" ] &&
-        [ -f "$dest/lib/config-tui.sh" ]; then
-        return 0
+    # A current runtime is kept only when it holds every library this release
+    # ships; the list comes from the release, so new libraries are covered too.
+    if [ "$installed_version" = "${tag#v}" ] && [ -f "$dest/cortado.sh" ]; then
+        local lib_file runtime_complete=true
+        for lib_file in "${tree:-$source_dir}"/lib/*.sh; do
+            [ -f "$dest/lib/${lib_file##*/}" ] || { runtime_complete=false; break; }
+        done
+        [ "$runtime_complete" = true ] && return 0
     fi
 
     _update_begin
