@@ -433,6 +433,16 @@ assert_eq 'A listing without its nonce is refused' 1 \
     "$(printf '%s\n' '-rw-------  1 me  staff  0 Nov 26 12:00 /x' | acl_parse >/dev/null; echo "$?")"
 assert_contains 'An unfinished listing names the reason' 'could not read access control lists' \
     "$(printf '%s\n' '-rw-------  1 me  staff  0 Nov 26 12:00 /x' | acl_parse)"
+# ls numbers entries from 0; the eleventh and later have two-digit indexes.
+acl_eleven=$(printf '%s\n' '-rw-------  1 me  staff  0 Nov 26 12:00 /x'
+    for i in 0 1 2 3 4 5 6 7 8 9; do printf ' %s: user:root deny write\n' "$i"; done
+    printf '%s\n' ' 10: group:everyone allow write' done-marker)
+assert_eq 'A foreign write grant at a two-digit index is refused' 1 \
+    "$(printf '%s\n' "$acl_eleven" | acl_parse >/dev/null; echo "$?")"
+assert_contains 'The two-digit entry is refused as a foreign write' 'an access control entry lets others write' \
+    "$(printf '%s\n' "$acl_eleven" | acl_parse)"
+assert_eq 'The same listing without the foreign grant passes' 0 \
+    "$(printf '%s\n' "$acl_eleven" | grep -v ' 10: ' | acl_parse >/dev/null; echo "$?")"
 assert_eq 'A write entry after the nonce is not part of the listing' 0 \
     "$(printf '%s\n' done-marker ' 0: group:everyone allow write' | acl_parse >/dev/null; echo "$?")"
 
