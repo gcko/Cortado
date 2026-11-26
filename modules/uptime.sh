@@ -53,7 +53,7 @@ module_uptime() {
     if [ "$show_load" = "true" ]; then
         # macOS prints "load averages:" (plural), Linux "load average:" — match both.
         # A missing or non-numeric average keeps its place as [--].
-        local load=$(uptime 2>/dev/null | awk -F'load averages?:' '{print $2}' | awk '{print $1}' | tr -d ',')
+        local load=$(LC_ALL=C uptime 2>/dev/null | awk -F'load averages?:' '{print $2}' | awk '{print $1}' | tr -d ',')
         [[ "$load" =~ ^[0-9]+([.][0-9]+)?$ ]] || load=--
         result="$result [$load]"
     fi
