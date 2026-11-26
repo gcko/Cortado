@@ -494,26 +494,31 @@ SEPARATOR=" • "
 
 ### Crafting Custom Modules
 
-Create a new file in `modules/` following this recipe:
+Create `cortado-modules/` in your Claude config directory (`$CLAUDE_CONFIG_DIR`, which defaults to `~/.claude`). Save the following as `cortado-modules/mycustom.sh`. You must own the file and directory, and only you may write to them. Modes `600` for the file and `700` for the directory work.
 
 ```bash
-# =============================================================================
-# My Custom Module - Description
-# =============================================================================
-
+# @cortado-module mycustom
+# @default false
+# @args none
+# @ttl 0
+# @timeout-ms 0
+# @platforms darwin,linux
+# @description My custom segment
 module_mycustom() {
-    local input="$1"  # JSON input from Claude Code
-    # Your logic here
-    echo "🎯 My Output"
+    printf '%s\n' '🎯 My Output'
 }
 ```
 
-Register the module in `get_module_function` and `is_module_enabled` in `cortado.sh`. Include its flag in `project_config_setting_allowed` to let project configs turn it off. Add the flag and module order to `cortado.conf`.
+Add these settings to `cortado.conf` in the same Claude config directory. This order keeps the model and adds the custom segment. Append `mycustom` to your existing order to keep all your current segments.
 
 ```bash
 MODULE_MYCUSTOM="true"
-MODULE_ORDER="...,mycustom,..."
+MODULE_ORDER="model,mycustom"
 ```
+
+`cortado config --list` shows the module. Module IDs use lowercase ASCII letters, digits, and hyphens and match the filename without `.sh`. Replace hyphens with underscores in the Bash function and uppercase flag.
+
+To contribute a module to Cortado, place the same file in the checkout's `modules/` directory. The installer and config catalog discover it automatically. See [Adding a New Module](AGENTS.md#adding-a-new-module) for the header fields.
 
 ## Troubleshooting
 

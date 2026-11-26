@@ -20,41 +20,23 @@ _cfg_init_colors() {
     fi
 }
 
-# Module catalog: name:default:category:description
-_CFG_CORE_MODULES=(
-    "sandbox:true:core:Sandbox lock indicator"
-    "version:true:core:Cortado version (brief)"
-    "update:true:core:Update checker"
-    "directory:true:core:Working directory"
-    "context:true:core:Context usage bar"
-    "git:true:core:Git branch/status"
-    "project:true:core:Project type"
-    "model:true:core:Claude model"
-    "cost:true:core:Session cost"
-    "rate-limits:true:core:Rate limits"
-    "time:true:core:Date/time"
-    "battery:true:core:Battery (macOS)"
-)
-_CFG_SYSTEM_MODULES=(
-    "cpu:false:system:CPU usage"
-    "memory:false:system:RAM usage"
-    "disk:false:system:Disk space"
-    "network:false:system:Network info"
-    "uptime:false:system:System uptime"
-    "load:false:system:Load average"
-    "temperature:false:system:CPU temperature"
-    "brightness:false:system:Screen brightness"
-    "processes:false:system:Process count"
-)
-_CFG_DEV_MODULES=(
-    "docker:false:dev:Docker status"
-    "node:false:dev:Node.js version"
-)
-_CFG_EXTRA_MODULES=(
-    "weather:false:extra:Weather (wttr.in)"
-    "timezone:false:extra:Multi-timezone clocks"
-)
-_CFG_ALL_MODULES=("${_CFG_CORE_MODULES[@]}" "${_CFG_SYSTEM_MODULES[@]}" "${_CFG_DEV_MODULES[@]}" "${_CFG_EXTRA_MODULES[@]}")
+# Keep the category arrays expected by the menus and writer.
+_cfg_init_catalog() {
+    local record
+    _CFG_CORE_MODULES=()
+    _CFG_SYSTEM_MODULES=()
+    _CFG_DEV_MODULES=()
+    _CFG_EXTRA_MODULES=()
+    _CFG_ALL_MODULES=("${_CORTADO_MODULE_CATALOG[@]}")
+    for record in "${_CFG_ALL_MODULES[@]}"; do
+        case "${record#*:*:}" in
+            core:*) _CFG_CORE_MODULES+=("$record") ;;
+            system:*) _CFG_SYSTEM_MODULES+=("$record") ;;
+            dev:*) _CFG_DEV_MODULES+=("$record") ;;
+            extra:*) _CFG_EXTRA_MODULES+=("$record") ;;
+        esac
+    done
+}
 
 _cfg_module_var() {
     # name -> MODULE_NAME (hyphens to underscores, upper)
@@ -893,6 +875,7 @@ EOF
 # Entry point
 cortado_config_main() {
     _cfg_init_colors
+    _cfg_init_catalog
     local scope="global"
     local action="interactive"
     local set_kv="" toggle_name=""

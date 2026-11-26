@@ -1,4 +1,16 @@
 # shellcheck shell=bash
+# @cortado-module brightness
+# @default false
+# @args none
+# @ttl 0
+# @timeout-ms 0
+# @platforms darwin,linux
+# @menu system 20
+# @description Screen brightness
+# @config BRIGHTNESS_ICON:string
+# @config BRIGHTNESS_SHOW_PERCENT:bool
+# @config BRIGHTNESS_SHOW_BAR:bool
+# @config BRIGHTNESS_BAR_WIDTH:int
 # =============================================================================
 # Brightness Module - Shows screen brightness (macOS)
 # =============================================================================

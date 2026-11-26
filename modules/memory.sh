@@ -1,4 +1,18 @@
 # shellcheck shell=bash
+# @cortado-module memory
+# @default false
+# @args none
+# @ttl 0
+# @timeout-ms 0
+# @platforms darwin,linux
+# @menu system 14
+# @description RAM usage
+# @config MEMORY_ICON:string
+# @config MEMORY_SHOW_PERCENTAGE:bool
+# @config MEMORY_SHOW_USED:bool
+# @config MEMORY_WARNING_THRESHOLD:int
+# @config MEMORY_CRITICAL_THRESHOLD:int
+# @config MEMORY_SHOW_STATUS:bool
 # =============================================================================
 # Memory Module - Shows RAM usage
 # =============================================================================

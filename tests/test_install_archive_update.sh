@@ -138,7 +138,7 @@ run_archive_update() {
     local download_case="$1" flag="${2:---update}" version="${3:-$fixture_version}" sandbox
     sandbox=$(mktemp -d "$TEST_BASE/update.XXXXXX") || exit 1
     mkdir -p "$sandbox/source" "$sandbox/config/cortado" "$sandbox/tmp"
-    cp "$REPO_ROOT/install.sh" "$REPO_ROOT/VERSION" "$sandbox/source/"
+    cp -R "$REPO_ROOT/install.sh" "$REPO_ROOT/VERSION" "$REPO_ROOT/lib" "$sandbox/source/"
     printf '%s\n' 'installed fixture' > "$sandbox/config/cortado/cortado.sh"
     printf '%s\n' '{"statusLine":{"type":"command","command":"fixture"}}' > "$sandbox/config/settings.json"
     chmod 600 "$sandbox/config/settings.json"

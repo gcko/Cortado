@@ -30,5 +30,8 @@ check_render 'time keeps the date when the clock is unavailable' 'DATE: 11/25 TI
 check_render 'time shows absence when date returns empty output' 'DATE: -- TIME: --' empty
 check_render 'time shows one placeholder for a failed compact clock' 'TIME: --' failed '' 'TIME_COMPACT=true'
 
+check_render 'time keeps the rendered label for an echo-style icon' ' 11/25' normal '' \
+    'COLOR_THEME=default' 'LAYOUT_MODE=none' 'TIME_DATE_ICON=-n' 'TIME_SHOW_TIME=false'
+
 printf '\nResults: %s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

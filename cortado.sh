@@ -19,26 +19,23 @@
 CORTADO_STARTUP_ENV=$(compgen -e)
 
 # Determine script directory (handles symlinks)
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+script_path="${BASH_SOURCE[0]:-$0}"
+case "$script_path" in
+    */../*|*/./*|*//*) SCRIPT_DIR="$(CDPATH='' cd -- "${script_path%/*}/" && pwd)" ;;
+    /*) SCRIPT_DIR="${script_path%/*}"; SCRIPT_DIR="${SCRIPT_DIR:-/}" ;;
+    */*) SCRIPT_DIR="$(CDPATH='' cd -- "${script_path%/*}/" && pwd)" ;;
+    *) SCRIPT_DIR="$PWD" ;;
+esac
 MODULES_DIR="$SCRIPT_DIR/modules"
 CONFIG_FILE="$SCRIPT_DIR/cortado.conf"
 
 # Determine Claude config directory (respects CLAUDE_CONFIG_DIR env var)
 CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 
-# =============================================================================
-# DEFAULT CONFIGURATION
-# =============================================================================
-# cortado.conf (shipped with Cortado, sourced below by load_config) supplies the
-# SEPARATOR, DISPLAY_MODE, USE_ICONS, USE_STATUS_INDICATORS, STATUS_STYLE,
-# PROGRESS_BAR_*, MODULE_*, CACHE_MAX_AGE, DEBUG_MODE, LAYOUT_MODE,
-# TERMINAL_WIDTH and RIGHT_SIDE_RESERVE defaults. Do not restate them here;
-# every consumer below reads them with a ${VAR:-fallback} guard so a missing or
-# rejected config still renders. Only the two module flags that cortado.conf
-# does not define are kept here.
-
-MODULE_VERSION="true"
-MODULE_UPDATE="true"
+# shellcheck source=lib/config-permissions.sh
+. "$SCRIPT_DIR/lib/config-permissions.sh"
+# shellcheck source=lib/module-registry.sh
+. "$SCRIPT_DIR/lib/module-registry.sh"
 
 # =============================================================================
 # CONFIGURATION LOADING
@@ -50,7 +47,7 @@ MODULE_UPDATE="true"
 # an unusual environment never breaks the statusline.
 config_not_group_or_world_writable() {
     local f="$1" perms len group_digit other_digit
-    if [ "$(uname)" = "Darwin" ]; then
+    if [[ "${BASH_VERSINFO[5]}" == *-darwin* ]]; then
         perms=$(/usr/bin/stat -f '%Lp' "$f" 2>/dev/null)
     else
         perms=$(stat -c '%a' "$f" 2>/dev/null)
@@ -124,53 +121,20 @@ project_config_setting_allowed() {
     local key="$1" val="$2"
     case "$val" in *[[:cntrl:]]*) return 1 ;; esac
     case "$key" in
-        MODULE_SANDBOX|MODULE_VERSION|MODULE_UPDATE|MODULE_DIRECTORY|MODULE_CONTEXT|MODULE_GIT|\
-        MODULE_PROJECT|MODULE_MODEL|MODULE_COST|MODULE_RATE_LIMITS|MODULE_TIME|MODULE_BATTERY|\
-        MODULE_CPU|MODULE_MEMORY|MODULE_DISK|MODULE_NETWORK|MODULE_UPTIME|MODULE_LOAD|\
-        MODULE_TEMPERATURE|MODULE_BRIGHTNESS|MODULE_PROCESSES|MODULE_DOCKER|MODULE_NODE|\
-        MODULE_WEATHER|MODULE_TIMEZONE)
-            [ "$val" = "false" ]
-            ;;
         SEPARATOR|DISPLAY_MODE|COLOR_THEME|USE_ICONS|USE_STATUS_INDICATORS|STATUS_STYLE|\
         STATUS_GREEN|STATUS_YELLOW|STATUS_ORANGE|STATUS_RED|\
         LAYOUT_MODE|TERMINAL_WIDTH|RIGHT_SIDE_RESERVE|MODULE_ORDER|\
-        PROGRESS_BAR_WIDTH|PROGRESS_BAR_FILLED|PROGRESS_BAR_EMPTY|\
-        DIRECTORY_ICON|DIRECTORY_STYLE|DIRECTORY_SHOW_FULL_PATH|DIRECTORY_MAX_LENGTH|\
-        CONTEXT_ICON|CONTEXT_SHOW_PROGRESS_BAR|CONTEXT_SHOW_PERCENTAGE|CONTEXT_SHOW_STATUS|\
-        CONTEXT_SHOW_TOKENS_REMAINING|CONTEXT_COMPACT_ICON|CONTEXT_WARNING_THRESHOLD|\
-        CONTEXT_CRITICAL_THRESHOLD|CONTEXT_COMPACT_THRESHOLD|\
-        GIT_ICON|GIT_SHOW_BRANCH|GIT_SYMBOL_MODIFIED|\
-        GIT_SYMBOL_UNTRACKED|GIT_SYMBOL_STAGED|GIT_FILE_ICON|GIT_COMPACT|\
-        PROJECT_STYLE|PROJECT_DEV_ICON|PROJECT_BUILD_ICON|PROJECT_ICON_ASTRO|PROJECT_ICON_BUN|\
-        PROJECT_ICON_DENO|PROJECT_ICON_ELIXIR|PROJECT_ICON_GO|PROJECT_ICON_JAVA|PROJECT_ICON_KOTLIN|\
-        PROJECT_ICON_NEXTJS|PROJECT_ICON_NODE|PROJECT_ICON_NUXT|PROJECT_ICON_PHP|PROJECT_ICON_PYTHON|\
-        PROJECT_ICON_REMIX|PROJECT_ICON_RUBY|PROJECT_ICON_RUST|PROJECT_ICON_SVELTE|\
-        PROJECT_ICON_SWIFT|PROJECT_ICON_VITE|\
-        MODEL_ICON|MODEL_SHOW_OUTPUT_STYLE|MODEL_COMPACT|MODEL_STYLE|MODEL_SHOW_THINKING|MODEL_THINKING_ICON|\
-        COST_ICON|COST_SHOW_BURN_RATE|COST_SHOW_TPM|COST_TPM_ICON|COST_DECIMAL_PLACES|\
-        COST_COMPACT|COST_MINIMUM_DISPLAY|\
-        RATE_SHOW_5H|RATE_SHOW_7D|RATE_SHOW_TIME_REMAINING|RATE_SHOW_PROJECTION|RATE_SHOW_PROGRESS_BAR|\
-        RATE_PROGRESS_BAR_WIDTH|RATE_WARNING_THRESHOLD|RATE_CRITICAL_THRESHOLD|RATE_COMPACT|\
-        RATE_5H_LABEL|RATE_7D_LABEL|RATE_LOW_THRESHOLD|RATE_MEDIUM_THRESHOLD|RATE_HIGH_THRESHOLD|\
-        RATE_SHOW_USAGE_STATUS|\
-        VERSION_ICON|VERSION_SHOW_DURATION|SANDBOX_ICON|\
-        TIME_DATE_ICON|TIME_CLOCK_ICON|TIME_SHOW_DATE|TIME_SHOW_TIME|TIME_DATE_FORMAT|TIME_TIME_FORMAT|TIME_COMPACT|\
-        BATTERY_ICON|BATTERY_SHOW_CHARGING|BATTERY_CHARGING_ICON|BATTERY_LOW_ICON|BATTERY_CRITICAL_ICON|\
-        BATTERY_LOW_THRESHOLD|BATTERY_CRITICAL_THRESHOLD|BATTERY_SHOW_PERCENTAGE|\
-        CPU_ICON|CPU_SHOW_PERCENTAGE|CPU_WARNING_THRESHOLD|CPU_CRITICAL_THRESHOLD|CPU_SHOW_STATUS|\
-        MEMORY_ICON|MEMORY_SHOW_PERCENTAGE|MEMORY_SHOW_USED|MEMORY_WARNING_THRESHOLD|\
-        MEMORY_CRITICAL_THRESHOLD|MEMORY_SHOW_STATUS|\
-        DISK_ICON|DISK_SHOW_PERCENTAGE|DISK_SHOW_FREE|DISK_WARNING_THRESHOLD|DISK_CRITICAL_THRESHOLD|DISK_SHOW_STATUS|\
-        NETWORK_ICON|NETWORK_COMPACT|UPTIME_ICON|UPTIME_STYLE|\
-        LOAD_ICON|LOAD_SHOW_ALL|LOAD_WARNING_THRESHOLD|LOAD_CRITICAL_THRESHOLD|LOAD_SHOW_STATUS|\
-        TEMP_ICON|TEMP_UNITS|TEMP_WARNING_THRESHOLD|TEMP_CRITICAL_THRESHOLD|TEMP_SHOW_STATUS|\
-        BRIGHTNESS_ICON|BRIGHTNESS_SHOW_PERCENT|BRIGHTNESS_SHOW_BAR|BRIGHTNESS_BAR_WIDTH|\
-        PROC_ICON|PROC_SHOW_TOTAL|PROC_SHOW_RUNNING|PROC_WARNING_THRESHOLD|PROC_CRITICAL_THRESHOLD|PROC_SHOW_STATUS|\
-        DOCKER_ICON|DOCKER_SHOW_RUNNING|DOCKER_SHOW_TOTAL|DOCKER_SHOW_STATUS|DOCKER_COMPACT|\
-        NODE_ICON|NODE_SHOW_NVM|NODE_COMPACT|WEATHER_SHOW_TEMP|WEATHER_SHOW_COND|WEATHER_COMPACT|\
-        TIMEZONE_FORMAT|TIMEZONE_SHOW_LABEL|TIMEZONE_LABELS|TIMEZONE_COMPACT)
+        PROGRESS_BAR_WIDTH|PROGRESS_BAR_FILLED|PROGRESS_BAR_EMPTY)
             return 0
             ;;
+        ''|*[!A-Z0-9_]*) return 1 ;;
+        MODULE_*)
+            [ "$val" = false ] || return 1
+            case "$_CORTADO_MODULE_FLAGS" in *" $key "*) return 0 ;; *) return 1 ;; esac
+            ;;
+    esac
+    case "$_CORTADO_PROJECT_KEYS" in
+        *" $key "*) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -235,11 +199,15 @@ apply_render_theme() {
 }
 
 # Load configuration in order of precedence:
-# 1. Built-in defaults (cortado.conf below; plus MODULE_VERSION/MODULE_UPDATE above)
+# 1. Module defaults from the installed headers
 # 2. Script directory config (cortado.conf) — trusted, shipped with Cortado
 # 3. User config ($CLAUDE_CONFIG_DIR/cortado.conf) — trusted, user-owned
 # 4. Per-directory config (.cortado.conf in current_dir) — UNTRUSTED, uses safe parser
 
+_CORTADO_MODULE_REGISTRY_UNAVAILABLE=false
+if ! discover_module_registry "$MODULES_DIR" "$CLAUDE_CONFIG_DIR/cortado-modules" true; then
+    _CORTADO_MODULE_REGISTRY_UNAVAILABLE=true
+fi
 load_config "$CONFIG_FILE"
 
 USER_CONFIG="$CLAUDE_CONFIG_DIR/cortado.conf"
@@ -362,115 +330,56 @@ load_modules() {
 # =============================================================================
 # MODULE REGISTRY
 # =============================================================================
-# Maps module names to their functions (compatible with Bash 3.2+)
-
 get_module_function() {
-    local module_name="$1"
-    case "$module_name" in
-        directory)    REPLY="module_directory" ;;
-        context)      REPLY="module_context" ;;
-        git)          REPLY="module_git" ;;
-        project)      REPLY="module_project" ;;
-        model)        REPLY="module_model" ;;
-        cost)         REPLY="module_cost" ;;
-        rate-limits)  REPLY="module_rate_limits" ;;
-        time)         REPLY="module_time" ;;
-        battery)      REPLY="module_battery" ;;
-        cpu)          REPLY="module_cpu" ;;
-        memory)       REPLY="module_memory" ;;
-        disk)         REPLY="module_disk" ;;
-        network)      REPLY="module_network" ;;
-        uptime)       REPLY="module_uptime" ;;
-        load)         REPLY="module_load" ;;
-        temperature)  REPLY="module_temperature" ;;
-        brightness)   REPLY="module_brightness" ;;
-        docker)       REPLY="module_docker" ;;
-        node)         REPLY="module_node" ;;
-        processes)    REPLY="module_processes" ;;
-        weather)      REPLY="module_weather" ;;
-        timezone)     REPLY="module_timezone" ;;
-        sandbox)      REPLY="module_sandbox" ;;
-        version)      REPLY="module_version" ;;
-        update)       REPLY="module_update" ;;
-        *)            REPLY="" ;;
-    esac
+    REPLY=
+    registered_module_key "$1" || return 0
+    REPLY="module_${1//-/_}"
 }
 
-# =============================================================================
-# MODULE EXECUTION
-# =============================================================================
-
+# Call the module function using the argument kind in its header. The caller
+# already runs this in a subshell so user source and module side effects stay local.
 run_module() {
-    local module_name="$1"
-    local current_dir="$2"
-    local input_json="$3"
-    # Get function name from registry
-    local func_name
-    get_module_function "$module_name"
-    func_name=$REPLY
-
-    if [ -z "$func_name" ]; then
-        log_debug "Unknown module: $module_name"
-        return
+    local module_name="$1" current_dir="$2" input_json="$3"
+    local func_name path dispatch args platforms platform
+    registered_module_key "$module_name" || return 0
+    path="_CORTADO_SOURCE_${REPLY#_CORTADO_MODULE_}"
+    dispatch="${!REPLY}"
+    dispatch="${dispatch#*|}"
+    args="${dispatch%%|*}"
+    platforms="${dispatch#*|}"
+    case "$render_os" in
+        Darwin) platform=darwin ;;
+        Linux) platform=linux ;;
+        *) platform= ;;
+    esac
+    if [ -n "$platform" ]; then
+        case ",$platforms," in *",$platform,"*) ;; *) return 0 ;; esac
     fi
-
-    # Check if function exists
-    if ! type "$func_name" >/dev/null 2>&1; then
+    if [ -n "${!path-}" ]; then
+        # An untrusted project may suppress or reorder already selected user
+        # modules. Only the trusted order can authorize sourcing a new one.
+        case ",$trusted_module_order," in *",$module_name,"*) ;; *) return 0 ;; esac
+        # shellcheck source=/dev/null
+        . "${!path}" || return
+    fi
+    func_name="module_${module_name//-/_}"
+    if ! declare -F "$func_name" >/dev/null; then
         log_debug "Module function not found: $func_name"
         return
     fi
-
-    # Call the appropriate module function with correct arguments
-    case "$module_name" in
-        directory|git|project)
-            "$func_name" "$current_dir"
-            ;;
-        context|model|cost|rate-limits|version)
-            "$func_name" "$input_json"
-            ;;
-        *)
-            # Modules that take no arguments or handle their own
-            "$func_name"
-            ;;
+    case "$args" in
+        dir) "$func_name" "$current_dir" ;;
+        payload) "$func_name" "$input_json" ;;
+        none) "$func_name" ;;
     esac
 }
 
-# Check if a module is enabled
-# Uses a static lookup instead of eval to avoid code injection
 is_module_enabled() {
-    local module_name="$1"
-    local enabled="false"
-
-    case "$module_name" in
-        directory)    enabled="${MODULE_DIRECTORY:-false}" ;;
-        context)      enabled="${MODULE_CONTEXT:-false}" ;;
-        git)          enabled="${MODULE_GIT:-false}" ;;
-        project)      enabled="${MODULE_PROJECT:-false}" ;;
-        model)        enabled="${MODULE_MODEL:-false}" ;;
-        cost)         enabled="${MODULE_COST:-false}" ;;
-        rate-limits)  enabled="${MODULE_RATE_LIMITS:-false}" ;;
-        time)         enabled="${MODULE_TIME:-false}" ;;
-        battery)      enabled="${MODULE_BATTERY:-false}" ;;
-        cpu)          enabled="${MODULE_CPU:-false}" ;;
-        memory)       enabled="${MODULE_MEMORY:-false}" ;;
-        disk)         enabled="${MODULE_DISK:-false}" ;;
-        network)      enabled="${MODULE_NETWORK:-false}" ;;
-        uptime)       enabled="${MODULE_UPTIME:-false}" ;;
-        load)         enabled="${MODULE_LOAD:-false}" ;;
-        temperature)  enabled="${MODULE_TEMPERATURE:-false}" ;;
-        brightness)   enabled="${MODULE_BRIGHTNESS:-false}" ;;
-        docker)       enabled="${MODULE_DOCKER:-false}" ;;
-        node)         enabled="${MODULE_NODE:-false}" ;;
-        processes)    enabled="${MODULE_PROCESSES:-false}" ;;
-        weather)      enabled="${MODULE_WEATHER:-false}" ;;
-        timezone)     enabled="${MODULE_TIMEZONE:-false}" ;;
-        sandbox)      enabled="${MODULE_SANDBOX:-false}" ;;
-        version)      enabled="${MODULE_VERSION:-false}" ;;
-        update)       enabled="${MODULE_UPDATE:-false}" ;;
-        *)            enabled="false" ;;
-    esac
-
-    [ "$enabled" = "true" ]
+    local record flag
+    registered_module_key "$1" || return 1
+    record="${!REPLY}"
+    flag="${record%%|*}"
+    [ "${!flag:-false}" = true ]
 }
 
 # =============================================================================
@@ -944,6 +853,11 @@ main() {
         return 0
     fi
 
+    if [ "${_CORTADO_MODULE_REGISTRY_UNAVAILABLE:-false}" = true ]; then
+        printf '%s\n' 'cortado: module catalog unavailable'
+        return 0
+    fi
+
     # Keep a private capture for sequential source and run calls. Flush it in
     # the caller after each call so log entries are available when main returns.
     local module_stderr=/dev/null
@@ -989,6 +903,8 @@ render_statusline() {
     # This allows project-specific statusline customization
     # Uses safe parser — project configs are untrusted and must not be sourced
     local trusted_theme="${COLOR_THEME:-default}"
+    local trusted_module_order="${MODULE_ORDER%%$'\n'*}"
+    trusted_module_order=${trusted_module_order// /}
     if [ -n "$current_dir" ] && [ -d "$current_dir" ]; then
         local dir_config="$current_dir/.cortado.conf"
         # Pre-rename name: honor a project's .barista.conf until it gains a .cortado.conf
@@ -1188,6 +1104,10 @@ cortado_cli_dispatch() {
     case "${1:-}" in
         config|--config)
             shift
+            if [ "${_CORTADO_MODULE_REGISTRY_UNAVAILABLE:-false}" = true ]; then
+                printf '%s\n' 'cortado: module catalog unavailable' >&2
+                exit 1
+            fi
             if [ ! -f "$SCRIPT_DIR/lib/config-tui.sh" ]; then
                 echo "cortado: missing lib/config-tui.sh (incomplete install)." >&2
                 echo "Re-run ./install.sh from your Cortado checkout." >&2

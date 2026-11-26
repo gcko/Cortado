@@ -1,4 +1,17 @@
 # shellcheck shell=bash
+# @cortado-module docker
+# @default false
+# @args none
+# @ttl 0
+# @timeout-ms 0
+# @platforms darwin,linux
+# @menu dev 22
+# @description Docker status
+# @config DOCKER_ICON:string
+# @config DOCKER_SHOW_RUNNING:bool
+# @config DOCKER_SHOW_TOTAL:bool
+# @config DOCKER_SHOW_STATUS:bool
+# @config DOCKER_COMPACT:bool
 # =============================================================================
 # Docker Module - Shows Docker container status
 # =============================================================================

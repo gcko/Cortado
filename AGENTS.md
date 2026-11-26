@@ -22,7 +22,10 @@ Cortado/
 ├── CLAUDE.md           # `@AGENTS.md` plus Claude-only notes
 ├── LICENSE, NOTICE     # Apache 2.0, and the upstream Barista MIT notice
 ├── lib/
-│   └── config-tui.sh   # Runtime config TUI (`cortado config`) - must ship with install
+│   ├── config-tui.sh   # Runtime config TUI (`cortado config`)
+│   ├── config-permissions.sh # Ownership and mode checks for sourced files
+│   ├── module-registry.sh    # Header discovery for renderer and catalogs
+│   └── semver.sh            # Version comparison for installer and update module
 ├── modules/
 │   ├── utils.sh        # Shared utility functions (MUST load first)
 │   ├── directory.sh    # Current directory module
@@ -56,7 +59,7 @@ Cortado/
 
 1. **Claude Code calls `cortado.sh`** with JSON input containing workspace info, model, context window data, etc.
 2. **Configuration is loaded** in order of precedence:
-   - Built-in defaults in `cortado.sh`
+   - Module enable defaults from the installed module headers and display fallbacks in `cortado.sh`
    - `cortado.conf` in script directory
    - `$CLAUDE_CONFIG_DIR/cortado.conf` (user overrides, defaults to `~/.claude/`)
    - `.cortado.conf` in current project directory (per-project overrides)
@@ -64,7 +67,7 @@ Cortado/
    Pre-rename fallbacks: if `cortado.conf` is missing, `cortado.sh` copies `$CLAUDE_CONFIG_DIR/barista.conf` to it once (with `cp -p`, falling back to reading the legacy file directly). A project's `.barista.conf` is read only when that project has no `.cortado.conf`. Keep these fallbacks until Barista users have had time to migrate.
 
    Packaged `cortado.conf` and the user override (`$CLAUDE_CONFIG_DIR/cortado.conf`) are sourced as bash after a group/world-writable check. Per-directory `.cortado.conf` is untrusted: `load_config_safe` (KEY=VALUE allowlist) never sources it. Config-derived numerics are validated before they reach `bc`/URL sinks. `cortado config --project` uses the same safe parser.
-3. **Modules are loaded** from `modules/` directory (`utils.sh` first, then all others)
+3. **Modules are discovered** from their headers in `modules/` and in `$CLAUDE_CONFIG_DIR/cortado-modules/`. The renderer sources the installed scripts with `utils.sh` first. It sources user modules inside their execution subshell after checking ownership and permissions.
 4. **Modules are executed** in the order specified by `MODULE_ORDER` config
 5. **Output is concatenated** with the configured `SEPARATOR` and printed
 
@@ -72,10 +75,10 @@ Cortado/
 
 ### `cortado.sh` (Main Entry Point)
 - Resolves `CLAUDE_CONFIG_DIR` (env var or defaults to `$HOME/.claude`)
-- Defines default configuration values
+- Applies module enable defaults from the registry
 - Loads configuration files in precedence order
 - Loads all module files from `modules/`
-- Contains module registry mapping names to functions
+- Resolves module function names and argument kinds from the registry
 - Executes enabled modules and joins output with separator
 - Adjusts separator spacing based on `DISPLAY_MODE`
 
@@ -107,7 +110,7 @@ All settings are documented with comments. Key settings:
 
 ## Module Structure
 
-Each module follows this pattern:
+A module defines its header before the first Bash statement. See [Adding a New Module](#adding-a-new-module) for the metadata.
 
 ```bash
 # =============================================================================
@@ -161,21 +164,21 @@ Both respect `DISPLAY_MODE` for spacing and `STATUS_STYLE` for appearance (emoji
 
 ## Adding a New Module
 
-A module name is registered in six places, and they must change together in one pull request:
+Create `modules/mymodule.sh` and put the following metadata in its leading comment block. The renderer, installer, and config catalog read the same headers.
 
-1. Create `modules/mymodule.sh` following the pattern above
-2. Add to the module registry (`get_module_function`) in `cortado.sh`:
-   ```bash
-   case "$module_name" in
-       mymodule)     echo "module_mymodule" ;;
-   ```
-3. Add to `run_module()` case if it needs special arguments
-4. Add configuration defaults to `cortado.sh` and `cortado.conf`:
-   ```bash
-   MODULE_MYMODULE="false"  # Disabled by default
-   ```
-5. Add it to the `cortado config` catalog (`_CFG_*_MODULES` in `lib/config-tui.sh`) and to the installer's module lists in `install.sh`
-6. Add to `MODULE_ORDER` where you want it to appear, and to the README module tables
+| Header | Meaning |
+|---|---|
+| `@cortado-module mymodule` | Module ID. Match the filename without `.sh` and use lowercase ASCII letters, digits, and hyphens. Replace hyphens with underscores in `module_mymodule` and `MODULE_MYMODULE`. Cortado reserves `order`, `utils`, and `payload`. |
+| `@default false` | Default for the enable flag. The render still requires the ID in `MODULE_ORDER`. |
+| `@args none` | Use `dir` for the resolved workspace directory or `payload` for the input JSON. |
+| `@ttl 0` | Default probe cache lifetime in seconds. The module manages its cache. |
+| `@timeout-ms 0` | Default probe timeout in milliseconds. The module manages its deadlines. |
+| `@platforms darwin,linux` | Platforms on which the module runs. Include a platform if the module renders a fallback there. |
+| `@config KEY:type` | A project-safe option in an installed module. Add one line per key with `bool`, `int`, `number`, or `string`. The module validates values. |
+| `@menu extra` | Optional category. Use `core`, `system`, `dev`, or `extra`. An optional number gives the menu position. |
+| `@description My module` | Optional text for the installer and config catalog. |
+
+Project config can turn a registered module off. Project order can reorder or omit trusted user selections. Sourcing a user module requires its ID in the trusted `MODULE_ORDER`. Its file and module directory must be owned by the current user. The file, module directory, and its parent must have no group or world write bits. Use a regular module directory. A file symlink can point to a checked target inside that directory.
 
 ## Coding Conventions
 
@@ -333,6 +336,7 @@ CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 
 Files stored in this directory:
 - `cortado.conf` - User config overrides
+- `cortado-modules/` - User module scripts
 - `cortado-cache/` - Cache for expensive operations (weather, network, etc.)
 - `cortado.log` - Debug log (when `DEBUG_MODE="true"`), rotated at 1 MiB to `cortado.log.1`
 - `.usage_history` - Rate limit history for projections
@@ -355,7 +359,7 @@ The rate limits module (`rate-limits.sh`) is the most complex:
 
 The installer (`install.sh`) provides:
 - Interactive module selection with arrow key navigation
-- Live preview of statusline
+- Live preview rendered by Cortado with sample input in a temporary config directory
 - Multiple presets (minimal, developer, etc.)
 - Auto-update checking from GitHub
 - Backup/restore of previous statusline

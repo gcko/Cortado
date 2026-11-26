@@ -1,4 +1,17 @@
 # shellcheck shell=bash
+# @cortado-module temperature
+# @default false
+# @args none
+# @ttl 0
+# @timeout-ms 0
+# @platforms darwin,linux
+# @menu system 19
+# @description CPU temperature
+# @config TEMP_ICON:string
+# @config TEMP_UNITS:string
+# @config TEMP_WARNING_THRESHOLD:int
+# @config TEMP_CRITICAL_THRESHOLD:int
+# @config TEMP_SHOW_STATUS:bool
 # =============================================================================
 # Temperature Module - Shows CPU/system temperature (macOS)
 # =============================================================================

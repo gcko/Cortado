@@ -1,4 +1,18 @@
 # shellcheck shell=bash
+# @cortado-module processes
+# @default false
+# @args none
+# @ttl 0
+# @timeout-ms 0
+# @platforms darwin,linux
+# @menu system 21
+# @description Process count
+# @config PROC_ICON:string
+# @config PROC_SHOW_TOTAL:bool
+# @config PROC_SHOW_RUNNING:bool
+# @config PROC_WARNING_THRESHOLD:int
+# @config PROC_CRITICAL_THRESHOLD:int
+# @config PROC_SHOW_STATUS:bool
 # =============================================================================
 # Processes Module - Shows process count and info
 # =============================================================================

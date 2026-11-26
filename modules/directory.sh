@@ -1,4 +1,16 @@
 # shellcheck shell=bash
+# @cortado-module directory
+# @default true
+# @args dir
+# @ttl 0
+# @timeout-ms 0
+# @platforms darwin,linux
+# @menu core 4
+# @description Working directory
+# @config DIRECTORY_ICON:string
+# @config DIRECTORY_STYLE:string
+# @config DIRECTORY_SHOW_FULL_PATH:bool
+# @config DIRECTORY_MAX_LENGTH:int
 # =============================================================================
 # Directory Module - Shows current working directory
 # =============================================================================

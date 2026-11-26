@@ -1,4 +1,15 @@
 # shellcheck shell=bash
+# @cortado-module node
+# @default false
+# @args none
+# @ttl 0
+# @timeout-ms 0
+# @platforms darwin,linux
+# @menu dev 23
+# @description Node.js version
+# @config NODE_ICON:string
+# @config NODE_SHOW_NVM:bool
+# @config NODE_COMPACT:bool
 # =============================================================================
 # Node Module - Shows Node.js version and npm info
 # =============================================================================

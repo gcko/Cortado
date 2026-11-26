@@ -1,4 +1,16 @@
 # shellcheck shell=bash
+# @cortado-module timezone
+# @default false
+# @args none
+# @ttl 0
+# @timeout-ms 0
+# @platforms darwin,linux
+# @menu extra 25
+# @description Multi-timezone clocks
+# @config TIMEZONE_FORMAT:string
+# @config TIMEZONE_SHOW_LABEL:bool
+# @config TIMEZONE_LABELS:string
+# @config TIMEZONE_COMPACT:bool
 # =============================================================================
 # Timezone Module - Shows time in different timezones
 # =============================================================================

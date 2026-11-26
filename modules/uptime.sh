@@ -1,4 +1,14 @@
 # shellcheck shell=bash
+# @cortado-module uptime
+# @default false
+# @args none
+# @ttl 0
+# @timeout-ms 0
+# @platforms darwin,linux
+# @menu system 17
+# @description System uptime
+# @config UPTIME_ICON:string
+# @config UPTIME_STYLE:string
 # =============================================================================
 # Uptime Module - Shows system uptime
 # =============================================================================

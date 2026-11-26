@@ -1,4 +1,18 @@
 # shellcheck shell=bash
+# @cortado-module model
+# @default true
+# @args payload
+# @ttl 0
+# @timeout-ms 0
+# @platforms darwin,linux
+# @menu core 8
+# @description Claude model
+# @config MODEL_ICON:string
+# @config MODEL_SHOW_OUTPUT_STYLE:bool
+# @config MODEL_COMPACT:bool
+# @config MODEL_STYLE:string
+# @config MODEL_SHOW_THINKING:bool
+# @config MODEL_THINKING_ICON:string
 # =============================================================================
 # Model Module - Shows current Claude model and output style
 # =============================================================================

@@ -1,4 +1,33 @@
 # shellcheck shell=bash
+# @cortado-module project
+# @default true
+# @args dir
+# @ttl 0
+# @timeout-ms 0
+# @platforms darwin,linux
+# @menu core 7
+# @description Project type
+# @config PROJECT_STYLE:string
+# @config PROJECT_DEV_ICON:string
+# @config PROJECT_BUILD_ICON:string
+# @config PROJECT_ICON_ASTRO:string
+# @config PROJECT_ICON_BUN:string
+# @config PROJECT_ICON_DENO:string
+# @config PROJECT_ICON_ELIXIR:string
+# @config PROJECT_ICON_GO:string
+# @config PROJECT_ICON_JAVA:string
+# @config PROJECT_ICON_KOTLIN:string
+# @config PROJECT_ICON_NEXTJS:string
+# @config PROJECT_ICON_NODE:string
+# @config PROJECT_ICON_NUXT:string
+# @config PROJECT_ICON_PHP:string
+# @config PROJECT_ICON_PYTHON:string
+# @config PROJECT_ICON_REMIX:string
+# @config PROJECT_ICON_RUBY:string
+# @config PROJECT_ICON_RUST:string
+# @config PROJECT_ICON_SVELTE:string
+# @config PROJECT_ICON_SWIFT:string
+# @config PROJECT_ICON_VITE:string
 # =============================================================================
 # Project Module - Detects project type and dev server status
 # =============================================================================

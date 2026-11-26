@@ -1,4 +1,19 @@
 # shellcheck shell=bash
+# @cortado-module time
+# @default true
+# @args none
+# @ttl 0
+# @timeout-ms 0
+# @platforms darwin,linux
+# @menu core 11
+# @description Date/time
+# @config TIME_DATE_ICON:string
+# @config TIME_CLOCK_ICON:string
+# @config TIME_SHOW_DATE:bool
+# @config TIME_SHOW_TIME:bool
+# @config TIME_DATE_FORMAT:string
+# @config TIME_TIME_FORMAT:string
+# @config TIME_COMPACT:bool
 # =============================================================================
 # Time Module - Shows current date and time
 # =============================================================================
@@ -21,9 +36,18 @@ _time_read() {
     fi
 }
 
+_time_icon_reply() {
+    get_icon_reply "$@"
+    # Preserve the existing echo and newline handling for unusual icon values.
+    case "$REPLY" in -*|*\\*|*$'\n') REPLY=$(get_icon "$@") ;; esac
+}
+
 module_time() {
-    local date_icon=$(get_icon "${TIME_DATE_ICON:-📅}" "DATE:")
-    local clock_icon=$(get_icon "${TIME_CLOCK_ICON:-🕐}" "TIME:")
+    local date_icon clock_icon
+    _time_icon_reply "${TIME_DATE_ICON:-📅}" "DATE:"
+    date_icon=$REPLY
+    _time_icon_reply "${TIME_CLOCK_ICON:-🕐}" "TIME:"
+    clock_icon=$REPLY
     local show_date="${TIME_SHOW_DATE:-true}"
     local show_time="${TIME_SHOW_TIME:-true}"
     local date_fmt="${TIME_DATE_FORMAT:-%m/%d}"
