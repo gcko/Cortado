@@ -29,6 +29,7 @@
 # reads an owner-only Claude Code credential file. Never accesses macOS Keychain.
 # Stale fallback percentages show their cache age (for example, 42%~6h0m).
 # A quota cache whose age cannot be established is ignored.
+# A window whose resets_at has passed shows -- instead of its finished reading.
 # =============================================================================
 # Configuration options:
 #   RATE_SHOW_5H            - Show 5-hour rate limit (default: true)
@@ -372,6 +373,14 @@ _read_usage_cache() {
     return 1
 }
 
+# Set REPLY to a reset time's Unix epoch, or to 0 when it cannot be parsed.
+_rate_reset_epoch_reply() {
+    REPLY=$(cortado_utc_epoch "${1%%.*}")
+    case "$REPLY" in
+        ''|0*|*[!0-9]*) REPLY=0 ;;
+    esac
+}
+
 # Render the placeholder line shown when no 5-hour or 7-day usage is available.
 _render_placeholder() {
     local show_5h="$1"
@@ -488,6 +497,20 @@ module_rate_limits() {
     _rate_limits_epoch
     now="$REPLY"
 
+    # A window whose own reset has passed is over, so its reading describes
+    # nothing current: show that window as absent, whatever the source (#5).
+    local five_hour_reset_epoch=0 seven_day_reset_epoch=0
+    if [ -n "$now" ]; then
+        if [ -n "$five_hour_reset" ]; then
+            _rate_reset_epoch_reply "$five_hour_reset"; five_hour_reset_epoch=$REPLY
+            [ "$five_hour_reset_epoch" -gt 0 ] && [ "$five_hour_reset_epoch" -le "$now" ] && five_hour=""
+        fi
+        if [ -n "$seven_day_reset" ]; then
+            _rate_reset_epoch_reply "$seven_day_reset"; seven_day_reset_epoch=$REPLY
+            [ "$seven_day_reset_epoch" -gt 0 ] && [ "$seven_day_reset_epoch" -le "$now" ] && seven_day=""
+        fi
+    fi
+
     # History rows drive both projections and need two measured percentages.
     if [ -n "$now" ] && [ -n "$five_hour" ] && [ -n "$seven_day" ]; then
         if [ "$from_payload" = "true" ] && ! cache_get "rate_limits_payload_recorded" "$cache_ttl" >/dev/null; then
@@ -507,7 +530,6 @@ module_rate_limits() {
 
     # Parse 5-hour reset time and calculate projection
     if [ -n "$now" ] && [ -n "$five_hour" ] && [ -n "$five_hour_reset" ]; then
-        local five_hour_reset_epoch=$(cortado_utc_epoch "${five_hour_reset%%.*}")
         five_hour_remaining=$((five_hour_reset_epoch - now))
         if [ "$five_hour_remaining" -gt 18000 ]; then
             five_hour_remaining=18000
@@ -535,7 +557,6 @@ module_rate_limits() {
 
     # Parse 7-day reset time and calculate projection
     if [ -n "$now" ] && [ -n "$seven_day" ] && [ -n "$seven_day_reset" ]; then
-        local seven_day_reset_epoch=$(cortado_utc_epoch "${seven_day_reset%%.*}")
         seven_day_remaining=$((seven_day_reset_epoch - now))
         if [ "$seven_day_remaining" -gt 604800 ]; then
             seven_day_remaining=604800
