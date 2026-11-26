@@ -3,7 +3,8 @@
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TEST_BASE=$(mktemp -d) || exit 1
-trap 'rm -rf "$TEST_BASE"' EXIT
+# A case below gives a file an ACL that denies delete; clear ACLs so it can go.
+trap 'chmod -RN "$TEST_BASE" 2>/dev/null; rm -rf "$TEST_BASE"' EXIT
 TEST_BASE=$(cd "$TEST_BASE" && pwd -P) || exit 1
 # shellcheck source=tests/lib/assert.sh
 . "$REPO_ROOT/tests/lib/assert.sh" indented
