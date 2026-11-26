@@ -13,7 +13,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 section="${WRITER_TEST_SECTION:-all}"
 if [ "$section" = all ]; then
     run_sections WRITER_TEST_SECTION "${WRITER_TEST_JOBS:-4}" "${BASH_SOURCE[0]}" \
-        refused modules permissions failed umask lines usermodule order shell later menu project
+        menusave refused modules permissions failed umask lines usermodule order shell later menu project
 fi
 
 TEST_BASE=$(mktemp -d) || exit 1
@@ -54,15 +54,16 @@ with_umask() (
     shift
     "$@"
 )
-# Drive the real menu through a terminal and save at once.
+# Drive the real menu through a terminal with the given keys (default: s, save).
 menu_save() (
     export TERM=xterm NO_COLOR=1
     if [ "$(uname)" = Darwin ]; then
-        script -q /dev/null /bin/bash "$CORTADO" config <<< s
+        script -q /dev/null /bin/bash "$CORTADO" config <<< "${1:-s}"
     else
         # The shell started by script expands this path.
         # shellcheck disable=SC2016
-        CORTADO_MENU_SCRIPT="$CORTADO" script -q -c 'exec /bin/bash "$CORTADO_MENU_SCRIPT" config' /dev/null <<< s
+        CORTADO_MENU_SCRIPT="$CORTADO" script -q -c 'exec /bin/bash "$CORTADO_MENU_SCRIPT" config' /dev/null \
+            <<< "${1:-s}"
     fi
 )
 
@@ -479,6 +480,44 @@ if section_is later; then
     assert_rc 'set edits a key that ends another key' 0 config_edit --set PROGRESS_BAR_WIDTH=12
     assert_rc 'a longer key with the same ending does not move the edit' 0 cmp -s "$expected" "$config"
     assert_empty 'a longer key with the same ending is not reported' "$(cat "$stderr")"
+fi
+
+if section_is menusave; then
+    echo "=== menu saves write only what changed (#77) ==="
+    if command -v script >/dev/null 2>&1; then
+        # A menu save writes only what the user changed (#77).
+        rm -f "$config" "$config.bak"
+        # shellcheck disable=SC2016 # The conditional is literal config text.
+        printf '%s\n' 'MODULE_CPU=false' 'COLOR_THEME=default' \
+            'if [ "${ON_WORK_LAPTOP:-}" = 1 ]; then MODULE_CPU=true; COLOR_THEME=monochrome; fi' \
+            '# local preference' 'MODULE_ORDER="cpu,model"' > "$config"
+        cp "$config" "$before"
+        menu_out=$(menu_save 2>&1)
+        assert_rc 'a menu save with no edits leaves the file byte-identical' 0 cmp -s "$before" "$config"
+        assert_rc 'a menu save with no edits writes no backup' 1 test -e "$config.bak"
+        assert_contains 'a menu save with no edits says nothing changed' 'No changes to save' "$menu_out"
+        ON_WORK_LAPTOP=1 CORTADO_CONF_ALLOW_BASH=1 menu_save >/dev/null 2>&1
+        assert_rc 'a no-op save under a sourced conditional bakes in no host values' 0 cmp -s "$before" "$config"
+        menu_save $'\n\n\n\n\n\ny\n' >/dev/null 2>&1
+        assert_rc 'walking the whole menu with Enter changes nothing' 0 cmp -s "$before" "$config"
+
+        printf '%s\n' 'COLOR_THEME=minimal' 'NETWORK_SHOW_WAN=yes' 'NETWORK_WAN_REDACT=off' > "$config"
+        cp "$config" "$before"
+        menu_save $'\n\n\n\n\n\ny\n' >/dev/null 2>&1
+        assert_rc 'Enter keeps a theme and WAN choice the menu does not list first' 0 cmp -s "$before" "$config"
+
+        # Space toggles the first core module (sandbox) off, then s saves.
+        printf '%s\n' '# order kept' 'MODULE_ORDER="cpu,sandbox,model"' 'MODULE_SANDBOX=true' \
+            'MODULE_CPU=true' 'COLOR_THEME=default' > "$config"
+        printf '%s\n' '# order kept' 'MODULE_ORDER="cpu,model"' 'MODULE_SANDBOX="false"' \
+            'MODULE_CPU=true' 'COLOR_THEME=default' > "$expected"
+        menu_out=$(menu_save ' s' 2>&1)
+        assert_rc 'a menu toggle changes its flag and its place in the order only' 0 cmp -s "$expected" "$config"
+        assert_contains 'a menu save with an edit reports the save' "Saved $config" "$menu_out"
+    else
+        # Every case here drives the menu through script(1), which CI installs.
+        fail 'menu save cases need script(1)'
+    fi
 fi
 
 if section_is menu; then

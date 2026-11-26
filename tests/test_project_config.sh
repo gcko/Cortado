@@ -261,9 +261,37 @@ rm -f "$PROJECT_FILE"
 rc=0
 project_menu 's' > "$TEST_BASE/result" 2>&1 || rc=$?
 assert_eq "saving an empty project succeeds with nounset" "0" "$rc"
-printf '%s\n' "$header" > "$TEST_BASE/header"
-assert_eq "an empty save writes only its header and newline" "0" \
-    "$(cmp -s "$TEST_BASE/header" "$PROJECT_FILE"; echo "$?")"
+# A save with no edits writes nothing, not even a header (#77).
+assert_eq "an empty save creates no project file" "absent" \
+    "$(if [ ! -e "$PROJECT_FILE" ]; then echo absent; fi)"
+assert_eq "an empty save says nothing changed" "No changes to save; $PROJECT_FILE is unchanged." \
+    "$(sed -n 's/^.*\(No changes to save.*\)$/\1/p' "$TEST_BASE/result")"
+
+# A module that is already off is not an edit; the menu's n writes only the
+# modules it turns off.
+cp "$CLAUDE_CONFIG_DIR/cortado.conf" "$TEST_BASE/trusted-before-none"
+printf '%s\n' 'MODULE_BATTERY=false' >> "$CLAUDE_CONFIG_DIR/cortado.conf"
+printf '%s\n' '# keep' > "$PROJECT_FILE"
+rc=0
+project_menu 'ns' > "$TEST_BASE/result" 2>&1 || rc=$?
+assert_eq "disabling every core module saves" "0" "$rc"
+assert_eq "a core module the menu turned off is written" 'MODULE_MODEL="false"' \
+    "$(grep '^MODULE_MODEL=' "$PROJECT_FILE")"
+assert_eq "no line is written for a core module that was already off" "0" \
+    "$(grep -c '^MODULE_BATTERY=' "$PROJECT_FILE")"
+assert_eq "the first line is kept" "# keep" "$(sed -n 1p "$PROJECT_FILE")"
+cp "$TEST_BASE/trusted-before-none" "$CLAUDE_CONFIG_DIR/cortado.conf"
+rm -f "$PROJECT_FILE"
+
+# Walking the project menu with Enter keeps the theme it starts on.
+printf '%s\n' '# keep' 'COLOR_THEME=monochrome' > "$PROJECT_FILE"
+cp "$PROJECT_FILE" "$TEST_BASE/project-before"
+rc=0
+project_menu $'\n\n\n\n\ny\n' > "$TEST_BASE/result" 2>&1 || rc=$?
+assert_eq "an unchanged project menu walk succeeds" "0" "$rc"
+assert_eq "an unchanged project menu walk leaves the file byte-identical" "0" \
+    "$(cmp -s "$TEST_BASE/project-before" "$PROJECT_FILE"; echo "$?")"
+rm -f "$PROJECT_FILE"
 assert_rc "a menu save releases its edit lock" 1 test -d "$PROJECT_FILE.cortado-lock"
 
 rm -f "$PROJECT_FILE"

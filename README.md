@@ -297,7 +297,7 @@ cortado config --path          # print the resolved config path
 cortado config --help          # show usage
 ```
 
-The default save path is `$CLAUDE_CONFIG_DIR/cortado.conf` (usually `~/.claude/cortado.conf`). Use `--project` to save allowed preferences in the current directory. Cancel leaves the file untouched.
+The default save path is `$CLAUDE_CONFIG_DIR/cortado.conf` (usually `~/.claude/cortado.conf`). Use `--project` to save allowed preferences in the current directory. Cancel leaves the file untouched. A menu save writes only the settings you changed, and moves only the modules you switched on or off in `MODULE_ORDER`; with no changes it writes nothing. The theme and WAN choices start on the current setting, so pressing Enter through them keeps it. A module flag the menu shows as on but the file spells `yes`, `1` or `on` is saved as `true`, since the statusline reads only `true` as on.
 
 For the user config, `--set` replaces the last standalone assignment for the key or appends one if needed. When a later line could assign the key again (inside an `if`, say), it appends the new value so it takes effect, and says which line. It refuses a value that does not fit the setting's type. It saves module flag values of `yes`, `1`, and `on` as `true`, and `no`, `0`, and `off` as `false`, and adds or removes the module in `MODULE_ORDER` the way `--toggle` does.
 

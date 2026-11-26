@@ -92,6 +92,10 @@ _cfg_set_module() {
     local name="$1" state="$2" scope="${3:-global}" var
     var=$(_cfg_module_var "$name")
     if [ "$scope" = "project" ]; then
+        # Disabling a module that is already off is not an edit.
+        if [ "$state" = false ] && ! _cfg_module_enabled "$name" project; then
+            return 0
+        fi
         _cfg_set_project_value "$var" "$state"
     else
         printf -v "$var" '%s' "$state"
@@ -197,21 +201,6 @@ _cfg_set_project_value() {
         [ "${edit%%=*}" = "$key" ] || edits+=("$edit")
     done
     _CFG_PROJECT_EDITS=("${edits[@]+"${edits[@]}"}" "$key=$val")
-}
-
-_cfg_rebuild_module_order() {
-    local order="" mod_def name
-    for mod_def in "${_CFG_ALL_MODULES[@]}"; do
-        name=$(_cfg_mod_name "$mod_def")
-        if _cfg_module_enabled "$name"; then
-            if [ -n "$order" ]; then
-                order="${order},${name}"
-            else
-                order="$name"
-            fi
-        fi
-    done
-    MODULE_ORDER="$order"
 }
 
 _cfg_order_add() {
@@ -512,26 +501,67 @@ _cfg_stage_conf() {
     mv -f -- "$tmp" "$target" || return 1
 }
 
+# Record what the menu starts from, so a save writes only what the user changed.
+_cfg_menu_snapshot() {
+    local mod_def name var
+    _CFG_BASE_THEME="${COLOR_THEME:-}" _CFG_BASE_ORDER="${MODULE_ORDER:-}"
+    _CFG_BASE_SHOW_WAN="${NETWORK_SHOW_WAN:-}" _CFG_BASE_WAN_REDACT="${NETWORK_WAN_REDACT:-}"
+    _CFG_BASE_SHOWN=() _CFG_BASE_RAW=()
+    for mod_def in "${_CFG_ALL_MODULES[@]}"; do
+        name=$(_cfg_mod_name "$mod_def")
+        var=$(_cfg_module_var "$name")
+        _CFG_BASE_RAW+=("${!var-}")
+        if _cfg_module_enabled "$name"; then
+            _CFG_BASE_SHOWN+=(true)
+        else
+            _CFG_BASE_SHOWN+=(false)
+        fi
+    done
+}
+
+# Set _CFG_SAVE_UNCHANGED=true, and write nothing, when there is no edit.
 _cfg_save_menu() {
-    local path="$1" scope="$2" mod_def name var
-    local edits=()
+    local path="$1" scope="$2" mod_def name var state i=0
+    local edits=() flags=()
+    _CFG_SAVE_UNCHANGED=false
     if [ "$scope" = global ]; then
-        _cfg_rebuild_module_order
-        edits=("COLOR_THEME=$COLOR_THEME" "NETWORK_SHOW_WAN=$NETWORK_SHOW_WAN"
-            "NETWORK_WAN_REDACT=$NETWORK_WAN_REDACT" "MODULE_ORDER=$MODULE_ORDER")
+        MODULE_ORDER="$_CFG_BASE_ORDER"
         for mod_def in "${_CFG_ALL_MODULES[@]}"; do
             name=$(_cfg_mod_name "$mod_def")
             var=$(_cfg_module_var "$name")
-            # The renderer needs true, so legacy yes/on/1 are saved canonically.
-            if _cfg_module_enabled "$name"; then
-                edits+=("$var=true")
-            else
-                edits+=("$var=false")
+            state=false
+            ! _cfg_module_enabled "$name" || state=true
+            # Write a flag the user changed. The renderer reads only true as on,
+            # so a flag the menu showed on as yes, 1 or on is saved as true too.
+            if [ "$state" != "${_CFG_BASE_SHOWN[i]}" ] ||
+                { [ "$state" = true ] && [ "${_CFG_BASE_RAW[i]}" != true ]; }; then
+                flags+=("$var=$state")
+                _cfg_sync_module_order "$name"
             fi
+            i=$((i + 1))
         done
+        [ "$COLOR_THEME" = "$_CFG_BASE_THEME" ] || edits+=("COLOR_THEME=$COLOR_THEME")
+        [ "$NETWORK_SHOW_WAN" = "$_CFG_BASE_SHOW_WAN" ] || edits+=("NETWORK_SHOW_WAN=$NETWORK_SHOW_WAN")
+        [ "$NETWORK_WAN_REDACT" = "$_CFG_BASE_WAN_REDACT" ] ||
+            edits+=("NETWORK_WAN_REDACT=$NETWORK_WAN_REDACT")
+        [ "$MODULE_ORDER" = "$_CFG_BASE_ORDER" ] || edits+=("MODULE_ORDER=$MODULE_ORDER")
+        edits+=("${flags[@]+"${flags[@]}"}")
+    else
+        edits=("${_CFG_PROJECT_EDITS[@]+"${_CFG_PROJECT_EDITS[@]}"}")
     fi
-    [ "$scope" != project ] || edits=("${_CFG_PROJECT_EDITS[@]+"${_CFG_PROJECT_EDITS[@]}"}")
-    _cfg_write_conf "$path" "$scope" "${edits[@]+"${edits[@]}"}"
+    if [ "${#edits[@]}" -eq 0 ]; then
+        _CFG_SAVE_UNCHANGED=true
+        return 0
+    fi
+    _cfg_write_conf "$path" "$scope" "${edits[@]}"
+}
+
+_cfg_report_save() {
+    if [ "$_CFG_SAVE_UNCHANGED" = true ]; then
+        echo "No changes to save; $1 is unchanged."
+    else
+        echo "Saved $1"
+    fi
 }
 
 _cfg_show() {
@@ -731,12 +761,13 @@ _cfg_interactive_modules() {
     echo ""
 }
 
+# Start on the option at index $2, the current value, so Enter keeps it.
 _cfg_interactive_choice() {
-    local title="$1"
-    shift
+    local title="$1" current_idx="$2"
+    shift 2
     local options=("$@")
     local count=${#options[@]}
-    local current_idx=0 drawn="false" key escape_seq label
+    local drawn="false" key escape_seq label
 
     printf "\033[?25l"
     echo ""
@@ -776,9 +807,11 @@ _cfg_interactive_choice() {
 }
 
 _cfg_run_interactive() {
-    local path="$1" scope="$2" mod_group theme
+    local path="$1" scope="$2" mod_group theme start
+    local theme_options=()
     _CFG_SAVE_REQUESTED=0
     _CFG_QUIT_REQUESTED=0
+    _cfg_menu_snapshot
 
     echo ""
     printf "%sCortado config%s  %s\n" "$CFG_BOLD" "$CFG_NC" "$path"
@@ -793,20 +826,26 @@ _cfg_run_interactive() {
             Extra) _cfg_interactive_modules "Extra modules" "$scope" "${_CFG_EXTRA_MODULES[@]}" ;;
         esac
         [ "$_CFG_QUIT_REQUESTED" = "1" ] && { echo "Cancelled — no changes written."; return 1; }
-        [ "$_CFG_SAVE_REQUESTED" = "1" ] && { _cfg_save_menu "$path" "$scope" && echo "Saved $path"; return; }
+        [ "$_CFG_SAVE_REQUESTED" = "1" ] && { _cfg_save_menu "$path" "$scope" && _cfg_report_save "$path"; return; }
     done
 
     if [ "$scope" = "project" ] && project_config_inherited COLOR_THEME; then
         echo "Color theme is read-only (set in the startup environment)."
     else
-        _cfg_interactive_choice "Color theme" \
-            "default|Standard emoji" \
-            "monochrome|ASCII labels and indicators"
-        case "${CFG_CHOICE_RESULT:-0}" in
-            0) theme="default" ;;
-            1) theme="monochrome" ;;
+        theme_options=("default|Standard emoji" "monochrome|ASCII labels and indicators")
+        start=0
+        case "${COLOR_THEME:-default}" in
+            default) ;;
+            monochrome) start=1 ;;
+            # A theme the menu does not list can be kept as it is.
+            *'|'*) ;;
+            *) theme_options=("$COLOR_THEME|Keep the current theme" "${theme_options[@]}") ;;
         esac
-        if [ "$scope" = "project" ]; then
+        _cfg_interactive_choice "Color theme" "$start" "${theme_options[@]}"
+        theme="${theme_options[${CFG_CHOICE_RESULT:-$start}]%%|*}"
+        if [ "$theme" = "${COLOR_THEME:-default}" ]; then
+            :
+        elif [ "$scope" = "project" ]; then
             if ! _cfg_set_project_value COLOR_THEME "$theme"; then
                 echo "config: could not set the project color theme" >&2
                 return 2
@@ -817,15 +856,27 @@ _cfg_run_interactive() {
     fi
 
     if [ "$scope" = "global" ]; then
-        _cfg_interactive_choice "WAN IP (privacy)" \
+        start=0
+        case "$NETWORK_SHOW_WAN" in
+            true|TRUE|yes|YES|1|on|ON)
+                case "$NETWORK_WAN_REDACT" in
+                    false|FALSE|no|NO|0|off|OFF) start=2 ;;
+                    *) start=1 ;;
+                esac
+                ;;
+        esac
+        _cfg_interactive_choice "WAN IP (privacy)" "$start" \
             "off|Do not fetch WAN IP (recommended)" \
             "redacted|Fetch but redact" \
             "show|Show full WAN IP"
-        case "${CFG_CHOICE_RESULT:-0}" in
-            0) NETWORK_SHOW_WAN="false"; NETWORK_WAN_REDACT="true" ;;
-            1) NETWORK_SHOW_WAN="true"; NETWORK_WAN_REDACT="true" ;;
-            2) NETWORK_SHOW_WAN="true"; NETWORK_WAN_REDACT="false" ;;
-        esac
+        # Keeping the current choice keeps both settings as they are.
+        if [ "${CFG_CHOICE_RESULT:-$start}" != "$start" ]; then
+            case "$CFG_CHOICE_RESULT" in
+                0) NETWORK_SHOW_WAN="false"; NETWORK_WAN_REDACT="true" ;;
+                1) NETWORK_SHOW_WAN="true"; NETWORK_WAN_REDACT="true" ;;
+                2) NETWORK_SHOW_WAN="true"; NETWORK_WAN_REDACT="false" ;;
+            esac
+        fi
     fi
 
     echo ""
@@ -841,8 +892,9 @@ _cfg_run_interactive() {
             ;;
     esac
     if _cfg_save_menu "$path" "$scope"; then
-        echo "Saved $path"
-        echo "Restart Claude Code (or re-render statusline) to apply."
+        _cfg_report_save "$path"
+        [ "$_CFG_SAVE_UNCHANGED" = true ] ||
+            echo "Restart Claude Code (or re-render statusline) to apply."
         return 0
     fi
     echo "Failed to write $path" >&2
