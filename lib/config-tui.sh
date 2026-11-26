@@ -397,9 +397,10 @@ _cfg_resolve_target() {
     case "$path" in /*) ;; *) path="$PWD/$path" ;; esac
     while [ -L "$path" ]; do
         if [ "$hops" -ge 40 ]; then return 1; fi
-        # The marker preserves any trailing newlines in the link's name.
-        link=$(readlink "$path" && printf '.') || return 1
-        link="${link%$'\n.'}"
+        # -n and the marker keep any trailing newline in the target's name,
+        # as the renderer's trust check reads it.
+        link=$(command readlink -n "$path" && printf '.') || return 1
+        link="${link%.}"
         case "$link" in
             /*) path="$link" ;;
             *) path="${path%/*}/$link" ;;

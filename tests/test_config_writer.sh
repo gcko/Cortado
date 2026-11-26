@@ -117,6 +117,22 @@ CONFIG
     assert_contains 'writer identifies the failed lookup' 'could not resolve config destination' "$(cat "$stderr")"
     assert_rc 'a failed link lookup leaves the target alone' 0 cmp -s "$expected" "$target"
     rm "$TEST_BASE/bin/readlink"
+
+    # The renderer keeps a trailing newline in a link target's name (#86).
+    rm -f "$config"
+    nl_dir="$TEST_BASE/newline target"
+    mkdir "$nl_dir"
+    nl_target="$nl_dir/user.conf"$'\n'
+    printf '%s\n' 'MODULE_ORDER="model"' 'MODEL_ICON="NL"' > "$nl_target"
+    chmod 600 "$nl_target"
+    ln -s "$nl_target" "$config"
+    assert_rc 'set edits a link target whose name ends in a newline' 0 config_edit --set MODEL_ICON=EDITED
+    assert_file_contains 'the newline-named target holds the edit' 'MODEL_ICON="EDITED"' "$nl_target"
+    assert_rc 'no sibling without the newline is created' 1 test -e "$nl_dir/user.conf"
+    nl_line=$(printf '%s' '{"model":{"display_name":"Opus"}}' | /bin/bash "$CORTADO" 2>/dev/null |
+        sed $'s/\x1b\\[[0-9;]*m//g')
+    assert_eq 'the statusline reads the edited newline-named target' 'EDITED Opus' "$nl_line"
+    rm -rf "$config" "$nl_dir"
 fi
 
 if section_is modules; then
