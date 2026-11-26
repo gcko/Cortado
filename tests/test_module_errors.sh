@@ -424,8 +424,12 @@ cp -R "$PROJECT_ROOT/modules" "$PROJECT_ROOT/lib" "$LOCKED_TREE/" || exit 1
 # shellcheck disable=SC2016
 printf '%s\n' 'chmod 400 "$CORTADO_STDERR_CAPTURE/pipe" 2>/dev/null' \
     > "$LOCKED_TREE/modules/aaa-lock-capture.sh" || exit 1
+# A module that fails while the capture is locked must not leak a job notice
+# for the killed reader onto the render's stderr.
+printf '%s\n' '# @cortado-module failmod' '# @default true' '# @args none' '# @platforms darwin,linux' \
+    'module_failmod() { return 7; }' > "$LOCKED_TREE/modules/failmod.sh" || exit 1
 locked_config="$(mktemp -d "$TEST_BASE/locked.XXXXXX")"
-printf '%s\n' 'LAYOUT_MODE="none"' 'MODULE_ORDER="model"' 'DEBUG_MODE=true' > "$locked_config/cortado.conf"
+printf '%s\n' 'LAYOUT_MODE="none"' 'MODULE_ORDER="failmod,model"' 'DEBUG_MODE=true' > "$locked_config/cortado.conf"
 chmod 600 "$locked_config/cortado.conf" || exit 1
 locked_rc=0
 printf '%s' '{"model":{"display_name":"Opus"}}' > "$locked_config/payload"
@@ -436,6 +440,18 @@ locked_out=$(sed $'s/\x1b\\[[0-9;]*m//g' "$locked_config/stdout")
 assert_eq 'A capture that cannot be opened does not hang the debug render' 0 "$locked_rc"
 assert_eq 'A capture that cannot be opened still loads and runs the module' '🤖 Opus' "$locked_out"
 assert_eq 'A capture that cannot be opened keeps the render stderr quiet' '' "$(cat "$locked_config/stderr")"
+
+# A failing module's stderr and its exit status both reach the debug log.
+FAILING_TREE="$TEST_BASE/failing-module"
+mkdir -m 700 "$FAILING_TREE"
+cp "$PROJECT_ROOT/cortado.sh" "$PROJECT_ROOT/cortado.conf" "$FAILING_TREE/" || exit 1
+cp -R "$PROJECT_ROOT/modules" "$PROJECT_ROOT/lib" "$FAILING_TREE/" || exit 1
+printf '%s\n' '# @cortado-module failmod' '# @default true' '# @args none' '# @platforms darwin,linux' \
+    'module_failmod() { printf "%s\n" boom >&2; return 7; }' > "$FAILING_TREE/modules/failmod.sh" || exit 1
+render "$FAILING_TREE" "$PATH" clean 'MODULE_ORDER="failmod,model"' 'DEBUG_MODE=true'
+assert_eq 'A failing module leaves the next reading visible' '🤖 Claude Sonnet' "$out"
+assert_contains 'Debug logs a failing module stderr' 'failmod: boom' "$log"
+assert_contains 'Debug logs a failing module exit status' 'Module failmod failed with exit code 7' "$log"
 
 printf '\nResults: %s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

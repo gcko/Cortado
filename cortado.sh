@@ -1046,11 +1046,16 @@ render_statusline() {
             # This prevents a single module crash from killing the entire statusline.
             local output
             start_module_stderr
-            output=$(with_module_stderr "$module_stderr" run_module "$module" "$current_dir" "$input") || {
-                log_debug "Module $module failed with exit code $?"
-                output=""
-            }
+            # Reap the capture reader before anything else forks, so a reader
+            # killed after a failed capture open leaves no job notice on stderr.
+            local module_rc=0
+            output=$(with_module_stderr "$module_stderr" run_module "$module" "$current_dir" "$input") ||
+                module_rc=$?
             log_module_stderr "$module"
+            if [ "$module_rc" -ne 0 ]; then
+                log_debug "Module $module failed with exit code $module_rc"
+                output=""
+            fi
 
             if [ -n "$output" ]; then
                 if [ -n "$sections" ]; then
