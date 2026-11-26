@@ -61,7 +61,7 @@ module_memory() {
     local mem_used=""
     local mem_total=""
 
-    if [ "${render_os-$(uname)}" = Darwin ]; then
+    if [ "${CORTADO_OS:-}" = darwin ]; then
         local used_bytes total_mem
         if ! _memory_darwin_reading; then
             printf '%s --\n' "$icon"

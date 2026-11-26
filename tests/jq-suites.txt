@@ -31,6 +31,7 @@ test_directory.sh
 test_layout.sh
 test_module_catalog.sh
 test_module_errors.sh
+test_platform.sh
 test_project_config.sh
 test_timezone.sh
 test_version.sh

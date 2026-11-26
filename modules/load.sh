@@ -27,7 +27,7 @@ _load_probe() {
     local os="$1" num_cpus uptime_output load1 load5 load15
     local load_number='^[0-9]+([.][0-9]+)?$'
     case "$os" in
-        Darwin) num_cpus=$(sysctl -n hw.ncpu) || num_cpus=4 ;;
+        darwin) num_cpus=$(sysctl -n hw.ncpu) || num_cpus=4 ;;
         *) num_cpus=$(nproc) || num_cpus=4 ;;
     esac
     [[ "$num_cpus" =~ ^[1-9][0-9]{0,5}$ ]] || num_cpus=4
@@ -57,7 +57,7 @@ _load_reaches_threshold() {
 module_load() {
     get_icon_reply "${LOAD_ICON:-📊}" "LOAD:"
     local icon="$REPLY"
-    local os="${render_os-$(uname)}"
+    local os="${CORTADO_OS:-}"
     cached_probe load 10 5 "${BASH_SOURCE[0]}" _load_probe "$os"
 
     local num_cpus load1 load5 load15

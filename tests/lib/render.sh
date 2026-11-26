@@ -22,22 +22,13 @@ render() (
         'COLOR_THEME="monochrome"' 'DISPLAY_MODE="normal"' 'TERMINAL_WIDTH=200' \
         "$@" > "$sb/cortado.conf" || exit 1
     if [ -n "${RENDER_OS:-}" ]; then
-        # Force main's probe while keeping config permission checks on the real OS.
-        cat >> "$sb/cortado.conf" <<'CONFIG'
-OSTYPE=fixture
-uname() {
-    if [ "${FUNCNAME[1]:-}" = main ] && [ "${1:-}" = -s ]; then
-        printf '%s\n' "$TEST_OS"
-    else
-        command uname "$@"
-    fi
-}
-CONFIG
+        # Force the module platform (darwin or linux); file checks stay on the host.
+        printf 'CORTADO_OS=%s\n' "$RENDER_OS" >> "$sb/cortado.conf" || exit 1
     fi
     chmod 600 "$sb/cortado.conf" || exit 1
     cd "$TEST_BASE" || exit 1
     printf '%s' "$payload" |
-        LC_ALL=C PATH="$TEST_BASE/bin:$PATH" TEST_OS="${RENDER_OS:-}" TEST_SAMPLE="$sample" \
+        LC_ALL=C PATH="$TEST_BASE/bin:$PATH" TEST_SAMPLE="$sample" \
         CLAUDE_CONFIG_DIR="$sb" CACHE_DIR="$sb/cortado-cache" /bin/bash "$PROJECT_ROOT/cortado.sh" 2>&1 |
         sed $'s/\x1b\\[[0-9;]*m//g'
 )

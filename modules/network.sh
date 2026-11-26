@@ -71,7 +71,7 @@ _network_local_probe() {
     # Get LAN IP
     if [ "$show_lan" = "true" ]; then
         local addresses
-        if [ "$os" = Darwin ]; then
+        if [ "$os" = darwin ]; then
             lan_ip=$(ipconfig getifaddr en0 2>/dev/null) ||
                 lan_ip=$(ipconfig getifaddr en1 2>/dev/null) || lan_ip=""
         else
@@ -87,7 +87,7 @@ _network_local_probe() {
     # Get WiFi SSID (macOS). The legacy `airport` CLI was removed in Sonoma+;
     # prefer networksetup / ipconfig getsummary, fall back to airport if present.
     # Capture the full SSID (spaces allowed) — never awk $2 only.
-    if [ "$show_ssid" = "true" ] && [ "$os" = Darwin ]; then
+    if [ "$show_ssid" = "true" ] && [ "$os" = darwin ]; then
         local wifi_dev line airport
         wifi_dev=$(networksetup -listallhardwareports 2>/dev/null | awk '/Wi-Fi|AirPort/{getline; print $2; exit}')
         wifi_dev="${wifi_dev:-en0}"
@@ -144,9 +144,9 @@ module_network() {
 
     if [ "$show_lan" = true ] || [ "$show_ssid" = true ]; then
         attempted=true
-        local os="${render_os-$(uname)}"
+        local os="${CORTADO_OS:-}"
         [ "$show_lan" = true ] || show_lan=false
-        if [ "$show_ssid" != true ] || [ "$os" != Darwin ]; then show_ssid=false; fi
+        if [ "$show_ssid" != true ] || [ "$os" != darwin ]; then show_ssid=false; fi
         if [ "$show_lan" = true ] || [ "$show_ssid" = true ]; then
             local key="network-local-$show_lan-$show_ssid" lan ssid
             if [ "$show_lan" = true ] && [ "$show_ssid" = true ]; then

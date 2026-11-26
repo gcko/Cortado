@@ -20,9 +20,10 @@ PROJECT_FILE="$PROJECT/.cortado.conf"
 # shellcheck source=tests/lib/assert.sh
 . "$SCRIPT_DIR/tests/lib/assert.sh" indented
 
+# Pin darwin: the expected lines include the macOS-only battery and sandbox.
 render() {
     printf '%s' '{"workspace":{"current_dir":"'"$PROJECT"'"},"model":{"display_name":"Test"}}' \
-        | /bin/bash "$CORTADO" | sed $'s/\x1b\\[[0-9;]*m//g'
+        | CORTADO_OS=darwin /bin/bash "$CORTADO" | sed $'s/\x1b\\[[0-9;]*m//g'
 }
 
 project_config() {

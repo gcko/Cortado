@@ -5,7 +5,7 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=tests/lib/render.sh
 . "$PROJECT_ROOT/tests/lib/render.sh" battery
 
-RENDER_OS=Darwin
+RENDER_OS=darwin
 cat > "$TEST_BASE/bin/pmset" <<'STUB'
 #!/bin/bash
 [ "$*" = "-g batt" ] || exit 2

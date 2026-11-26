@@ -25,6 +25,7 @@ Cortado/
 │   ├── config-tui.sh   # Runtime config TUI (`cortado config`)
 │   ├── config-permissions.sh # Ownership and mode checks for sourced files
 │   ├── module-registry.sh    # Header discovery for renderer and catalogs
+│   ├── platform.sh          # CORTADO_OS and the BSD/GNU stat and date helpers
 │   └── semver.sh            # Version comparison for installer and update module
 ├── modules/
 │   ├── utils.sh        # Shared utility functions (MUST load first)
@@ -67,9 +68,10 @@ Cortado/
    When there is no `cortado.conf` entry, Cortado and the installer check `$CLAUDE_CONFIG_DIR/barista.conf` before copying it with its permissions intact. The renderer loads a trusted legacy file in place if the destination parent fails the check or copying fails. A project's `.barista.conf` is read only when that project has no `.cortado.conf`. Keep these fallbacks until Barista users have had time to migrate.
 
    Cortado and the installer use the same permission check before sourcing Bash config. The resolved file must belong to the current user, with root also allowed for packaged config. Its parent must belong to the current user or root. Group or other write access is refused, except on a parent with the sticky bit. Unreadable permission metadata also causes a refusal. When packaged settings are unavailable, the renderer falls back to the module header defaults and its built-in display defaults, and adds one `Config refused` section when it rejects Bash config. Detailed reasons go to stderr and to the statusline's debug log when trusted settings enable it. Per-directory `.cortado.conf` is read as literal KEY=VALUE settings through `load_config_safe`. Config-derived numerics are validated before they reach `bc`/URL sinks. `cortado config --project` uses the same safe parser.
-3. **Modules are discovered** from their headers in `modules/` and in `$CLAUDE_CONFIG_DIR/cortado-modules/`. The renderer sources the installed scripts with `utils.sh` first. It sources user modules inside their execution subshell after the same check, except that a sticky parent does not exempt module code. Module refusals are reported only in debug mode.
-4. **Modules are executed** in the order specified by `MODULE_ORDER` config
-5. **Output is concatenated** with the configured `SEPARATOR` and printed
+3. **The platform is decided once** by `cortado_resolve_os` in `lib/platform.sh`, after the trusted configs and before modules load. `CORTADO_OS` is `darwin` or `linux` (WSL is `linux`), read from the build triple in `BASH_VERSINFO[5]`; no module calls `uname` or reads `OSTYPE`. The environment or a trusted config may force `CORTADO_OS=darwin` or `linux` (tests do); any other value is ignored, logged in debug mode, and the detected platform is used. The project config cannot set it. On any other platform the line reads `cortado: unsupported platform`. The BSD/GNU helpers there (`_file_mtime`, `cortado_file_mode`, `cortado_utc_epoch`) follow the real host, not a forced value.
+4. **Modules are discovered** from their headers in `modules/` and in `$CLAUDE_CONFIG_DIR/cortado-modules/`. The renderer sources the installed scripts with `utils.sh` first. It sources user modules inside their execution subshell after the same check, except that a sticky parent does not exempt module code. Module refusals are reported only in debug mode.
+5. **Modules are executed** in the order specified by `MODULE_ORDER` config, skipping any whose `@platforms` leaves out `CORTADO_OS`
+6. **Output is concatenated** with the configured `SEPARATOR` and printed
 
 ## Key Files
 
@@ -173,7 +175,7 @@ Create `modules/mymodule.sh` and put the following metadata in its leading comme
 | `@args none` | Use `dir` for the resolved workspace directory or `payload` for the input JSON. |
 | `@ttl 0` | Default probe cache lifetime in seconds. The module manages its cache. |
 | `@timeout-ms 0` | Default probe timeout in milliseconds. The module manages its deadlines. |
-| `@platforms darwin,linux` | Platforms on which the module runs. Include a platform if the module renders a fallback there. |
+| `@platforms darwin,linux` | Platforms the module has an implementation for: `darwin`, `linux`, or both. Elsewhere the renderer skips it, so a module with no Linux implementation declares `darwin` only. Branch inside a module on `$CORTADO_OS`, never on `uname` or `OSTYPE`. |
 | `@config KEY:type` | A project-safe option in an installed module. Add one line per key with `bool`, `int`, `number`, or `string`. The module validates values. |
 | `@menu extra` | Optional category. Use `core`, `system`, `dev`, or `extra`. An optional number gives the menu position. |
 | `@description My module` | Optional text for the installer and config catalog. |
@@ -199,6 +201,7 @@ Regression tests live in `tests/` and share the Bash assertions in `tests/lib/as
 ```bash
 /bin/bash tests/test_utils.sh           # utils.sh helpers
 /bin/bash tests/test_rate_limits.sh     # rate-limit parsers/backoff
+/bin/bash tests/test_platform.sh        # CORTADO_OS, @platforms skipping, BSD/GNU helpers
 /bin/bash tests/test_config_cli.sh      # cortado config CLI and Barista migration
 /bin/bash tests/test_install_update.sh  # installer update flags, runtime copy, migration
 /bin/bash tests/run-suites.sh           # all suites in parallel, or the suites named as arguments

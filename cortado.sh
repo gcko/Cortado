@@ -36,6 +36,8 @@ CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 . "$SCRIPT_DIR/lib/config-permissions.sh"
 # shellcheck source=lib/module-registry.sh
 . "$SCRIPT_DIR/lib/module-registry.sh"
+# shellcheck source=lib/platform.sh
+. "$SCRIPT_DIR/lib/platform.sh"
 
 # =============================================================================
 # CONFIGURATION LOADING
@@ -206,6 +208,10 @@ else
     load_config "$USER_CONFIG"
 fi
 
+# Decide the platform once, after the trusted configs (which may force it) and
+# before modules load or the untrusted project config is read.
+cortado_resolve_os
+
 # =============================================================================
 # LOAD MODULES
 # =============================================================================
@@ -287,6 +293,32 @@ log_module_stderr() {
     log_debug "$diagnostics"
 }
 
+# with_module_stderr <target> <command...> - run the command in this shell with
+# its stderr in <target>. Opening the debug capture's FIFO for writing blocks
+# until start_module_stderr's reader opens the other end, and that open can
+# fail: bash 3.2 does not restart it when a child exits meanwhile (EINTR), and
+# a removed or unwritable pipe refuses it. A failed open would skip the command
+# and leave the reader waiting forever for a writer, so retry it, and otherwise
+# release the reader and run the command without the capture.
+with_module_stderr() {
+    local _cms_target="$1" _cms_opened=false _cms_try _cms_status=0
+    shift
+    if [ -z "$CORTADO_STDERR_READER" ]; then
+        "$@" 2>|"$_cms_target"
+        return
+    fi
+    for _cms_try in 1 2 3; do
+        [ -p "$_cms_target" ] || break
+        { { _cms_opened=true; "$@"; } 2>|"$_cms_target"; } 2>/dev/null || _cms_status=$?
+        [ "$_cms_opened" = false ] || return "$_cms_status"
+        _cms_status=0
+    done
+    # KILL, because a TERM that lands while the new reader still holds
+    # main's TERM trap is deferred and then dropped when the subshell resets it.
+    kill -KILL "$CORTADO_STDERR_READER" 2>/dev/null
+    "$@" 2>/dev/null
+}
+
 cleanup_module_stderr() {
     if [ -n "$CORTADO_STDERR_READER" ]; then
         kill "$CORTADO_STDERR_READER" 2>/dev/null || :
@@ -304,7 +336,7 @@ load_modules() {
     if [ -f "$MODULES_DIR/utils.sh" ]; then
         start_module_stderr
         # shellcheck source=/dev/null
-        . "$MODULES_DIR/utils.sh" 2>|"$stderr_file"
+        with_module_stderr "$stderr_file" . "$MODULES_DIR/utils.sh"
         log_module_stderr utils
     else
         CACHE_DIR="$CLAUDE_CONFIG_DIR/cortado-cache"
@@ -313,7 +345,6 @@ load_modules() {
         cached_probe() { REPLY=; }
         _snapshot_probe_cache() { :; }
         init_cache() { return 1; }
-        _file_mtime() { printf '0\n'; }
         is_compact() { [[ "${DISPLAY_MODE:-normal}" == compact || "${1:-}" == true ]]; }
         get_icon() { echo "$1"; }
         get_icon_reply() { REPLY="$1"; }
@@ -336,7 +367,7 @@ load_modules() {
         if [ "$module_name" = payload.sh ] && [ -f "$MODULES_DIR/utils.sh" ]; then continue; fi
         start_module_stderr
         # shellcheck source=/dev/null
-        . "$module_file" 2>|"$stderr_file"
+        with_module_stderr "$stderr_file" . "$module_file"
         log_module_stderr "${module_name%.sh}"
     done
 }
@@ -354,21 +385,15 @@ get_module_function() {
 # already runs this in a subshell so user source and module side effects stay local.
 run_module() {
     local module_name="$1" current_dir="$2" input_json="$3"
-    local func_name path dispatch args platforms platform
+    local func_name path dispatch args platforms
     registered_module_key "$module_name" || return 0
     path="_CORTADO_SOURCE_${REPLY#_CORTADO_MODULE_}"
     dispatch="${!REPLY}"
     dispatch="${dispatch#*|}"
     args="${dispatch%%|*}"
     platforms="${dispatch#*|}"
-    case "$render_os" in
-        Darwin) platform=darwin ;;
-        Linux) platform=linux ;;
-        *) platform= ;;
-    esac
-    if [ -n "$platform" ]; then
-        case ",$platforms," in *",$platform,"*) ;; *) return 0 ;; esac
-    fi
+    # An empty CORTADO_OS (unsupported platform) matches no platform list.
+    case ",$platforms," in *",${CORTADO_OS:-},"*) ;; *) return 0 ;; esac
     if [ -n "${!path-}" ]; then
         # An untrusted project may suppress or reorder already selected user
         # modules. Only the trusted order can authorize sourcing a new one.
@@ -921,15 +946,12 @@ main() {
     fi
     report_module_refusals
 
-    # Resolve the OS in main so trusted configs can supply a uname hook.
-    # Issue #31 will replace render_os with CORTADO_OS.
-    local render_os
-    if [[ "${OSTYPE:-}" == darwin* && "${BASH_VERSINFO[5]}" == *-darwin* ]]; then
-        render_os=Darwin
-    elif [[ "${OSTYPE:-}" == linux* && "${BASH_VERSINFO[5]}" == *-linux* ]]; then
-        render_os=Linux
-    else
-        render_os=$(uname -s 2>/dev/null)
+    if [ -n "${CORTADO_OS_REFUSED:-}" ]; then
+        log_debug "CORTADO_OS=$CORTADO_OS_REFUSED is not a supported platform; using ${CORTADO_OS:-none}"
+    fi
+    if [ -z "${CORTADO_OS:-}" ]; then
+        printf '%s\n' 'cortado: unsupported platform'
+        return 0
     fi
 
     # Keep the original JSON argument for module hooks. A raw NUL is invalid
@@ -1024,11 +1046,16 @@ render_statusline() {
             # This prevents a single module crash from killing the entire statusline.
             local output
             start_module_stderr
-            output=$(run_module "$module" "$current_dir" "$input" 2>|"$module_stderr") || {
-                log_debug "Module $module failed with exit code $?"
-                output=""
-            }
+            # Reap the capture reader before anything else forks, so a reader
+            # killed after a failed capture open leaves no job notice on stderr.
+            local module_rc=0
+            output=$(with_module_stderr "$module_stderr" run_module "$module" "$current_dir" "$input") ||
+                module_rc=$?
             log_module_stderr "$module"
+            if [ "$module_rc" -ne 0 ]; then
+                log_debug "Module $module failed with exit code $module_rc"
+                output=""
+            fi
 
             if [ -n "$output" ]; then
                 if [ -n "$sections" ]; then

@@ -30,7 +30,7 @@ _processes_probe() {
     local total_procs=""
     local running_procs=""
 
-    if [ "$os" != Darwin ] && [ -d /proc ]; then
+    if [ "$os" = linux ] && [ -d /proc ]; then
         local pid_dir restore_noglob=false restore_failglob=false
         local pid_dirs=() status_paths=()
         # Snapshot in this shell so counting does not create transient PIDs.
@@ -92,7 +92,7 @@ module_processes() {
     local crit_thresh="${PROC_CRITICAL_THRESHOLD:-500}"
     local show_status="${PROC_SHOW_STATUS:-false}"
 
-    local os="${render_os-$(uname)}" mode=total
+    local os="${CORTADO_OS:-}" mode=total
     if [ "$show_running" = true ]; then mode=running; fi
     cached_probe "processes-$mode" 10 5 "${BASH_SOURCE[0]}" _processes_probe "$os" "$show_running"
 

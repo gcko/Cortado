@@ -142,12 +142,13 @@ STUB
 
     off_calls=$(wc -l < "$off/uname.calls")
     on_calls=$(wc -l < "$on/uname.calls")
-    if [ "$on_calls" -eq "$off_calls" ]; then
+    # CORTADO_OS comes from the host triple, so a render never asks uname.
+    if [ "$on_calls" -eq 0 ] && [ "$off_calls" -eq 0 ]; then
         PASS=$((PASS + 1))
-        printf 'PASS: memory adds no uname calls (%d with memory off and on)\n' "$on_calls"
+        printf 'PASS: a render makes no uname calls, with memory off or on\n'
     else
         FAIL=$((FAIL + 1))
-        printf 'FAIL: memory adds uname calls (%d off, %d on)\n' "$off_calls" "$on_calls"
+        printf 'FAIL: a render called uname (%d with memory off, %d on)\n' "$off_calls" "$on_calls"
     fi
 }
 
@@ -175,12 +176,12 @@ assert_debug_warning() {
     fi
 }
 
-assert_render default 'TERMINAL_WIDTH=200'
-assert_render compact 'DISPLAY_MODE=compact' 'TERMINAL_WIDTH=60'
-# Exercise the same stubbed hardware everywhere. Set OSTYPE after the real host
-# has checked the trusted config's file mode.
+# The default and compact fixtures show the macOS battery, so pin darwin on every host.
+assert_render default 'CORTADO_OS=darwin' 'TERMINAL_WIDTH=200'
+assert_render compact 'CORTADO_OS=darwin' 'DISPLAY_MODE=compact' 'TERMINAL_WIDTH=60'
+# Exercise the same stubbed macOS hardware on every host.
 assert_render all-modules \
-    'export CORTADO_GOLDEN_DARWIN=true APP_SANDBOX_CONTAINER_ID=golden OSTYPE=darwin' \
+    'export APP_SANDBOX_CONTAINER_ID=golden' 'CORTADO_OS=darwin' \
     'TERMINAL_WIDTH=100' 'STATUS_STYLE=dots' 'NETWORK_SHOW_SSID=true' \
     "SEPARATOR=\$' \033[36m|\033[0m '" "MODEL_ICON=\$'\033[35m🤖\033[0m'" \
     'MODULE_ORDER="sandbox, version, update, directory, context, git, project, model, cost, rate-limits, time, battery, cpu, memory, disk, network, uptime, load, temperature, brightness, processes, docker, node, weather, timezone"' \

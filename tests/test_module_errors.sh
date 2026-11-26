@@ -32,7 +32,8 @@ if [ ! -x "$TEST_BASE/no-dd/python3" ]; then
     ln -s "$(command -v python3)" "$TEST_BASE/no-dd/python3" || exit 1
 fi
 without_tool "$TEST_BASE/no-jq" jq
-# Supply a battery reading even on hosts without pmset.
+# Supply a battery reading even on hosts without pmset. The battery render pins
+# darwin, because battery is a macOS-only module and is skipped on Linux.
 rm -f "$TEST_BASE/no-grep/pmset"
 cat > "$TEST_BASE/no-grep/pmset" <<'EOF'
 #!/bin/bash
@@ -160,7 +161,7 @@ render() {
 
 for debug in false true; do
     render "$PROJECT_ROOT" "$TEST_BASE/no-grep" clean 'MODULE_ORDER="battery,model"' \
-        'MODULE_BATTERY="true"' "DEBUG_MODE=$debug"
+        'CORTADO_OS=darwin' 'MODULE_BATTERY="true"' "DEBUG_MODE=$debug"
     assert_eq "Missing grep keeps both battery and model readings (debug $debug)" '🔋 80% ⚡ | 🤖 Opus' "$out"
     assert_eq "Missing grep keeps process stderr quiet (debug $debug)" '' "$err"
     if [ "$debug" = true ]; then
@@ -411,5 +412,46 @@ render "$INCOMPLETE_TREE" "$PATH" clean 'MODULE_ORDER=network,cpu,weather' 'DEBU
     'MODULE_NETWORK=true MODULE_CPU=true MODULE_WEATHER=true NETWORK_SHOW_WAN=true'
 assert_eq 'A missing utils file still shows one absence for each probe module' '🌐 -- | 💻 -- | --' "$out"
 assert_not_contains 'An incomplete install has a cached probe fallback' 'command not found' "$log"
+
+# A debug capture whose write end cannot be opened must not hang the render.
+# bash 3.2 fails the open when a child exits meanwhile (EINTR); mode 400 makes
+# it fail the same way every time, while the next reader still blocks in its
+# open. The render must finish, load every module and keep stderr quiet.
+LOCKED_TREE="$TEST_BASE/locked-capture"
+mkdir -m 700 "$LOCKED_TREE"
+cp "$PROJECT_ROOT/cortado.sh" "$PROJECT_ROOT/cortado.conf" "$LOCKED_TREE/" || exit 1
+cp -R "$PROJECT_ROOT/modules" "$PROJECT_ROOT/lib" "$LOCKED_TREE/" || exit 1
+# shellcheck disable=SC2016
+printf '%s\n' 'chmod 400 "$CORTADO_STDERR_CAPTURE/pipe" 2>/dev/null' \
+    > "$LOCKED_TREE/modules/aaa-lock-capture.sh" || exit 1
+# A module that fails while the capture is locked must not leak a job notice
+# for the killed reader onto the render's stderr.
+printf '%s\n' '# @cortado-module failmod' '# @default true' '# @args none' '# @platforms darwin,linux' \
+    'module_failmod() { return 7; }' > "$LOCKED_TREE/modules/failmod.sh" || exit 1
+locked_config="$(mktemp -d "$TEST_BASE/locked.XXXXXX")"
+printf '%s\n' 'LAYOUT_MODE="none"' 'MODULE_ORDER="failmod,model"' 'DEBUG_MODE=true' > "$locked_config/cortado.conf"
+chmod 600 "$locked_config/cortado.conf" || exit 1
+locked_rc=0
+printf '%s' '{"model":{"display_name":"Opus"}}' > "$locked_config/payload"
+CLAUDE_CONFIG_DIR="$locked_config" CACHE_DIR="$locked_config/cache" TMPDIR="$locked_config" \
+    perl -e 'alarm shift; exec @ARGV' 30 /bin/bash "$LOCKED_TREE/cortado.sh" < "$locked_config/payload" \
+    > "$locked_config/stdout" 2> "$locked_config/stderr" || locked_rc=$?
+locked_out=$(sed $'s/\x1b\\[[0-9;]*m//g' "$locked_config/stdout")
+assert_eq 'A capture that cannot be opened does not hang the debug render' 0 "$locked_rc"
+assert_eq 'A capture that cannot be opened still loads and runs the module' '🤖 Opus' "$locked_out"
+assert_eq 'A capture that cannot be opened keeps the render stderr quiet' '' "$(cat "$locked_config/stderr")"
+
+# A failing module's stderr and its exit status both reach the debug log.
+FAILING_TREE="$TEST_BASE/failing-module"
+mkdir -m 700 "$FAILING_TREE"
+cp "$PROJECT_ROOT/cortado.sh" "$PROJECT_ROOT/cortado.conf" "$FAILING_TREE/" || exit 1
+cp -R "$PROJECT_ROOT/modules" "$PROJECT_ROOT/lib" "$FAILING_TREE/" || exit 1
+printf '%s\n' '# @cortado-module failmod' '# @default true' '# @args none' '# @platforms darwin,linux' \
+    'module_failmod() { printf "%s\n" boom >&2; return 7; }' > "$FAILING_TREE/modules/failmod.sh" || exit 1
+render "$FAILING_TREE" "$PATH" clean 'MODULE_ORDER="failmod,model"' 'DEBUG_MODE=true'
+assert_eq 'A failing module leaves the next reading visible' '🤖 Claude Sonnet' "$out"
+assert_contains 'Debug logs a failing module stderr' 'failmod: boom' "$log"
+assert_contains 'Debug logs a failing module exit status' 'Module failmod failed with exit code 7' "$log"
+
 printf '\nResults: %s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

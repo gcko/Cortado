@@ -190,24 +190,24 @@ cp "$config" "$before"
 assert_rc 'writer refuses a target the caller does not own' 1 config_edit --set DISPLAY_MODE=compact
 assert_rc 'a refused owner check leaves the config alone' 0 cmp -s "$before" "$config"
 
+# The shared mode helper (lib/platform.sh) reads BSD or GNU stat for the host;
+# replace it from the trusted config to drive the writer's failure paths.
 cat > "$config" <<'CONFIG'
-uname() {
-    if [ "${1:-}" = -s ]; then printf 'Linux\n'; else command uname "$@"; fi
-}
+cortado_file_mode() { return 1; }
 COLOR_THEME=default
 CONFIG
-printf '#!/bin/sh\nexit 1\n' > "$TEST_BASE/bin/stat"
-chmod 700 "$TEST_BASE/bin/stat"
 cp "$config" "$before"
-PATH="$TEST_BASE/bin:$PATH" assert_rc 'writer refuses a target with an unreadable mode' 1 config_edit --set DISPLAY_MODE=compact
+assert_rc 'writer refuses a target with an unreadable mode' 1 config_edit --set DISPLAY_MODE=compact
 assert_rc 'a failed mode check leaves the config alone' 0 cmp -s "$before" "$config"
-printf '#!/bin/sh\nprintf "bogus\\n"\n' > "$TEST_BASE/bin/stat"
-PATH="$TEST_BASE/bin:$PATH" assert_rc 'writer refuses a malformed mode result' 1 config_edit --set DISPLAY_MODE=compact
-# On Linux the stubbed stat also refuses the packaged config, which adds its own
-# stderr line; the writer's own diagnosis must still be there.
-assert_contains 'malformed mode output is diagnosed as a permission check failure' \
+cat > "$config" <<'CONFIG'
+cortado_file_mode() { printf 'bogus\n'; }
+COLOR_THEME=default
+CONFIG
+cp "$config" "$before"
+assert_rc 'writer refuses a malformed mode result' 1 config_edit --set DISPLAY_MODE=compact
+assert_eq 'malformed mode output is diagnosed as a permission check failure' \
     "config: cannot save over a config with unsafe ownership or permissions: $config" "$(cat "$stderr")"
-rm "$TEST_BASE/bin/stat"
+assert_rc 'a malformed mode result leaves the config alone' 0 cmp -s "$before" "$config"
 
 printf '%s\n' 'COLOR_THEME=default' > "$config"
 cp "$config" "$before"

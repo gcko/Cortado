@@ -39,7 +39,7 @@ module_temperature() {
     local temp_number='-?([0-9]+([.][0-9]+)?|[.][0-9]+)'
     local celsius="($temp_number)[[:space:]]*°C"
 
-    if [ "${render_os-$(uname)}" = Darwin ]; then
+    if [ "${CORTADO_OS:-}" = darwin ]; then
         # Try osx-cpu-temp first (most common)
         if command -v osx-cpu-temp >/dev/null 2>&1; then
             pattern="^[[:space:]]*${celsius}[[:space:]]*$"
