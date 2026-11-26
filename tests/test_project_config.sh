@@ -4,6 +4,7 @@
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CORTADO="$SCRIPT_DIR/cortado.sh"
+umask 077
 TEST_BASE=$(mktemp -d)
 trap 'rm -rf "$TEST_BASE"' EXIT
 # Each case opts into startup protection by exporting its own setting.
@@ -255,6 +256,7 @@ assert_eq "saving an empty project succeeds with nounset" "0" "$rc"
 printf '%s\n' "$header" > "$TEST_BASE/header"
 assert_eq "an empty save writes only its header and newline" "0" \
     "$(cmp -s "$TEST_BASE/header" "$PROJECT_FILE"; echo "$?")"
+assert_rc "a menu save releases its edit lock" 1 test -d "$PROJECT_FILE.cortado-lock"
 
 rm -f "$PROJECT_FILE"
 mkdir "$PROJECT_FILE"

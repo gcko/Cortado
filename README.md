@@ -289,6 +289,10 @@ cortado config --help          # show usage
 
 The default save path is `$CLAUDE_CONFIG_DIR/cortado.conf` (usually `~/.claude/cortado.conf`). Use `--project` to save allowed preferences in the current directory. Cancel leaves the file untouched.
 
+For the user config, `--set` replaces the last standalone assignment for the key or appends one if needed. It saves module flag values of `yes`, `1`, and `on` as `true`, and `no`, `0`, and `off` as `false`. Use `--toggle` to update both a module flag and its membership in `MODULE_ORDER`.
+
+The editor follows config symlinks and saves the previous contents of an existing file in an owner-only `.bak` beside its target.
+
 ### Configuration Files
 
 Edit `cortado.conf` or create a user override config in your Claude config directory:
