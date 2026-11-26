@@ -216,9 +216,13 @@ sandbox() {
     sb=$(mktemp -d "$scratch/render.XXXXXX") || exit 1
     mkdir -m 700 "$sb/cortado-cache" || exit 1
     printf '%s\n' "MODULE_ORDER=$order" 'COLOR_THEME=monochrome' 'TERMINAL_WIDTH=200' \
-        'MODULE_WEATHER=true MODULE_NETWORK=true' 'NETWORK_SHOW_LAN=false NETWORK_SHOW_WAN=true' \
+        'MODULE_WEATHER=true' 'MODULE_NETWORK=true' 'NETWORK_SHOW_LAN=false' 'NETWORK_SHOW_WAN=true' \
         "$@" > "$sb/cortado.conf"
     chmod 600 "$sb/cortado.conf" || exit 1
+    # Config files are data (#33). A sandbox whose config defines a function
+    # hook is Bash, so it alone opts the user config in.
+    unset CORTADO_CONF_ALLOW_BASH
+    case "$*" in *'() {'*) export CORTADO_CONF_ALLOW_BASH=1 ;; esac
     export CLAUDE_CONFIG_DIR="$sb" CACHE_DIR="$sb/cortado-cache"
 }
 
@@ -670,8 +674,8 @@ STUB
 STUB
     chmod 700 "$scratch/bin/hostname" "$scratch/bin/ipconfig" "$scratch/bin/uptime" "$scratch/bin/node"
 
-    sandbox 'network,load,node' 'NETWORK_SHOW_LAN=true NETWORK_SHOW_WAN=false' \
-        'MODULE_LOAD=true LOAD_SHOW_STATUS=false MODULE_NODE=true'
+    sandbox 'network,load,node' 'NETWORK_SHOW_LAN=true' 'NETWORK_SHOW_WAN=false' \
+        'MODULE_LOAD=true' 'LOAD_SHOW_STATUS=false' 'MODULE_NODE=true'
     render_is 'cold local probes show absence' 'NET: -- | LOAD: -- | NODE: --' normal
     for ((i=0; i<60; i++)); do
         [[ "$(render normal && cat "$sb/output")" = 'NET: 192.0.2.7 | LOAD: 1.25 | NODE: 20.1.0' ]] && break
@@ -695,7 +699,7 @@ STUB
     done
     assert_eq 'a changed runtime publishes a distinct reading' 'NET: 192.0.2.7 | LOAD: 1.25 | NODE: 20.2.0' "$(cat "$sb/output")"
 
-    sandbox network 'NETWORK_SHOW_LAN=true NETWORK_SHOW_WAN=false NETWORK_SHOW_SSID=false'
+    sandbox network 'NETWORK_SHOW_LAN=true' 'NETWORK_SHOW_WAN=false' 'NETWORK_SHOW_SSID=false'
     printf '%s\n' '192.0.2.7 (Private Wi-Fi)' > "$CACHE_DIR/network-local-true-true"
     render_is 'LAN-only renders never reuse a cached Wi-Fi name' 'NET: --' normal
     if wait_for_file "$CACHE_DIR/network-local-true-false"; then

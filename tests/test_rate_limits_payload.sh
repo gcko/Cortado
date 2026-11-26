@@ -431,6 +431,8 @@ unset CORTADO_CONF_ALLOW_BASH
 
 echo ""
 echo "=== fresh quota without a usable live clock ==="
+# The date hooks below are Bash, so these renders opt the user config in (#33).
+export CORTADO_CONF_ALLOW_BASH=1
 for clock in 'return 1' 'echo invalid' 'echo 0'; do
     sb=$(sandbox "clock-$clock")
     printf '%s\n' RATE_SHOW_TIME_REMAINING=true \
@@ -483,6 +485,7 @@ assert_eq "fresh API percentages survive an unavailable clock" '5h:0% 7d:3%' \
     "$(PATH="$sb/bin:$PATH" render "$sb" "$NO_LIMITS")"
 assert_eq "an unavailable clock does not add an API history row" '' \
     "$(cat "$sb/.usage_history" 2>/dev/null)"
+unset CORTADO_CONF_ALLOW_BASH
 
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
