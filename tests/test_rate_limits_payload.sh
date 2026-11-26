@@ -305,6 +305,70 @@ live_payload='{"rate_limits":{"five_hour":{"used_percentage":0},"seven_day":{"us
 assert_eq "payload readings carry no cache age" "5h:0% 7d:100%" "$(render_cache "$sb" 21600 "$live_payload")"
 
 echo ""
+echo "=== a window that has already reset shows absence, not its old reading ==="
+
+# render_reset_cache <sandbox> <age> <five-hour resets_at> <seven-day resets_at>
+# plants 42%/10% at 2020-01-01T00:00Z with the given resets, then renders <age>
+# seconds later with every fetch failing.
+render_reset_cache() {
+    local sb="$1" age="$2"
+    printf '%s\n' 'RATE_SHOW_TIME_REMAINING="true"' 'RATE_SHOW_USAGE_STATUS="true"' >> "$sb/cortado.conf"
+    printf '{"five_hour":{"utilization":42,"resets_at":"%s"},"seven_day":{"utilization":10,"resets_at":"%s"}}\n' \
+        "$3" "$4" > "$sb/cortado-cache/rate_limits_usage"
+    TZ=UTC touch -t 202001010000 "$sb/cortado-cache/rate_limits_usage"
+    TEST_NOW=$((1577836800 + age)) PATH="$TEST_BASE/fallback-bin:$PATH" render "$sb" "$NO_LIMITS"
+}
+
+sb=$(sandbox reset-ahead)
+assert_eq "a stale reading whose windows are still open keeps its age and countdowns" \
+    "5h:42%~1h0m [OK] (2h 0m) 7d:10%~1h0m [OK] (1d 23h)" \
+    "$(render_reset_cache "$sb" 3600 2020-01-01T03:00:00.000000+00:00 2020-01-03T00:00:00.000000+00:00)"
+
+sb=$(sandbox reset-five-passed)
+assert_eq "a five-hour window that reset after the reading shows absence beside the open seven-day window" \
+    "5h:-- 7d:10%~6h0m [OK] (1d 18h)" \
+    "$(render_reset_cache "$sb" 21600 2020-01-01T05:00:00.000000+00:00 2020-01-03T00:00:00.000000+00:00)"
+
+sb=$(sandbox reset-both-passed)
+assert_eq "a reading from before both resets shows the placeholder" "5h:-- 7d:--" \
+    "$(render_reset_cache "$sb" 21600 2020-01-01T05:00:00Z 2020-01-01T06:00:00Z)"
+
+sb=$(sandbox reset-unknown)
+assert_eq "a reading with no parseable reset time keeps its age" "5h:42%~6h0m [OK] 7d:10%~6h0m [OK]" \
+    "$(render_reset_cache "$sb" 21600 "" not-a-time)"
+
+sb=$(sandbox reset-equals-now)
+assert_eq "a window that resets at this very second shows absence" "5h:-- 7d:10%~6h0m [OK] (1d 18h)" \
+    "$(render_reset_cache "$sb" 21600 2020-01-01T06:00:00Z 2020-01-03T00:00:00Z)"
+
+# 05:00-05:00 is 10:00Z, four hours after the pinned 06:00Z: still open.
+sb=$(sandbox reset-negative-offset)
+assert_eq "a reset time west of UTC is converted before the window is judged" \
+    "5h:42%~6h0m [OK] (4h 0m) 7d:10%~6h0m [OK] (1d 18h)" \
+    "$(render_reset_cache "$sb" 21600 2020-01-01T05:00:00.000000-05:00 2020-01-03T00:00:00Z)"
+
+# 07:00+02:00 is 05:00Z, an hour before the pinned 06:00Z: already over.
+sb=$(sandbox reset-positive-offset)
+assert_eq "a reset time east of UTC that has passed shows absence" "5h:-- 7d:10%~6h0m [OK] (1d 18h)" \
+    "$(render_reset_cache "$sb" 21600 2020-01-01T07:00:00+02:00 2020-01-03T00:00:00Z)"
+
+sb=$(sandbox payload-reset-offset)
+printf '%s\n' 'RATE_SHOW_USAGE_STATUS="true"' >> "$sb/cortado.conf"
+offset_payload='{"rate_limits":{"five_hour":{"used_percentage":42,"resets_at":"2020-01-01T05:00:00-05:00"},"seven_day":{"used_percentage":10,"resets_at":"2020-01-03T00:00:00Z"}}}'
+assert_eq "a payload reset time west of UTC keeps its open window and countdown" \
+    "5h:42% [OK] (4h 0m) 7d:10% [OK] (1d 18h)" \
+    "$(TEST_NOW=1577858400 PATH="$TEST_BASE/fallback-bin:$PATH" render "$sb" "$offset_payload")"
+
+sb=$(sandbox payload-reset-passed)
+printf '%s\n' 'RATE_SHOW_USAGE_STATUS="true"' >> "$sb/cortado.conf"
+past_payload=$(printf '{"rate_limits":{"five_hour":{"used_percentage":65,"resets_at":%s},"seven_day":{"used_percentage":32,"resets_at":%s}}}' \
+    "$((NOW - 60))" "$RESET_7D")
+out=$(render "$sb" "$past_payload")
+assert_contains "a payload window whose reset has passed shows absence" "5h:-- 7d:32% [OK]" "$out"
+assert_not_contains "a payload window whose reset has passed shows no percentage or status" "65%" "$out"
+assert_eq "a payload with a finished window records no history point" "" "$(cat "$sb/.usage_history" 2>/dev/null)"
+
+echo ""
 echo "=== scientific notation preserves the projection indicator ==="
 
 reset=$(jq -nr --argjson ts "$RESET_5H" '$ts | todate')

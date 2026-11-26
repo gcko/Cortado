@@ -23,6 +23,7 @@
 #   MEMORY_WARNING_THRESHOLD - Yellow at % (default: 70)
 #   MEMORY_CRITICAL_THRESHOLD - Red at % (default: 85)
 #   MEMORY_SHOW_STATUS       - Show status indicator (default: true)
+#   With MEMORY_SHOW_PERCENTAGE and MEMORY_SHOW_USED both false, nothing is shown.
 # =============================================================================
 
 _memory_darwin_reading() {
@@ -57,6 +58,12 @@ module_memory() {
     local crit_thresh="${MEMORY_CRITICAL_THRESHOLD:-85}"
     local show_status="${MEMORY_SHOW_STATUS:-true}"
 
+    # Both value parts off is a deliberate choice: show nothing, as network does
+    # with every field off, rather than a bare indicator or a false "--".
+    if [ "$show_used" != true ] && [ "$show_pct" != true ]; then
+        return
+    fi
+
     local mem_pct=""
     local mem_used=""
     local mem_total=""
@@ -77,12 +84,10 @@ module_memory() {
         local total=$(grep MemTotal /proc/meminfo 2>/dev/null | awk '{print $2}')
         local avail=$(grep MemAvailable /proc/meminfo 2>/dev/null | awk '{print $2}')
 
-        if [ -n "$total" ] && [ -n "$avail" ]; then
-            # Empty or zero MemTotal would crash the raw divisions below
-            safe_int_reply "$total" 0
-            if [ "$REPLY" -eq 0 ]; then
-                return
-            fi
+        # Both counters must be whole kB values, with a positive total that
+        # covers what is available; anything else is no reading (#82).
+        if [[ "$total" =~ ^[1-9][0-9]{0,15}$ && "$avail" =~ ^(0|[1-9][0-9]{0,15})$ ]] &&
+            [ "$avail" -le "$total" ]; then
             local used=$((total - avail))
             safe_percent_reply "$used" "$total"
             mem_pct=$REPLY
@@ -92,6 +97,7 @@ module_memory() {
     fi
 
     if [ -z "$mem_pct" ]; then
+        printf '%s --\n' "$icon"
         return
     fi
 

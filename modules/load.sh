@@ -21,16 +21,23 @@
 #   LOAD_WARNING_THRESHOLD - Yellow at load (default: num_cpus)
 #   LOAD_CRITICAL_THRESHOLD - Red at load (default: num_cpus * 2)
 #   LOAD_SHOW_STATUS       - Show status indicator (default: true)
+#                            Omitted when the CPU count is unknown.
 # =============================================================================
 
 _load_probe() {
     local os="$1" num_cpus uptime_output load1 load5 load15
     local load_number='^[0-9]+([.][0-9]+)?$'
+    # Ask the platform tool, then POSIX getconf. An unknown CPU count is
+    # recorded as --, never assumed (#83).
+    local cpu_count='^[1-9][0-9]{0,5}$'
     case "$os" in
-        darwin) num_cpus=$(sysctl -n hw.ncpu) || num_cpus=4 ;;
-        *) num_cpus=$(nproc) || num_cpus=4 ;;
+        darwin) num_cpus=$(sysctl -n hw.ncpu) || num_cpus= ;;
+        *) num_cpus=$(nproc) || num_cpus= ;;
     esac
-    [[ "$num_cpus" =~ ^[1-9][0-9]{0,5}$ ]] || num_cpus=4
+    if ! [[ "$num_cpus" =~ $cpu_count ]]; then
+        num_cpus=$(getconf _NPROCESSORS_ONLN) || num_cpus=
+    fi
+    [[ "$num_cpus" =~ $cpu_count ]] || num_cpus=--
 
     uptime_output=$(LC_ALL=C uptime) || return 1
     case "$uptime_output" in
@@ -63,7 +70,7 @@ module_load() {
     local num_cpus load1 load5 load15
     local load_number='[0-9]+([.][0-9]+)?'
     IFS=' ' read -r num_cpus load1 load5 load15 <<< "$REPLY"
-    if ! [[ "$num_cpus" =~ ^[1-9][0-9]{0,5}$ && "$load1" =~ ^$load_number$ &&
+    if ! [[ "$num_cpus" =~ ^([1-9][0-9]{0,5}|--)$ && "$load1" =~ ^$load_number$ &&
         "$load5" =~ ^($load_number|--)$ && "$load15" =~ ^($load_number|--)$ ]]; then
         echo "$icon --"
         return
@@ -74,7 +81,9 @@ module_load() {
         result="$result $load5 $load15"
     fi
 
-    if [ "${LOAD_SHOW_STATUS:-true}" = true ]; then
+    # Severity is load measured against the CPU count. Without a count there
+    # is nothing to back a colour, so the averages stand alone.
+    if [ "${LOAD_SHOW_STATUS:-true}" = true ] && [ "$num_cpus" != -- ]; then
         local warn_thresh crit_thresh whole fraction level=0
         # Only hundredths can affect the integer percentage bucket.
         whole=${load1%%.*}

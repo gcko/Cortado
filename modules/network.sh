@@ -20,7 +20,7 @@
 #                         When true, shows e.g. "203.0.xxx.xxx" instead of full IP
 #                         Set to "false" to display full public IP
 #   NETWORK_SHOW_SSID   - Show WiFi SSID (default: false)
-#   NETWORK_COMPACT     - Compact mode (default: false)
+#   NETWORK_COMPACT     - Compact mode: WAN only when LAN and SSID are off (default: false)
 #
 # Privacy note: When NETWORK_SHOW_WAN is enabled, this module contacts
 # external services (ifconfig.me / icanhazip.com) to determine your
@@ -139,8 +139,11 @@ module_network() {
     local show_ssid="${NETWORK_SHOW_SSID:-false}"
     local compact="${NETWORK_COMPACT:-false}"
 
+    # Each enabled part without a reading keeps its place as "--" (#74); a
+    # segment with no reading at all shows a single "--".
     local parts=""
     local attempted=false
+    local have_reading=false
 
     if [ "$show_lan" = true ] || [ "$show_ssid" = true ]; then
         attempted=true
@@ -156,21 +159,29 @@ module_network() {
             if [ "$show_lan" = true ]; then
                 lan="$REPLY"
                 if [ "$show_ssid" = true ]; then lan=${lan%%|*}; fi
-                if _network_ip "$lan"; then parts="$lan"; fi
+                if _network_ip "$lan"; then
+                    parts="$lan"
+                    have_reading=true
+                else
+                    parts=--
+                fi
                 if [ "$show_ssid" = true ] && [[ "$REPLY" = *'|'* ]]; then
                     ssid=${REPLY#*|}
                     if [ -n "$ssid" ] && [[ "$ssid" != *[[:cntrl:]]* ]]; then
-                        if [ -n "$parts" ]; then parts="$parts ($ssid)"; else parts="$ssid"; fi
+                        parts="$parts ($ssid)"
+                        have_reading=true
                     fi
                 fi
-            elif [[ "$REPLY" != *[[:cntrl:]]* ]]; then
+            elif [ -n "$REPLY" ] && [[ "$REPLY" != *[[:cntrl:]]* ]]; then
                 parts="$REPLY"
+                have_reading=true
             fi
         fi
     fi
 
-    # WAN lookup is opt-in because it contacts a third-party service.
-    if [ "$show_wan" = "true" ] && ! is_compact "$compact"; then
+    # WAN lookup is opt-in because it contacts a third-party service. Compact
+    # mode leaves it out beside LAN/SSID, but shows it when it is the only field.
+    if [ "$show_wan" = "true" ] && { [ "$attempted" = false ] || ! is_compact "$compact"; }; then
         attempted=true
         cached_probe network_wan 300 15 "${BASH_SOURCE[0]}" _wan_ip_probe
         local wan_ip="$REPLY" first rest
@@ -188,6 +199,7 @@ module_network() {
                     wan_ip="$first.${rest%%.*}.xxx.xxx" ;;
             esac
         fi
+        [ "$wan_ip" = -- ] || have_reading=true
         if [ -n "$parts" ]; then
             parts="$parts | $wan_ip"
         else
@@ -195,7 +207,9 @@ module_network() {
         fi
     fi
 
-    if [ "$attempted" = "true" ]; then
-        echo "$icon ${parts:---}"
+    if [ "$have_reading" = true ]; then
+        echo "$icon $parts"
+    elif [ "$attempted" = true ]; then
+        echo "$icon --"
     fi
 }

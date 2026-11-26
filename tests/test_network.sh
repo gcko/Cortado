@@ -24,7 +24,7 @@ case "${!#}" in
     https://ifconfig.me|https://icanhazip.com) ;;
     *) exit 2 ;;
 esac
-[ "$TEST_SAMPLE" = normal ] || exit 1
+[[ "$TEST_SAMPLE" = normal || "$TEST_SAMPLE" = wan-only ]] || exit 1
 printf '%s\n' 203.0.113.9
 STUB
 chmod +x "$TEST_BASE/bin/curl"
@@ -51,11 +51,19 @@ check_probe 'network shows absence when LAN and WAN lookups fail' 'NET: --' \
     failed 'network-local-true-false network_wan' 'NETWORK_SHOW_WAN="true"'
 check_probe 'network marks missing WAN beside a valid LAN address' 'NET: 192.0.2.8 | --' \
     lan-only 'network-local-true-false network_wan' 'NETWORK_SHOW_WAN="true"'
+check_probe 'network marks missing LAN beside a valid WAN address' 'NET: -- | 203.0.xxx.xxx' \
+    wan-only 'network-local-true-false network_wan' 'NETWORK_SHOW_WAN="true"'
 check_probe 'network ignores an address from a failed LAN lookup' 'NET: --' partial 'network-local-true-false'
 check_render 'network shows absence when only SSID is requested on Linux' 'NET: --' \
     normal '' 'NETWORK_SHOW_LAN=false' 'NETWORK_SHOW_SSID=true'
 check_probe 'network keeps the LAN address when SSID is unavailable on Linux' 'NET: 192.0.2.8' \
     normal 'network-local-true-false' 'NETWORK_SHOW_SSID=true'
+check_probe 'compact network still shows WAN when it is the only field enabled' 'NET: 203.0.xxx.xxx' \
+    normal 'network_wan' 'NETWORK_SHOW_LAN=false' 'NETWORK_SHOW_WAN=true' 'NETWORK_COMPACT=true'
+check_probe 'compact network marks a missing WAN when it is the only field enabled' 'NET: --' \
+    failed 'network_wan' 'NETWORK_SHOW_LAN=false' 'NETWORK_SHOW_WAN=true' 'NETWORK_COMPACT=true'
+check_probe 'compact network keeps leaving WAN out beside LAN' 'NET: 192.0.2.8' \
+    normal 'network-local-true-false' 'NETWORK_SHOW_WAN=true' 'NETWORK_COMPACT=true'
 check_render 'network is empty when every field is disabled' '' \
     normal '' 'NETWORK_SHOW_LAN=false' 'NETWORK_SHOW_WAN=false' 'NETWORK_SHOW_SSID=false'
 
@@ -83,6 +91,9 @@ RENDER_CONFIG_DIR="$sb" check_render 'a valid IPv6 cache can display in full' 'N
 RENDER_OS=darwin
 (umask 077; printf '%s\n' '192.0.2.9|Private Wi-Fi' > "$sb/cortado-cache/network-local-v2-true-true")
 RENDER_CONFIG_DIR="$sb" check_render 'a valid LAN and multi-word SSID both display' 'NET: 192.0.2.9 (Private Wi-Fi)' failed '' \
+    'NETWORK_SHOW_SSID=true'
+(umask 077; printf '%s\n' '|Private Wi-Fi' > "$sb/cortado-cache/network-local-v2-true-true")
+RENDER_CONFIG_DIR="$sb" check_render 'a missing LAN address is marked beside the SSID' 'NET: -- (Private Wi-Fi)' failed '' \
     'NETWORK_SHOW_SSID=true'
 for ssid in $'Cafe\rNet' $'\033[31mCafe'; do
     (umask 077; printf '%s|%s\n' 192.0.2.9 "$ssid" > "$sb/cortado-cache/network-local-v2-true-true")

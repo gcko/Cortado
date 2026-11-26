@@ -13,29 +13,49 @@ case "$TEST_SAMPLE" in
 esac
 [ "$TEST_SAMPLE" = normal ]
 STUB
-chmod +x "$TEST_BASE/bin/node"
+cat > "$TEST_BASE/bin/npm" <<'STUB'
+#!/bin/bash
+[ "$*" = "--version" ] || exit 2
+[ "$TEST_SAMPLE" = npm-normal ] || exit 1
+printf '%s\n' 10.9.2
+STUB
+chmod +x "$TEST_BASE/bin/node" "$TEST_BASE/bin/npm"
 
 check_node() {
-    local desc="$1" expected="$2" sample="$3" sb i entry
+    local desc="$1" expected="$2" sample="$3" sb i entry tool
+    shift 3
     sb=$(mktemp -d "$TEST_BASE/probe.XXXXXX") || exit 1
-    RENDER_CONFIG_DIR="$sb" render "$sample" '' >/dev/null || {
+    RENDER_CONFIG_DIR="$sb" render "$sample" '' "$@" >/dev/null || {
         fail "$desc (cold render failed)"
         return
     }
-    for ((i=0; i<60; i++)); do
-        for entry in "$sb/cortado-cache"/node-*; do
-            case "${entry##*/}" in *-lock|*.*) continue ;; esac
-            [ ! -s "$entry" ] || break 2
+    for tool in ${WAIT_TOOLS:-node}; do
+        for ((i=0; i<60; i++)); do
+            for entry in "$sb/cortado-cache/$tool"-*; do
+                case "${entry##*/}" in *-lock|*.*) continue ;; esac
+                [ ! -s "$entry" ] || break 2
+            done
+            sleep 0.05
         done
-        sleep 0.05
+        [ "$i" -lt 60 ] || { fail "$desc ($tool probe did not publish)"; return; }
     done
-    [ "$i" -lt 60 ] || { fail "$desc (probe did not publish)"; return; }
-    RENDER_CONFIG_DIR="$sb" check_render "$desc" "$expected" "$sample" ''
+    RENDER_CONFIG_DIR="$sb" check_render "$desc" "$expected" "$sample" '' "$@"
 }
 
 check_node 'node shows the probed runtime version' 'NODE: 22.14.0' normal
 check_node 'node shows absence when its version probe fails' 'NODE: --' failed
 check_node 'node ignores version output from a failed probe' 'NODE: --' partial
+mkdir -m 700 "$TEST_BASE/nvm"
+NVM_DIR="$TEST_BASE/nvm" check_node 'node marks a missing version beside the nvm marker' 'NODE: -- (nvm)' \
+    failed 'NODE_SHOW_NVM=true'
+NVM_DIR="$TEST_BASE/nvm" check_node 'node shows the version beside the nvm marker' 'NODE: 22.14.0 (nvm)' \
+    normal 'NODE_SHOW_NVM=true'
+WAIT_TOOLS='node npm' check_node 'node marks a missing npm version beside the Node version' 'NODE: 22.14.0/npm:--' \
+    normal 'NODE_SHOW_NPM=true'
+WAIT_TOOLS='node npm' check_node 'node marks a missing Node version beside the npm version' 'NODE: --/npm:10.9.2' \
+    npm-normal 'NODE_SHOW_NPM=true'
+WAIT_TOOLS='node npm' check_node 'node shows one absence when neither version has a reading' 'NODE: --' \
+    failed 'NODE_SHOW_NPM=true'
 
 for bash_bin in /bin/bash "$(command -v bash)"; do
     sb=$(mktemp -d "$TEST_BASE/nounset.XXXXXX") || exit 1

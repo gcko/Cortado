@@ -310,8 +310,8 @@ assert_eq "json_get_int omitted default is 0"          "0"   "$(json_get_int '{}
 # -----------------------------------------------------------------------------
 # module_memory (modules/memory.sh) -- divide-by-zero guard.
 # The module computes mem_pct from a system-reported total; if that total is
-# empty or 0 (sysctl hw.memsize / MemTotal failure) it must return quietly:
-# no 'division by zero' on stderr, no output. Force CORTADO_OS=linux, mock grep
+# empty or 0 (sysctl hw.memsize / MemTotal failure) it must say it has no
+# reading: 'MEM: --', and no 'division by zero' on stderr (#82). Force CORTADO_OS=linux, mock grep
 # on PATH (the mock passes non-meminfo calls through to the real grep) and run
 # the module in a fresh bash so the test shell's command hash can't shadow mocks.
 # -----------------------------------------------------------------------------
@@ -345,8 +345,8 @@ mem_probe() {
     printf '%s|%s|%s' "$rc" "$out" "$err"
 }
 
-assert_eq "MemTotal 0: exit 0, no output, no stderr"       "0||"                "$(mem_probe 0 0)"
-assert_eq "MemTotal empty: exit 0, no output, no stderr"   "0||"                "$(mem_probe '' 0)"
+assert_eq "MemTotal 0: exit 0, shows absence, no stderr"     "0|MEM: --|"         "$(mem_probe 0 0)"
+assert_eq "MemTotal empty: exit 0, shows absence, no stderr" "0|MEM: --|"         "$(mem_probe '' 0)"
 assert_eq "MemTotal 16 GB used 4 GB: clean percent output" "0|MEM: 25% [OK]|"   "$(mem_probe 16777216 12582912)"
 
 rm -rf "$MOCK_DIR"

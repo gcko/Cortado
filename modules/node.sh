@@ -59,14 +59,19 @@ module_node() {
     local show_nvm="${NODE_SHOW_NVM:-false}"
     local compact="${NODE_COMPACT:-false}"
 
+    # Each enabled version without a reading keeps its place as "--" (#74); a
+    # segment with no reading at all shows a single "--".
     local parts=""
+    local have_reading=false
     local version_number='^[0-9]+\.[0-9]+\.[0-9]+([+-][[:alnum:].+-]+)?$'
 
     if [ "$show_version" = "true" ]; then
         local node_version
         _cached_node_version node
         node_version="$REPLY"
+        parts=--
         if [[ "$node_version" =~ $version_number ]]; then
+            have_reading=true
             if is_compact "$compact"; then
                 # Just major.minor in compact
                 local rest="${node_version#*.}"
@@ -82,25 +87,29 @@ module_node() {
         _cached_node_version npm
         npm_version="$REPLY"
         if [[ "$npm_version" =~ $version_number ]]; then
+            have_reading=true
             if is_compact "$compact"; then
                 local npm_rest="${npm_version#*.}"
                 npm_version="${npm_version%%.*}.${npm_rest%%.*}"
             fi
-            if [ -n "$parts" ]; then
-                parts="$parts/npm:$npm_version"
-            else
-                parts="npm:$npm_version"
-            fi
+        else
+            npm_version=--
+        fi
+        if [ -n "$parts" ]; then
+            parts="$parts/npm:$npm_version"
+        else
+            parts="npm:$npm_version"
         fi
     fi
 
     if [ "$show_nvm" = "true" ]; then
         if [ -n "${NVM_DIR:-}" ] && [ -d "$NVM_DIR" ]; then
             parts="${parts:+$parts }(nvm)"
+            have_reading=true
         fi
     fi
 
-    if [ -n "$parts" ]; then
+    if [ "$have_reading" = true ]; then
         echo "$icon $parts"
     elif [ "$show_version" = "true" ] || [ "$show_npm" = "true" ] || [ "$show_nvm" = "true" ]; then
         echo "$icon --"
