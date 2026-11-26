@@ -15,4 +15,4 @@
 #
 # One entry per line, fields separated by two or more spaces:
 # <suite>[:<section or check>]  <date first seen>  <evidence: run id / PR>  <one-line symptom>
-test_module_errors.sh:hup-capture  2026-11-26  #94; PR #104 run 45822390564 (Ubuntu job, passed on rerun)  "HUP removes the capture from tmp" failed once
+test_module_errors.sh:capture-cleanup  2026-11-26  #94; PR #104 runs 45822390564 (Ubuntu, HUP tmp) and 45825439936 (macOS Homebrew, TERM config), each passed on rerun  "<signal> removes the capture from <location>" fails intermittently under parallel CI

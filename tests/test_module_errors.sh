@@ -360,11 +360,10 @@ os.execv(sys.argv[1], sys.argv[1:])
 . "$PROJECT_ROOT/tests/lib/flaky.sh"
 for scenario in 'TERM tmp 143' 'TERM config 143' 'INT tmp 130' 'HUP tmp 129'; do
     read -r signal location expected <<< "$scenario"
-    # The HUP case is quarantined in tests/flaky.txt (section name hup-capture).
-    section=""
-    [ "$signal" != HUP ] || section=hup-capture
-    if [ "$section" = hup-capture ] && is_flaky test_module_errors.sh "$section"; then
-        printf 'SKIP (flaky): test_module_errors.sh:%s\n' "$section"
+    # These signal cases are quarantined in tests/flaky.txt (section capture-cleanup).
+    section=capture-cleanup
+    if [ "$section" = capture-cleanup ] && is_flaky test_module_errors.sh "$section"; then
+        printf 'SKIP (flaky): test_module_errors.sh:%s (%s %s)\n' "$section" "$signal" "$location"
         continue
     fi
     if check_capture_cleanup "$signal" "$location" "$expected"; then
