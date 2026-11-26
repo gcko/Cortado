@@ -196,6 +196,8 @@ Project config can turn a registered module off. Project order can reorder or om
 Regression tests live in `tests/` and share the Bash assertions in `tests/lib/assert.sh`. Each suite runs standalone and sandboxes `CLAUDE_CONFIG_DIR` and `CACHE_DIR`. Use `/bin/bash` to exercise Bash 3.2 on macOS.
 
 `tests/run-suites.sh` runs suites in parallel, `CORTADO_TEST_JOBS` at a time (default: the core count), each with its own `TMPDIR` and a 300 s limit (`SUITE_TIMEOUT`). It prints a PASS, FAIL or TIMEOUT line per suite, then each failing suite's output as one block, and exits non-zero on any failure. Suites must stay safe to run side by side: no fixed paths outside their sandbox, ports, or process patterns another suite could match. A suite that calls jq or feeds cortado a payload field belongs in `tests/jq-suites.txt` (or there as a `!` exclusion with a reason), so the Apple jq pass runs it; `tests/test_run_suites.sh` fails otherwise.
+
+A check that fails intermittently goes into `tests/flaky.txt` and is turned off (skipped with a `SKIP (flaky)` line) until its tracking issue is fixed; `CORTADO_RUN_FLAKY=1` runs it anyway.
 ```bash
 /bin/bash tests/test_utils.sh           # utils.sh helpers
 /bin/bash tests/test_rate_limits.sh     # rate-limit parsers/backoff
@@ -225,7 +227,7 @@ DEBUG_MODE="true"  # In config
 
 ## Pre-PR Checks
 
-[Cortado's GitHub Actions workflow](.github/workflows/ci.yml) runs on every pull request and on pushes to `main`. It checks macOS system Bash 3.2 with Homebrew and Apple jq, and Ubuntu. Each suite runs under a 300 s limit. On macOS the default-render timing (60 samples) blocks above p95 250 ms, a regression guard, and a second series of 60 renders while a weather request hangs is reported but does not gate; the 150 ms target holds on a developer Mac, but GitHub's shared runner measures about 188 ms (#25). Warm all-modules timing and Ubuntu default timing are informational. Windows is not supported (owner decision, 2026-11-25, on #24), so CI does not run it. Releases follow the `cortado-release` skill.
+[Cortado's GitHub Actions workflow](.github/workflows/ci.yml) runs on every pull request and on pushes to `main`. It checks macOS system Bash 3.2 with Homebrew and Apple jq, and Ubuntu. Each suite runs under a 300 s limit. On macOS the default-render timing (60 samples) blocks above p95 250 ms, a regression guard, except while `ci:render-p95` is quarantined in `tests/flaky.txt` (then it is reported only), and a second series of 60 renders while a weather request hangs is reported but does not gate; the 150 ms target holds on a developer Mac, but GitHub's shared runner measures about 188 ms (#25). Warm all-modules timing and Ubuntu default timing are informational. Windows is not supported (owner decision, 2026-11-25, on #24), so CI does not run it. Releases follow the `cortado-release` skill.
 
 Run the local checks below from the repository root before opening a pull request and again before merging. Paste their output into the pull request's `## Verification` section. This is the canonical local gate.
 

@@ -197,5 +197,90 @@ for args in '--variant apple' '--variant path' '--list apple' '--list path'; do
         "no such suite: $TEST_BASE/test_no_such_suite.sh" "$output"
 done
 
+# --- the flaky quarantine (tests/flaky.txt) ---------------------------------
+# flaky_problems <tests dir> <list file> <workflow file>: one line per entry
+# that names no suite, no section of its suite, or no CI check.
+flaky_problems() {
+    local dir="$1" list="$2" workflow="$3" entry suite section
+    awk '$1 !~ /^#/ && NF { print $1 }' "$list" | while IFS= read -r entry; do
+        case "$entry" in
+            ci:*)
+                grep -Fq "$entry" "$workflow" ||
+                    printf 'quarantined CI check is not in the workflow: %s\n' "$entry" ;;
+            *:*)
+                suite="${entry%%:*}" section="${entry#*:}"
+                if [ ! -f "$dir/$suite" ]; then
+                    printf 'quarantined suite does not exist: %s\n' "$entry"
+                elif ! grep -Eq "(section_is |\"\\\$section\" = )$section([^A-Za-z0-9_-]|\$)" "$dir/$suite"; then
+                    printf 'quarantined section does not exist: %s\n' "$entry"
+                fi ;;
+            *)
+                [ -f "$dir/$entry" ] || printf 'quarantined suite does not exist: %s\n' "$entry" ;;
+        esac
+    done
+}
+
+assert_eq 'every tests/flaky.txt entry names a suite, section or CI check that exists' '' \
+    "$(flaky_problems "$PROJECT_ROOT/tests" "$PROJECT_ROOT/tests/flaky.txt" "$PROJECT_ROOT/.github/workflows/ci.yml")"
+
+flaky="$TEST_BASE/flaky"
+mkdir "$flaky"
+printf '#!/bin/bash\nif section_is alpha; then :; fi\n' > "$flaky/test_sectioned.sh"
+printf '#!/bin/bash\nif [[ "$section" = all || "$section" = beta ]]; then :; fi\n' > "$flaky/test_own.sh"
+printf '%s\n' 'run: echo ci:real-check' > "$flaky/ci.yml"
+printf '%s\n' '# comment' 'test_sectioned.sh:alpha  2026-01-01  run 1  symptom' \
+    'test_own.sh:beta  2026-01-01  run 2  symptom' 'test_own.sh  2026-01-01  run 3  symptom' \
+    'ci:real-check  2026-01-01  run 4  symptom' > "$flaky/list"
+assert_eq 'live suites, sections and CI checks satisfy the stale-entry guard' '' \
+    "$(flaky_problems "$flaky" "$flaky/list" "$flaky/ci.yml")"
+printf '%s\n' 'test_gone.sh  d  e  s' 'test_sectioned.sh:gamma  d  e  s' 'test_gone.sh:alpha  d  e  s' \
+    'ci:gone-check  d  e  s' 'test_sectioned.sh:alph  d  e  s' > "$flaky/list"
+assert_eq 'the guard names each stale suite, section and CI entry' \
+    "$(printf '%s\n' 'quarantined suite does not exist: test_gone.sh' \
+        'quarantined section does not exist: test_sectioned.sh:gamma' \
+        'quarantined suite does not exist: test_gone.sh:alpha' \
+        'quarantined CI check is not in the workflow: ci:gone-check' \
+        'quarantined section does not exist: test_sectioned.sh:alph')" \
+    "$(flaky_problems "$flaky" "$flaky/list" "$flaky/ci.yml")"
+
+# The runner skips a quarantined suite, and runs it with CORTADO_RUN_FLAKY=1.
+fake test_flaky.sh ': > "$STATE/flaky-ran"' 'exit 1'
+printf '%s\n' 'test_flaky.sh  2026-01-01  run 1  fails sometimes' > "$flaky/runner-list"
+CORTADO_FLAKY_FILE="$flaky/runner-list" run "$s/test_pass.sh" "$s/test_flaky.sh"
+assert_eq 'a quarantined failing suite does not fail the run' 0 "$status"
+assert_match 'a quarantined suite prints a SKIP line' '^SKIP \(flaky\): test_flaky\.sh$' "$output"
+assert_eq 'a quarantined suite never runs' no "$([ -e "$STATE/flaky-ran" ] && echo yes || echo no)"
+assert_contains 'the summary counts skipped suites' 'suites: 1 passed, 0 failed, 0 timed out, 1 skipped as flaky' "$output"
+CORTADO_FLAKY_FILE="$flaky/runner-list" run "$s/test_flaky.sh"
+assert_eq 'a run with every suite quarantined passes' 0 "$status"
+assert_contains 'a run with every suite quarantined starts none' 'suites: 0 passed, 0 failed, 0 timed out, 1 skipped' "$output"
+CORTADO_RUN_FLAKY=1 CORTADO_FLAKY_FILE="$flaky/runner-list" run "$s/test_flaky.sh"
+assert_eq 'CORTADO_RUN_FLAKY=1 runs a quarantined suite' 1 "$status"
+assert_match 'CORTADO_RUN_FLAKY=1 reports the quarantined suite' '^FAIL: test_flaky\.sh ' "$output"
+
+# tests/lib/sections.sh skips a quarantined section without failing its guard.
+cat > "$flaky/test_split.sh" <<SUITE
+#!/bin/bash
+. "$PROJECT_ROOT/tests/lib/assert.sh" plain
+. "$PROJECT_ROOT/tests/lib/sections.sh"
+section="\${SPLIT_SECTION:-all}"
+if [ "\$section" = all ]; then
+    run_sections SPLIT_SECTION 2 "\${BASH_SOURCE[0]}" steady shaky
+fi
+if section_is steady; then pass 'steady holds'; fi
+if section_is shaky; then : > "\$STATE/shaky-ran"; fail 'shaky breaks'; fi
+section_results
+SUITE
+printf '%s\n' 'test_split.sh:shaky  2026-01-01  run 1  fails sometimes' > "$flaky/section-list"
+status=0
+output=$(CORTADO_FLAKY_FILE="$flaky/section-list" /bin/bash "$flaky/test_split.sh" 2>&1) || status=$?
+assert_eq 'a quarantined failing section does not fail its suite' 0 "$status"
+assert_match 'a quarantined section prints a SKIP line' '^SKIP \(flaky\): test_split\.sh:shaky$' "$output"
+assert_eq 'a quarantined section never runs' no "$([ -e "$STATE/shaky-ran" ] && echo yes || echo no)"
+assert_contains 'the other sections still run' 'PASS: steady holds' "$output"
+status=0
+output=$(CORTADO_RUN_FLAKY=1 CORTADO_FLAKY_FILE="$flaky/section-list" /bin/bash "$flaky/test_split.sh" 2>&1) || status=$?
+assert_eq 'CORTADO_RUN_FLAKY=1 runs a quarantined section' 1 "$status"
+
 printf '\nResults: %s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
