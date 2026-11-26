@@ -241,17 +241,29 @@ _json_reply() {
 # Scope the pipe descriptors to the callback. The FIFO is just a rendezvous
 # for Bash 3.2, which has no coproc. Once open, both ends live in the kernel.
 with_payload_context() {
-    local payload_json parser_dir
+    local payload_json parser_dir worker_opened=false worker_status=0
     if IFS= read -r -d '' payload_json; then payload_json=; fi
     if parser_dir=$(mktemp -d "${TMPDIR:-/tmp}/cortado-json.XXXXXX" 2>/dev/null) ||
         parser_dir=$(mktemp -d "${CLAUDE_CONFIG_DIR:-/tmp}/cortado-json.XXXXXX" 2>/dev/null); then
         if mkfifo "$parser_dir/input" 2>/dev/null; then
-            # The two opens intentionally rendezvous on the private FIFO.
+            # The two opens intentionally rendezvous on the private FIFO. The
+            # write open can still fail: macOS Bash 3.2 does not restart it
+            # when a child exits meanwhile (EINTR), as a jq that fails at once
+            # does right after opening its end. That reader is gone, so a retry
+            # would wait forever. Silence the failed open and parse directly below.
+            # Fd 8 carries the caller's stderr to the callback; each side closes
+            # it with exec, because Bash 3.2 keeps an inheritable copy for 8>&-.
             # shellcheck disable=SC2094
-            _with_json_worker "$parser_dir" "$payload_json" "$@" \
-                6< <(_cortado_jq --worker -nRj --unbuffered --arg kind stream < "$parser_dir/input" 2>/dev/null) \
-                7>"$parser_dir/input"
-            return
+            {
+                _with_json_worker "$parser_dir" "$payload_json" "$@" \
+                    6< <(exec 8>&-; _cortado_jq --worker -nRj --unbuffered --arg kind stream \
+                        < "$parser_dir/input" 2>/dev/null) \
+                    7>"$parser_dir/input" 2>&8
+            } 8>&2 2>/dev/null || worker_status=$?
+            [ "$worker_opened" = false ] || return "$worker_status"
+            # Hold both ends while removing the pipe, so a reader still opening
+            # it reads end-of-file and exits, and a later one finds no pipe.
+            { rm -rf -- "$parser_dir"; } 2>/dev/null 9<>"$parser_dir/input"
         fi
         rm -rf -- "$parser_dir"
     fi
@@ -266,6 +278,9 @@ with_payload_context() {
 _with_json_worker() {
     local parser_dir="$1" payload_json="$2"
     shift 2
+    # Both pipe ends are open: tell with_payload_context the callback ran here.
+    worker_opened=true
+    exec 8>&-
     rm -rf -- "$parser_dir"
     local -r cortado_json_worker=true
     local assignments=

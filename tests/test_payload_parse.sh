@@ -193,6 +193,23 @@ assert_eq "malformed payload freezes the absence sentinels" "$readonly_missing" 
 assert_eq "measured zero is a readonly reading" '21 readonly fields, context: 0, cost: 0, quotas: 0/-' \
     "$(inspect_payload '{"cost":{"total_cost_usd":0},"context_window":{"used_percentage":0},"rate_limits":{"five_hour":{"used_percentage":0},"seven_day":{}}}')"
 
+# The parser's pipe can fail to open for writing after it was made. On macOS,
+# Bash 3.2 does not restart that open when a child exits meanwhile (a jq that
+# fails at once returns "Interrupted system call"). A pipe path that is a
+# directory fails the same open every time.
+mkdir -p "$scratch/no-fifo" "$scratch/tmp"
+cat > "$scratch/no-fifo/mkfifo" <<'SHIM'
+#!/bin/bash
+mkdir "$1"
+SHIM
+chmod 700 "$scratch/no-fifo/mkfifo"
+PATH="$scratch/no-fifo:$PATH" TMPDIR="$scratch/tmp" \
+    render '{"context_window":{"used_percentage":42},"rate_limits":{"five_hour":{"used_percentage":7},"seven_day":{"used_percentage":3}}}'
+assert_contains "an unopenable parser pipe still shows the context reading" '42% 🟢' "$rendered"
+assert_contains "an unopenable parser pipe still shows the quota reading" '5h:7% 🟢 7d:3% 🟢' "$rendered"
+assert_eq "an unopenable parser pipe leaves no temporary directory" '' \
+    "$(cd "$scratch/tmp" && find . -name 'cortado-json.*')"
+
 export FAIL_JQ=true
 assert_eq "failed jq freezes the absence sentinels" "$readonly_missing" "$(inspect_payload '{}')"
 render '{"context_window":{"used_percentage":0},"rate_limits":{"spend_limit":{"used_percentage":12}}}'
