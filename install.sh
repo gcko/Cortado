@@ -357,6 +357,9 @@ _UPD_RT_STAGE=""
 _UPD_RT_PREV=""
 _UPD_RT_PUBLISHED=false
 _UPD_REFRESHED=false
+_UPD_LOCK=""
+# The PID a lock names: this installer, or the fresh-install subshell doing the work.
+_UPD_OWNER=""
 
 # Remove a directory tree this update created, including read-only parts.
 _update_remove_tree() {
@@ -395,6 +398,17 @@ _update_cleanup() {
     _UPD_RT_STAGE=""
     _UPD_RT_PREV=""
     _UPD_RT_PUBLISHED=false
+    # Release the lock last.
+    _update_unlock "$_UPD_LOCK"
+    _UPD_LOCK=""
+}
+
+# Remove the update lock at $1, only while it names this installer.
+_update_unlock() {
+    [ -n "$1" ] || return 0
+    if [ "$(readlink "$1" 2>/dev/null)" = "${_UPD_OWNER:-$$}" ]; then
+        rm -f -- "$1"
+    fi
 }
 
 # Restore the caller's traps after cleanup.
@@ -474,6 +488,110 @@ _update_take_signal() {
     [ -n "$status" ] || return 0
     _UPD_SIGNAL=""
     _update_on_signal "$status"
+}
+
+# -----------------------------------------------------------------------------
+# One runtime update at a time. The lock is a symlink beside the runtime whose
+# target is the PID of the installer that holds it, so the lock and its owner
+# appear in one step and a SIGKILL never leaves a lock without an owner.
+# -----------------------------------------------------------------------------
+
+# Take the update lock in directory $1, or say why not and fail.
+_update_lock() {
+    local lock="$1/.cortado-update.lock" holder made attempt
+    for attempt in 1 2 3; do
+        if [ -e "$lock" ] && [ ! -L "$lock" ]; then
+            print_error "$lock is not a Cortado update lock. If no update is running, remove it and run the update again."
+            return 1
+        fi
+        made=false
+        _UPD_DEFER=true
+        if ln -sn -- "${_UPD_OWNER:-$$}" "$lock" 2>/dev/null; then
+            _UPD_LOCK="$lock"
+            made=true
+        fi
+        _UPD_DEFER=false
+        _update_take_signal
+        [ "$made" = false ] || return 0
+        # Gone already: its holder finished, so try again.
+        [ -L "$lock" ] || continue
+        # Released since the check above: try again.
+        holder=$(readlink "$lock" 2>/dev/null) || continue
+        case "$holder" in
+            ''|0*|*[!0-9]*)
+                print_error "The update lock at $lock does not name an installer process. If no update is running, remove it and run the update again."
+                return 1
+                ;;
+        esac
+        if kill -0 "$holder" 2>/dev/null; then
+            print_error "Another Cortado update (process $holder) is changing the runtime. Wait for it to finish. If no update is running, remove $lock and run the update again."
+            return 1
+        fi
+        _update_break_stale_lock "$lock" "$holder"
+    done
+    print_error "Could not take the update lock at $lock."
+    return 1
+}
+
+# Remove the lock at $1 only while it names the exited installer $2. It is
+# renamed aside first, so of two installers breaking it only one removes it,
+# and a lock that a running update has taken since is handed back. Signals
+# wait until the lock is back, so one never strands it aside.
+_update_break_stale_lock() {
+    local lock="$1" stale="$2" aside="$1.$$" taken
+    _UPD_DEFER=true
+    if mv -- "$lock" "$aside" 2>/dev/null; then
+        taken=$(readlink "$aside" 2>/dev/null)
+        if [ "$taken" != "$stale" ]; then
+            ln -sn -- "$taken" "$lock" 2>/dev/null
+        fi
+        rm -f -- "$aside"
+    fi
+    _UPD_DEFER=false
+    _update_take_signal
+}
+
+# With the lock held: when no runtime is at $1, put back the newest runtime an
+# interrupted update moved aside, so its cortado.conf and other files carry
+# over as usual. Staging and empty leftovers only hold copies and are removed;
+# any other moved-aside runtime is kept and named, never deleted.
+_update_recover_runtime() {
+    local dest="$1" parent="${1%/*}" dir newest=""
+    if [ ! -e "$dest" ] && [ ! -L "$dest" ]; then
+        for dir in "$parent"/.cortado-previous.*; do
+            [ ! -L "$dir" ] && [ -d "$dir/runtime" ] && [ ! -L "$dir/runtime" ] || continue
+            if [ -z "$newest" ] || [ "$dir" -nt "$newest" ]; then
+                newest="$dir"
+            fi
+        done
+        if [ -n "$newest" ]; then
+            if ! mv -- "$newest/runtime" "$dest"; then
+                print_error "Could not restore the Cortado runtime that an interrupted update left at $newest/runtime. Move it back to $dest to recover it and its cortado.conf."
+                return 1
+            fi
+            print_warning "Recovered the Cortado runtime and its cortado.conf that an interrupted update left at $newest/runtime."
+        fi
+    fi
+    for dir in "$parent"/.cortado-runtime.*; do
+        # _update_remove_tree refuses a symlink.
+        [ -d "$dir" ] || continue
+        _update_remove_tree "$dir"
+    done
+    # A SIGKILL while a stale lock was set aside leaves it as
+    # .cortado-update.lock.<pid>; remove it once that installer has exited.
+    for dir in "$parent"/.cortado-update.lock.*; do
+        [ -L "$dir" ] || continue
+        case "${dir##*.}" in
+            ''|0*|*[!0-9]*) continue ;;
+        esac
+        kill -0 "${dir##*.}" 2>/dev/null || rm -f -- "$dir"
+    done
+    for dir in "$parent"/.cortado-previous.*; do
+        [ ! -L "$dir" ] && [ -d "$dir" ] || continue
+        rmdir -- "$dir" 2>/dev/null && continue
+        [ -L "$dir/runtime" ] || [ ! -d "$dir/runtime" ] || dir="$dir/runtime"
+        print_warning "An interrupted update left an earlier Cortado runtime at $dir. Cortado does not use it. Copy what you need from it, such as cortado.conf, then remove it."
+    done
 }
 
 _publish_release_archive() {
@@ -595,6 +713,11 @@ _publish_managed_runtime() {
     fi
     _update_begin
     _UPD_RT_DEST="$dest"
+    # Hold the lock before reading or moving anything beside the runtime.
+    if ! _update_lock "$parent" || ! _update_recover_runtime "$dest"; then
+        _update_end
+        return 1
+    fi
     if ! _update_mktemp_dir _UPD_RT_STAGE "$parent/.cortado-runtime.XXXXXX" ||
         ! _update_take_signal ||
         ! _update_mktemp_dir _UPD_RT_PREV "$parent/.cortado-previous.XXXXXX" ||
@@ -1596,9 +1719,13 @@ PROGRESS_BAR_WIDTH=8
 # Advanced Settings
 # =============================================================================
 
-# Default cache TTL (seconds) for cache_get when the caller omits max_age.
-# Built-in fallback is 60. Git, rate limits, and updates pass their own
-# seconds and ignore this. Weather does not call cache_get.
+# Default cache TTL (seconds) for cache_get() when the caller omits max_age.
+# Built-in fallback is also 60 (modules/utils.sh). Only rate-limits and update
+# call cache_get, and both pass their own seconds (RATE_CACHE_TTL,
+# UPDATE_CHECK_INTERVAL), so no shipped module reads this today. Git uses
+# GIT_CACHE_TTL. Weather (WEATHER_CACHE_TTL), network, CPU, load, brightness,
+# processes, Docker and Node.js refresh in the background on their own TTLs.
+# Digits only; when cache_get uses this value, anything else is a miss.
 CACHE_MAX_AGE=60
 
 # Cache files live under CLAUDE_CONFIG_DIR (default: ~/.claude/cortado-cache).
@@ -2151,7 +2278,7 @@ do_install() (
         exit 1
     fi
 
-    local pending_backup="" runtime_stage="" runtime_promoted=false runtime_committed=false
+    local pending_backup="" runtime_stage="" runtime_promoted=false runtime_committed=false install_lock=""
     # Older ShellCheck (CI's Ubuntu) reports the trap-only body as unreachable (SC2317).
     # shellcheck disable=SC2317,SC2329 # Called by the EXIT trap in this subshell.
     cleanup_install() {
@@ -2173,7 +2300,8 @@ do_install() (
         fi
         [ -z "$pending_backup" ] || rm -rf -- "$pending_backup"
     }
-    trap cleanup_install EXIT
+    # Roll back first, then release the update lock taken for the swap.
+    trap 'cleanup_install; _update_unlock "$install_lock"' EXIT
     trap 'exit 129' HUP
     trap 'exit 130' INT
     trap 'exit 143' TERM
@@ -2293,6 +2421,11 @@ do_install() (
     echo "  $test_output"
     echo ""
 
+    # Swap the runtime under the lock --update takes. It names this subshell,
+    # which does the work; the installer only waits for it.
+    _UPD_OWNER=$(exec sh -c 'echo "$PPID"')
+    install_lock="${installed_dir%/*}/.cortado-update.lock"
+    _update_lock "${installed_dir%/*}" || exit 1
     if [ -d "$CORTADO_DIR" ] && ! mv -- "$CORTADO_DIR" "$runtime_stage/previous/"; then
         print_error "Could not move the previous runtime at $CORTADO_DIR" >&2
         exit 1
