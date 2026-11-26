@@ -1,4 +1,12 @@
 # shellcheck shell=bash
+# @cortado-module update
+# @default true
+# @args none
+# @ttl 86400
+# @timeout-ms 5000
+# @platforms darwin,linux
+# @menu core 3
+# @description Update checker
 # =============================================================================
 # Update Module - Check for Cortado releases
 # =============================================================================
@@ -11,6 +19,9 @@
 #   UPDATE_REPO             - GitHub repo to check (default: gcko/Cortado)
 #   UPDATE_ICON             - Icon for update notification (default: arrow up)
 # =============================================================================
+
+# shellcheck source=lib/semver.sh
+. "${BASH_SOURCE[0]%/*}/../lib/semver.sh"
 
 _check_cortado_update() {
     local repo="${UPDATE_REPO:-gcko/Cortado}"
@@ -69,7 +80,7 @@ _check_cortado_update() {
     local remote_version result="unknown"
     if [ -n "$local_version" ] && remote_version=$(_fetch_cortado_release "$repo" "$version_pattern"); then
         result="checked-current"
-        if [ "$remote_version" != "$local_version" ] && _version_gt "$remote_version" "$local_version"; then
+        if [ "$remote_version" != "$local_version" ] && version_lt "$local_version" "$remote_version"; then
             result="available:$remote_version"
         fi
     fi
@@ -102,39 +113,6 @@ _fetch_cortado_release() {
     tag=$(printf '%s\n' "$body" | jq -ers --arg pattern "$release_pattern" \
         'select(length == 1) | .[0] | objects | .tag_name | strings | select(test($pattern))' 2>/dev/null) || return 1
     printf '%s\n' "${tag#v}"
-}
-
-# Return the leading numeric portion of a semantic-version component.
-# Release tags can include suffixes such as "0-rc1"; keeping only the leading
-# digits makes the numeric comparison safe without trying to order prereleases.
-_version_numeric_component() {
-    local value="${1:-}"
-    value="${value%%[!0-9]*}"
-    printf '%s\n' "${value:-0}"
-}
-
-# Compare two semver strings: returns 0 if $1 > $2
-_version_gt() {
-    local v1="$1" v2="$2"
-    # Split on dots and compare the numeric prefix of each component. Bash's
-    # arithmetic parser rejects values such as "0-rc1", so sanitize first.
-    local v1_major v1_minor v1_patch v2_major v2_minor v2_patch
-    IFS=. read -r v1_major v1_minor v1_patch _ <<< "$v1"
-    IFS=. read -r v2_major v2_minor v2_patch _ <<< "$v2"
-
-    v1_major=$(_version_numeric_component "$v1_major")
-    v1_minor=$(_version_numeric_component "$v1_minor")
-    v1_patch=$(_version_numeric_component "$v1_patch")
-    v2_major=$(_version_numeric_component "$v2_major")
-    v2_minor=$(_version_numeric_component "$v2_minor")
-    v2_patch=$(_version_numeric_component "$v2_patch")
-
-    if [ "$v1_major" -gt "$v2_major" ]; then return 0; fi
-    if [ "$v1_major" -lt "$v2_major" ]; then return 1; fi
-    if [ "$v1_minor" -gt "$v2_minor" ]; then return 0; fi
-    if [ "$v1_minor" -lt "$v2_minor" ]; then return 1; fi
-    if [ "$v1_patch" -gt "$v2_patch" ]; then return 0; fi
-    return 1
 }
 
 module_update() {

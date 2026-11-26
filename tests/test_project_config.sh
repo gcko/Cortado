@@ -284,6 +284,7 @@ rc=0
 project_config --toggle cpu > "$TEST_BASE/result" 2>&1 || rc=$?
 assert_eq "project toggle rejects enabling the CPU alias" "2" "$rc"
 assert_eq "rejected CPU toggle leaves no project file" "absent" "$(if [ ! -e "$PROJECT_FILE" ]; then echo absent; fi)"
+assert_eq "a trusted unset keeps a default-on module off without a project override" "MODEL: Test" "$(render)"
 printf '%s\n' 'MODULE_ORDER=model,cpu,directory' > "$PROJECT_FILE"
 assert_eq "project order cannot run trusted CPU or directory when off" "MODEL: Test" "$(render)"
 

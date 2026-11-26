@@ -160,7 +160,7 @@ assert_update_failed() {
 
 update_source="$CLAUDE_CONFIG_DIR/update-source"
 mkdir -p "$update_source" "$CORTADO_DIR"
-cp "$INSTALL" "$REPO_ROOT/VERSION" "$update_source/"
+cp -R "$INSTALL" "$REPO_ROOT/VERSION" "$REPO_ROOT/lib" "$update_source/"
 printf '%s\n' 'installed fixture' > "$CORTADO_DIR/cortado.sh"
 cp -R "$update_source" "$update_source.before"
 cp -R "$CORTADO_DIR" "$CORTADO_DIR.before"

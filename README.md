@@ -475,7 +475,10 @@ SEPARATOR=" • "
 ~/.claude/cortado/
 ├── cortado.sh          # Main entry point (+ config/version CLI)
 ├── lib/
-│   └── config-tui.sh   # Runtime config TUI (`cortado config`)
+│   ├── config-tui.sh   # Runtime config TUI (`cortado config`)
+│   ├── config-permissions.sh # Ownership and mode checks for sourced files
+│   ├── module-registry.sh    # Module discovery from file headers
+│   └── semver.sh       # Version comparison for the installer and update module
 ├── cortado.conf        # Configuration file
 ├── VERSION             # Version tracking
 └── modules/
@@ -494,26 +497,40 @@ SEPARATOR=" • "
 
 ### Crafting Custom Modules
 
-Create a new file in `modules/` following this recipe:
+Create `cortado-modules/` in your Claude config directory (`$CLAUDE_CONFIG_DIR`, which defaults to `~/.claude`). Save the following as `cortado-modules/mycustom.sh`. You must own the file, its directory and the Claude config directory, and only you may write to any of them. The commands after the next step set those modes.
 
 ```bash
-# =============================================================================
-# My Custom Module - Description
-# =============================================================================
-
+# @cortado-module mycustom
+# @default false
+# @args none
+# @ttl 0
+# @timeout-ms 0
+# @platforms darwin,linux
+# @description My custom segment
 module_mycustom() {
-    local input="$1"  # JSON input from Claude Code
-    # Your logic here
-    echo "🎯 My Output"
+    printf '%s\n' '🎯 My Output'
 }
 ```
 
-Register the module in `get_module_function` and `is_module_enabled` in `cortado.sh`. Include its flag in `project_config_setting_allowed` to let project configs turn it off. Add the flag and module order to `cortado.conf`.
+Add these settings to `cortado.conf` in the same Claude config directory. This order keeps the model and adds the custom segment. Append `mycustom` to your existing order to keep all your current segments.
 
 ```bash
 MODULE_MYCUSTOM="true"
-MODULE_ORDER="...,mycustom,..."
+MODULE_ORDER="model,mycustom"
 ```
+
+Then make the files private. A shell with umask `002`, the default on Ubuntu, creates them group-writable, and Cortado skips a group- or world-writable module, module directory, Claude config directory or `cortado.conf` without a word on the statusline. With `DEBUG_MODE="true"`, `cortado.log` names what it refused.
+
+```bash
+dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+chmod go-w "$dir"
+chmod 700 "$dir/cortado-modules"
+chmod 600 "$dir/cortado-modules/mycustom.sh" "$dir/cortado.conf"
+```
+
+`cortado config --list` shows the module. Module IDs use lowercase ASCII letters, digits, and hyphens and match the filename without `.sh`. Replace hyphens with underscores in the Bash function and uppercase flag.
+
+To contribute a module to Cortado, place the same file in the checkout's `modules/` directory. The installer and config catalog discover it automatically. See [Adding a New Module](AGENTS.md#adding-a-new-module) for the header fields.
 
 ## Troubleshooting
 

@@ -1,4 +1,17 @@
 # shellcheck shell=bash
+# @cortado-module load
+# @default false
+# @args none
+# @ttl 0
+# @timeout-ms 0
+# @platforms darwin,linux
+# @menu system 18
+# @description Load average
+# @config LOAD_ICON:string
+# @config LOAD_SHOW_ALL:bool
+# @config LOAD_WARNING_THRESHOLD:int
+# @config LOAD_CRITICAL_THRESHOLD:int
+# @config LOAD_SHOW_STATUS:bool
 # =============================================================================
 # Load Average Module - Shows system load average
 # =============================================================================

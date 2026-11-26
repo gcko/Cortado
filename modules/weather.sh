@@ -1,4 +1,15 @@
 # shellcheck shell=bash
+# @cortado-module weather
+# @default false
+# @args none
+# @ttl 1800
+# @timeout-ms 3000
+# @platforms darwin,linux
+# @menu extra 24
+# @description Weather (wttr.in)
+# @config WEATHER_SHOW_TEMP:bool
+# @config WEATHER_SHOW_COND:bool
+# @config WEATHER_COMPACT:bool
 # =============================================================================
 # Weather Module - Shows current weather (uses wttr.in)
 # =============================================================================

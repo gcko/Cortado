@@ -1,4 +1,14 @@
 # shellcheck shell=bash
+# @cortado-module version
+# @default true
+# @args payload
+# @ttl 0
+# @timeout-ms 0
+# @platforms darwin,linux
+# @menu core 2
+# @description Cortado version (brief)
+# @config VERSION_ICON:string
+# @config VERSION_SHOW_DURATION:bool
 # =============================================================================
 # Version Module - Shows Cortado version briefly on startup
 # =============================================================================

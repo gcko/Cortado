@@ -1,4 +1,20 @@
 # shellcheck shell=bash
+# @cortado-module battery
+# @default true
+# @args none
+# @ttl 0
+# @timeout-ms 0
+# @platforms darwin,linux
+# @menu core 12
+# @description Battery (macOS)
+# @config BATTERY_ICON:string
+# @config BATTERY_SHOW_CHARGING:bool
+# @config BATTERY_CHARGING_ICON:string
+# @config BATTERY_LOW_ICON:string
+# @config BATTERY_CRITICAL_ICON:string
+# @config BATTERY_LOW_THRESHOLD:int
+# @config BATTERY_CRITICAL_THRESHOLD:int
+# @config BATTERY_SHOW_PERCENTAGE:bool
 # =============================================================================
 # Battery Module - Shows battery percentage (macOS only)
 # =============================================================================
@@ -21,8 +37,11 @@ module_battery() {
     local critical_icon="${BATTERY_CRITICAL_ICON:-🔴}"
     # Thresholds may come from an untrusted project .cortado.conf and feed the integer
     # comparisons below — coerce non-numeric values to the defaults (matches cpu.sh).
-    local low_thresh=$(safe_int "${BATTERY_LOW_THRESHOLD:-20}" 20)
-    local crit_thresh=$(safe_int "${BATTERY_CRITICAL_THRESHOLD:-10}" 10)
+    local low_thresh crit_thresh
+    safe_int_reply "${BATTERY_LOW_THRESHOLD:-20}" 20
+    low_thresh=$REPLY
+    safe_int_reply "${BATTERY_CRITICAL_THRESHOLD:-10}" 10
+    crit_thresh=$REPLY
     local show_pct="${BATTERY_SHOW_PERCENTAGE:-true}"
 
     # Get battery info

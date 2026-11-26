@@ -1,4 +1,19 @@
 # shellcheck shell=bash
+# @cortado-module cost
+# @default true
+# @args payload
+# @ttl 0
+# @timeout-ms 0
+# @platforms darwin,linux
+# @menu core 9
+# @description Session cost
+# @config COST_ICON:string
+# @config COST_SHOW_BURN_RATE:bool
+# @config COST_SHOW_TPM:bool
+# @config COST_TPM_ICON:string
+# @config COST_DECIMAL_PLACES:int
+# @config COST_COMPACT:bool
+# @config COST_MINIMUM_DISPLAY:number
 # =============================================================================
 # Cost Module - Shows session cost, burn rate, and TPM
 # =============================================================================

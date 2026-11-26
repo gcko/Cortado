@@ -1,4 +1,21 @@
 # shellcheck shell=bash
+# @cortado-module context
+# @default true
+# @args payload
+# @ttl 0
+# @timeout-ms 0
+# @platforms darwin,linux
+# @menu core 5
+# @description Context usage bar
+# @config CONTEXT_ICON:string
+# @config CONTEXT_SHOW_PROGRESS_BAR:bool
+# @config CONTEXT_SHOW_PERCENTAGE:bool
+# @config CONTEXT_SHOW_STATUS:bool
+# @config CONTEXT_SHOW_TOKENS_REMAINING:bool
+# @config CONTEXT_COMPACT_ICON:string
+# @config CONTEXT_WARNING_THRESHOLD:int
+# @config CONTEXT_CRITICAL_THRESHOLD:int
+# @config CONTEXT_COMPACT_THRESHOLD:int
 # =============================================================================
 # Context Module - Shows context window usage with progress bar
 # Prefers the payload percentage and shows -- until a reading is available.

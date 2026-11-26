@@ -8,13 +8,13 @@ trap 'rm -rf "$TEST_DIR"' EXIT
 # shellcheck source=tests/lib/assert.sh
 . "$SCRIPT_DIR/tests/lib/assert.sh" indented
 
-# Load the module under test. _version_gt is pure and performs no external I/O.
+# Load the module under test. version_lt is pure and performs no external I/O.
 . "$SCRIPT_DIR/modules/update.sh"
 
-# _version_gt <v1> <v2> -> rc 0 when v1 > v2, rc 1 otherwise.
+# version_lt <v2> <v1> -> rc 0 when v1 > v2, rc 1 otherwise.
 assert_gt() {
     local desc="$1" v1="$2" v2="$3" expected_rc="$4"
-    _version_gt "$v1" "$v2"
+    version_lt "$v2" "$v1"
     assert_eq "$desc" "$expected_rc" "$?"
 }
 

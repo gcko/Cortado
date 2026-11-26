@@ -1,4 +1,14 @@
 # shellcheck shell=bash
+# @cortado-module network
+# @default false
+# @args none
+# @ttl 0
+# @timeout-ms 4000
+# @platforms darwin,linux
+# @menu system 16
+# @description Network info
+# @config NETWORK_ICON:string
+# @config NETWORK_COMPACT:bool
 # =============================================================================
 # Network Module - Shows IP address and network info
 # =============================================================================

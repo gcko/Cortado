@@ -70,7 +70,7 @@ fi
 RUNTIME_TREE="$TEST_BASE/runtime"
 mkdir "$RUNTIME_TREE"
 cp "$PROJECT_ROOT/cortado.sh" "$PROJECT_ROOT/cortado.conf" "$RUNTIME_TREE/"
-cp -R "$PROJECT_ROOT/modules" "$RUNTIME_TREE/"
+cp -R "$PROJECT_ROOT/modules" "$PROJECT_ROOT/lib" "$RUNTIME_TREE/"
 cp "$SCRIPT_DIR/module-error-fixture.sh" "$RUNTIME_TREE/modules/zz-runtime-test.sh" || exit 1
 export CLAUDE_CONFIG_DIR="$(mktemp -d "$TEST_BASE/concurrent.XXXXXX")"
 export CACHE_DIR="$CLAUDE_CONFIG_DIR/cortado-cache"

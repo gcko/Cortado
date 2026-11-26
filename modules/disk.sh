@@ -1,4 +1,18 @@
 # shellcheck shell=bash
+# @cortado-module disk
+# @default false
+# @args none
+# @ttl 0
+# @timeout-ms 0
+# @platforms darwin,linux
+# @menu system 15
+# @description Disk space
+# @config DISK_ICON:string
+# @config DISK_SHOW_PERCENTAGE:bool
+# @config DISK_SHOW_FREE:bool
+# @config DISK_WARNING_THRESHOLD:int
+# @config DISK_CRITICAL_THRESHOLD:int
+# @config DISK_SHOW_STATUS:bool
 # =============================================================================
 # Disk Module - Shows disk usage
 # =============================================================================

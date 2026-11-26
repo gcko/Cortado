@@ -1,4 +1,19 @@
 # shellcheck shell=bash
+# @cortado-module git
+# @default true
+# @args dir
+# @ttl 2
+# @timeout-ms 0
+# @platforms darwin,linux
+# @menu core 6
+# @description Git branch/status
+# @config GIT_ICON:string
+# @config GIT_SHOW_BRANCH:bool
+# @config GIT_SYMBOL_MODIFIED:string
+# @config GIT_SYMBOL_UNTRACKED:string
+# @config GIT_SYMBOL_STAGED:string
+# @config GIT_FILE_ICON:string
+# @config GIT_COMPACT:bool
 # =============================================================================
 # Git Module - Shows branch, status, and file count
 # =============================================================================
@@ -40,7 +55,6 @@ _git_cache_key_for_dir() {
 module_git() {
     local current_dir="$1"
     local icon
-    icon=$(get_icon "${GIT_ICON:-🌿}" "GIT:")
     local show_branch="${GIT_SHOW_BRANCH:-true}"
     local show_status="${GIT_SHOW_STATUS:-true}"
     local show_count="${GIT_SHOW_FILE_COUNT:-true}"
@@ -48,7 +62,6 @@ module_git() {
     local sym_untracked="${GIT_SYMBOL_UNTRACKED:-+}"
     local sym_staged="${GIT_SYMBOL_STAGED:-✓}"
     local file_icon
-    file_icon=$(get_icon "${GIT_FILE_ICON:-📝}" "")
     local compact="${GIT_COMPACT:-false}"
     local show_file_count=false
     if [ "$show_count" = "true" ] && ! is_compact "$compact"; then
@@ -72,6 +85,12 @@ module_git() {
         cd "$orig_dir" 2>/dev/null || return
         return
     }
+
+    # A workspace outside a repository has no Git segment to format.
+    icon=$(get_icon "${GIT_ICON:-🌿}" "GIT:")
+    if [ "$show_file_count" = "true" ]; then
+        file_icon=$(get_icon "${GIT_FILE_ICON:-📝}" "")
+    fi
 
     # Resolve absolute git dir for stable cache keys + mtime targets
     local abs_git_dir

@@ -39,7 +39,7 @@ chmod +x "$TEST_BASE/no-grep/pmset"
 SOURCE_TREE="$TEST_BASE/source"
 mkdir "$SOURCE_TREE"
 cp "$PROJECT_ROOT/cortado.sh" "$PROJECT_ROOT/cortado.conf" "$SOURCE_TREE/"
-cp -R "$PROJECT_ROOT/modules" "$SOURCE_TREE/"
+cp -R "$PROJECT_ROOT/modules" "$PROJECT_ROOT/lib" "$SOURCE_TREE/"
 cp "$SCRIPT_DIR/module-error-fixture.sh" "$SOURCE_TREE/modules/zz-runtime-test.sh" || exit 1
 cat > "$SOURCE_TREE/modules/zz-source-test.sh" <<'EOF'
 : > "$CLAUDE_CONFIG_DIR/source-ran"
@@ -347,7 +347,7 @@ assert_eq 'Version receives the original payload as its only argument' "payload=
 INCOMPLETE_TREE="$TEST_BASE/incomplete"
 mkdir "$INCOMPLETE_TREE"
 cp "$PROJECT_ROOT/cortado.sh" "$PROJECT_ROOT/cortado.conf" "$INCOMPLETE_TREE/" || exit 1
-cp -R "$PROJECT_ROOT/modules" "$INCOMPLETE_TREE/" || exit 1
+cp -R "$PROJECT_ROOT/modules" "$PROJECT_ROOT/lib" "$INCOMPLETE_TREE/" || exit 1
 rm "$INCOMPLETE_TREE/modules/utils.sh" || exit 1
 # Observe the regular module diagnostics when the utility logger is absent.
 cat > "$INCOMPLETE_TREE/modules/zz-observe.sh" <<'EOF'

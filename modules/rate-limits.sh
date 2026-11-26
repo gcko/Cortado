@@ -1,4 +1,27 @@
 # shellcheck shell=bash
+# @cortado-module rate-limits
+# @default true
+# @args payload
+# @ttl 120
+# @timeout-ms 5000
+# @platforms darwin,linux
+# @menu core 10
+# @description Rate limits
+# @config RATE_SHOW_5H:bool
+# @config RATE_SHOW_7D:bool
+# @config RATE_SHOW_TIME_REMAINING:bool
+# @config RATE_SHOW_PROJECTION:bool
+# @config RATE_SHOW_PROGRESS_BAR:bool
+# @config RATE_PROGRESS_BAR_WIDTH:int
+# @config RATE_WARNING_THRESHOLD:int
+# @config RATE_CRITICAL_THRESHOLD:int
+# @config RATE_COMPACT:bool
+# @config RATE_5H_LABEL:string
+# @config RATE_7D_LABEL:string
+# @config RATE_LOW_THRESHOLD:int
+# @config RATE_MEDIUM_THRESHOLD:int
+# @config RATE_HIGH_THRESHOLD:int
+# @config RATE_SHOW_USAGE_STATUS:bool
 # =============================================================================
 # Rate Limits Module - Shows 5-hour and 7-day usage with projections
 # Shows gateway spend against its limit when Claude Code reports that reading.

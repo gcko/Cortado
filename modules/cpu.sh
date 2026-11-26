@@ -1,4 +1,17 @@
 # shellcheck shell=bash
+# @cortado-module cpu
+# @default false
+# @args none
+# @ttl 0
+# @timeout-ms 0
+# @platforms darwin,linux
+# @menu system 13
+# @description CPU usage
+# @config CPU_ICON:string
+# @config CPU_SHOW_PERCENTAGE:bool
+# @config CPU_WARNING_THRESHOLD:int
+# @config CPU_CRITICAL_THRESHOLD:int
+# @config CPU_SHOW_STATUS:bool
 # =============================================================================
 # CPU Module - Shows CPU usage percentage
 # =============================================================================

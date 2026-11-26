@@ -62,6 +62,11 @@ setup_colors() {
 # PATHS
 # =============================================================================
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/semver.sh
+. "$SCRIPT_DIR/lib/semver.sh"
+# shellcheck source=lib/module-registry.sh
+. "$SCRIPT_DIR/lib/module-registry.sh"
+
 CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 case "$CLAUDE_DIR" in
     /*) ;;
@@ -139,37 +144,6 @@ check_remote_version() {
 }
 
 # Leading digits of one semver component (safe for bash arithmetic).
-_version_numeric_component() {
-    local value="${1:-}"
-    value="${value%%[!0-9]*}"
-    printf '%s\n' "${value:-0}"
-}
-
-# Compare semantic versions (returns 0 if v1 < v2). Matches modules/update.sh
-# _version_gt inverted: numeric major/minor/patch only; suffixes ignored.
-version_lt() {
-    local v1="$1"
-    local v2="$2"
-    local v1_major v1_minor v1_patch v2_major v2_minor v2_patch
-
-    IFS=. read -r v1_major v1_minor v1_patch _ <<< "$v1"
-    IFS=. read -r v2_major v2_minor v2_patch _ <<< "$v2"
-
-    v1_major=$(_version_numeric_component "$v1_major")
-    v1_minor=$(_version_numeric_component "$v1_minor")
-    v1_patch=$(_version_numeric_component "$v1_patch")
-    v2_major=$(_version_numeric_component "$v2_major")
-    v2_minor=$(_version_numeric_component "$v2_minor")
-    v2_patch=$(_version_numeric_component "$v2_patch")
-
-    if [ "$v1_major" -lt "$v2_major" ]; then return 0; fi
-    if [ "$v1_major" -gt "$v2_major" ]; then return 1; fi
-    if [ "$v1_minor" -lt "$v2_minor" ]; then return 0; fi
-    if [ "$v1_minor" -gt "$v2_minor" ]; then return 1; fi
-    if [ "$v1_patch" -lt "$v2_patch" ]; then return 0; fi
-    return 1
-}
-
 # Check for updates: 0 = newer, 1 = no newer release, 2 = could not check.
 check_for_updates() {
     local local_ver=$(get_local_version)
@@ -393,46 +367,25 @@ do_update() {
 # =============================================================================
 # MODULE DEFINITIONS
 # =============================================================================
-# Format: "module_name:default_enabled:category"
-declare -a CORE_MODULES=(
-    "sandbox:true:core"
-    "version:true:core"
-    "update:true:core"
-    "directory:true:core"
-    "context:true:core"
-    "git:true:core"
-    "project:true:core"
-    "model:true:core"
-    "cost:true:core"
-    "rate-limits:true:core"
-    "time:true:core"
-    "battery:true:core"
-)
-
-declare -a SYSTEM_MODULES=(
-    "cpu:false:system"
-    "memory:false:system"
-    "disk:false:system"
-    "network:false:system"
-    "uptime:false:system"
-    "load:false:system"
-    "temperature:false:system"
-    "brightness:false:system"
-    "processes:false:system"
-)
-
-declare -a DEV_MODULES=(
-    "docker:false:dev"
-    "node:false:dev"
-)
-
-declare -a EXTRA_MODULES=(
-    "weather:false:extra"
-    "timezone:false:extra"
-)
-
-# All modules combined
-declare -a ALL_MODULES=("${CORE_MODULES[@]}" "${SYSTEM_MODULES[@]}" "${DEV_MODULES[@]}" "${EXTRA_MODULES[@]}")
+# The installer lists shipped modules. User modules stay in the config directory
+# and can be managed with cortado config after installation.
+init_installer_catalog() {
+    local record
+    discover_module_registry "$SCRIPT_DIR/modules" || return 1
+    CORE_MODULES=()
+    SYSTEM_MODULES=()
+    DEV_MODULES=()
+    EXTRA_MODULES=()
+    ALL_MODULES=("${_CORTADO_MODULE_CATALOG[@]}")
+    for record in "${ALL_MODULES[@]}"; do
+        case "${record#*:*:}" in
+            core:*) CORE_MODULES+=("$record") ;;
+            system:*) SYSTEM_MODULES+=("$record") ;;
+            dev:*) DEV_MODULES+=("$record") ;;
+            extra:*) EXTRA_MODULES+=("$record") ;;
+        esac
+    done
+}
 
 # Selected modules (array of module names)
 declare -a SELECTED_MODULES=()
@@ -475,241 +428,18 @@ print_header() {
     echo -e "${BOLD}${CYAN}$1${NC}"
 }
 
-# Get module description
-get_module_description() {
-    local module="$1"
-    local icon_mode="$2"  # "icon", "text", or "both"
-
-    local icon=""
-    local text=""
-
-    case "$module" in
-        # Core modules
-        sandbox)      icon="$(emoji '🔒' '[S]')"; text="Lock icon when in macOS app sandbox" ;;
-        version)      icon="$(emoji '☕' '[V]')"; text="Cortado version (shown briefly on startup)" ;;
-        update)       icon="$(emoji '⬆️ ' '[U]')"; text="Update checker (daily GitHub check)" ;;
-        directory)    icon="$(emoji '📁' '[D]')"; text="Current directory name" ;;
-        context)      icon="$(emoji '📊' '[C]')"; text="Context window usage with progress bar" ;;
-        git)          icon="$(emoji '🌿' '[G]')"; text="Git branch, status, and file count" ;;
-        project)      icon="$(emoji '⚡' '[P]')"; text="Project type detection (Nuxt, Rust, etc.)" ;;
-        model)        icon="$(emoji '🤖' '[M]')"; text="Claude model and output style" ;;
-        cost)         icon="$(emoji '💰' '[$]')"; text="Session cost, burn rate, and TPM" ;;
-        rate-limits)  icon="$(emoji '⏱️ ' '[R]')"; text="5-hour and 7-day rate limits" ;;
-        time)         icon="$(emoji '🕐' '[T]')"; text="Current date and time" ;;
-        battery)      icon="$(emoji '🔋' '[B]')"; text="Battery percentage (macOS)" ;;
-        # System modules
-        cpu)          icon="$(emoji '💻' '[CPU]')"; text="CPU usage percentage" ;;
-        memory)       icon="$(emoji '🧠' '[MEM]')"; text="Memory/RAM usage" ;;
-        disk)         icon="$(emoji '💾' '[DSK]')"; text="Disk space usage" ;;
-        network)      icon="$(emoji '🌐' '[NET]')"; text="Network info (IP address)" ;;
-        uptime)       icon="$(emoji '⏱️ ' '[UP]')"; text="System uptime" ;;
-        load)         icon="$(emoji '📊' '[LD]')"; text="System load average" ;;
-        temperature)  icon="$(emoji '🌡️ ' '[TMP]')"; text="CPU temperature" ;;
-        brightness)   icon="$(emoji '☀️ ' '[BRT]')"; text="Screen brightness (macOS)" ;;
-        processes)    icon="$(emoji '🔄' '[PRC]')"; text="Process count" ;;
-        # Dev tools
-        docker)       icon="$(emoji '🐳' '[DOC]')"; text="Docker container status" ;;
-        node)         icon="$(emoji '⬢ ' '[NOD]')"; text="Node.js version" ;;
-        # Extra
-        weather)      icon="$(emoji '🌤️ ' '[WTH]')"; text="Weather (via wttr.in)" ;;
-        timezone)     icon="$(emoji '🌍' '[TZ]')"; text="Multiple timezone clocks" ;;
-        *)            icon="?"; text="Unknown module" ;;
-    esac
-
-    case "$icon_mode" in
-        icon) echo "$icon" ;;
-        text) echo "$text" ;;
-        *) echo "$icon $text" ;;
-    esac
-}
-
-# Get sample preview data for a module (icon + sample value)
-get_module_sample() {
-    local module="$1"
-    local status=""
-
-    # Get status indicator based on current style
-    case "$STATUS_STYLE" in
-        emoji) status="🟢" ;;
-        dots)  status="●" ;;
-        ascii) status="[OK]" ;;
-    esac
-
-    # Build progress bar sample
-    local bar="${PROGRESS_FILLED}${PROGRESS_FILLED}${PROGRESS_FILLED}${PROGRESS_FILLED}${PROGRESS_EMPTY}${PROGRESS_EMPTY}${PROGRESS_EMPTY}${PROGRESS_EMPTY}"
-
-    case "$module" in
-        sandbox)
-            if [ "$USE_EMOJI" = "true" ]; then
-                echo "🔒"
-            else
-                echo "SANDBOX"
-            fi
-            ;;
-        directory)
-            if [ "$USE_EMOJI" = "true" ]; then
-                echo "📁 myproject"
-            else
-                echo "DIR: myproject"
-            fi
-            ;;
-        context)
-            if [ "$USE_EMOJI" = "true" ]; then
-                echo "📊 $bar 50%$status"
-            else
-                echo "CTX: $bar 50%$status"
-            fi
-            ;;
-        git)
-            if [ "$USE_EMOJI" = "true" ]; then
-                echo "🌿 main [●+]"
-            else
-                echo "GIT: main [●+]"
-            fi
-            ;;
-        project)
-            if [ "$USE_EMOJI" = "true" ]; then
-                echo "⚡ Nuxt"
-            else
-                echo "PRJ: Nuxt"
-            fi
-            ;;
-        model)
-            if [ "$USE_EMOJI" = "true" ]; then
-                echo "🤖 Opus 4.5"
-            else
-                echo "AI: Opus 4.5"
-            fi
-            ;;
-        cost)
-            if [ "$USE_EMOJI" = "true" ]; then
-                echo "💰 \$1.25"
-            else
-                echo "\$: \$1.25"
-            fi
-            ;;
-        rate-limits)
-            if [ "$USE_EMOJI" = "true" ]; then
-                echo "5h:45%$status 7d:23%$status"
-            else
-                echo "5h:45%$status 7d:23%$status"
-            fi
-            ;;
-        time)
-            if [ "$USE_EMOJI" = "true" ]; then
-                echo "📅 01/14 🕐 03:30 PM"
-            else
-                echo "01/14 03:30 PM"
-            fi
-            ;;
-        battery)
-            if [ "$USE_EMOJI" = "true" ]; then
-                echo "🔋 85% ⚡"
-            else
-                echo "BAT: 85%"
-            fi
-            ;;
-        cpu)
-            if [ "$USE_EMOJI" = "true" ]; then
-                echo "💻 23%$status"
-            else
-                echo "CPU: 23%$status"
-            fi
-            ;;
-        memory)
-            if [ "$USE_EMOJI" = "true" ]; then
-                echo "🧠 58%$status"
-            else
-                echo "MEM: 58%$status"
-            fi
-            ;;
-        disk)
-            if [ "$USE_EMOJI" = "true" ]; then
-                echo "💾 42%$status"
-            else
-                echo "DSK: 42%$status"
-            fi
-            ;;
-        network)
-            if [ "$USE_EMOJI" = "true" ]; then
-                echo "🌐 192.168.1.42"
-            else
-                echo "NET: 192.168.1.42"
-            fi
-            ;;
-        uptime)
-            if [ "$USE_EMOJI" = "true" ]; then
-                echo "⏱️ 3d 5h"
-            else
-                echo "UP: 3d 5h"
-            fi
-            ;;
-        load)
-            if [ "$USE_EMOJI" = "true" ]; then
-                echo "📊 1.24$status"
-            else
-                echo "LD: 1.24$status"
-            fi
-            ;;
-        temperature)
-            if [ "$USE_EMOJI" = "true" ]; then
-                echo "🌡️ 52°C$status"
-            else
-                echo "TMP: 52C$status"
-            fi
-            ;;
-        brightness)
-            if [ "$USE_EMOJI" = "true" ]; then
-                echo "☀️ 75%"
-            else
-                echo "BRT: 75%"
-            fi
-            ;;
-        processes)
-            if [ "$USE_EMOJI" = "true" ]; then
-                echo "🔄 245"
-            else
-                echo "PRC: 245"
-            fi
-            ;;
-        docker)
-            if [ "$USE_EMOJI" = "true" ]; then
-                echo "🐳 3$status"
-            else
-                echo "DOC: 3$status"
-            fi
-            ;;
-        node)
-            if [ "$USE_EMOJI" = "true" ]; then
-                echo "⬢ 24.x"
-            else
-                echo "NODE: 24.x"
-            fi
-            ;;
-        weather)
-            if [ "$USE_EMOJI" = "true" ]; then
-                echo "🌤️ 72°F"
-            else
-                echo "WTH: 72F"
-            fi
-            ;;
-        timezone)
-            if [ "$USE_EMOJI" = "true" ]; then
-                echo "🌍 UTC:20:30"
-            else
-                echo "TZ: UTC:20:30"
-            fi
-            ;;
-        *)
-            echo "?"
-            ;;
-    esac
-}
+get_module_description() { printf '%s\n' "${1#*:*:*:}"; }
 
 # Parse module definition string
-get_module_name() { echo "$1" | cut -d: -f1; }
-get_module_default() { echo "$1" | cut -d: -f2; }
-get_module_category() { echo "$1" | cut -d: -f3; }
+get_module_name() { printf '%s\n' "${1%%:*}"; }
+get_module_default() {
+    local rest="${1#*:}"
+    printf '%s\n' "${rest%%:*}"
+}
+get_module_category() {
+    local rest="${1#*:*:}"
+    printf '%s\n' "${rest%%:*}"
+}
 
 # Check if module is in selected array
 is_module_selected() {
@@ -863,7 +593,7 @@ interactive_checkbox() {
     local module_names=()
     for mod_def in "${modules[@]}"; do
         local name=$(get_module_name "$mod_def")
-        local desc=$(get_module_description "$name" "both")
+        local desc=$(get_module_description "$mod_def")
         items+=("${name}|${desc}")
         module_names+=("$name")
     done
@@ -1324,61 +1054,29 @@ interactive_display_preferences() {
 }
 
 # Generate a live preview of the statusline
+render_install_preview() (
+    local sandbox payload
+    sandbox=$(mktemp -d) || return 1
+    trap 'rm -rf "$sandbox"' EXIT
+    umask 077
+    mkdir "$sandbox/myproject" "$sandbox/cortado-cache" || return 1
+    generate_config "$sandbox/cortado.conf" || return 1
+    payload=$(statusline_test_payload "$sandbox/myproject") || return 1
+    # Previews have no credentials. Keep opt-in network probes offline as well.
+    # shellcheck disable=SC2329 # The renderer calls the exported function.
+    curl() { return 7; }
+    export -f curl
+    CLAUDE_CONFIG_DIR="$sandbox" CACHE_DIR="$sandbox/cortado-cache" \
+        /bin/bash "$SCRIPT_DIR/cortado.sh" <<< "$payload"
+)
+
 show_statusline_preview() {
-    local sep="$SEPARATOR_CHAR"
-    local preview=""
-    if ! type theme_default_icon >/dev/null 2>&1; then
-        if [ -f "$SCRIPT_DIR/modules/utils.sh" ]; then
-            # shellcheck source=modules/utils.sh
-            . "$SCRIPT_DIR/modules/utils.sh"
-        fi
+    local preview
+    if ! preview=$(render_install_preview); then
+        preview="Preview unavailable"
     fi
-
-    local module part icon label bar status
-    for module in "${SELECTED_MODULES[@]}"; do
-        part=""
-        icon=""
-        label=""
-        icon=$(theme_default_icon "$module")
-        case "$module" in
-            directory) label="myproject" ;;
-            context)
-                bar="${PROGRESS_FILLED}${PROGRESS_FILLED}${PROGRESS_FILLED}${PROGRESS_FILLED}${PROGRESS_EMPTY}${PROGRESS_EMPTY}${PROGRESS_EMPTY}${PROGRESS_EMPTY}"
-                status=$(theme_status_glyph)
-                label="$bar 50%$status"
-                ;;
-            git) label="main" ;;
-            model) label="Opus" ;;
-            cost) label="\$1.25" ;;
-            time) label="12:30" ;;
-            battery) label="85%" ;;
-        esac
-        if [ -n "$label" ] || [ -n "$icon" ]; then
-            if [ -n "$icon" ]; then
-                part="$icon $label"
-            else
-                part="$label"
-            fi
-        fi
-
-        if [ -n "$part" ]; then
-            if [ -n "$preview" ]; then
-                preview="${preview}${sep}${part}"
-            else
-                preview="$part"
-            fi
-        fi
-    done
-
-    if [ ${#preview} -gt 100 ]; then
-        preview="${preview:0:97}..."
-    fi
-
-    echo ""
-    echo -e "  ${DIM}$preview${NC}"
-    echo ""
+    printf '\n  %b%s%b\n\n' "$DIM" "$preview" "$NC"
 }
-
 
 # =============================================================================
 # CONFIGURATION GENERATION
@@ -1968,31 +1666,11 @@ do_install() (
     echo ""
     echo "Modules to install (${#SELECTED_MODULES[@]} total):"
 
-    local preview=""
-    local sep="$SEPARATOR_CHAR"
     for module in "${SELECTED_MODULES[@]}"; do
         echo -e "  ${GREEN}+${NC} $module"
     done
-
-    # Build preview with sample data (limit to first 5 modules to fit on screen)
-    local count=0
-    for module in "${SELECTED_MODULES[@]}"; do
-        if [ $count -ge 5 ]; then
-            preview="${preview}${sep}..."
-            break
-        fi
-        local sample=$(get_module_sample "$module")
-        if [ -n "$preview" ]; then
-            preview="${preview}${sep}${sample}"
-        else
-            preview="$sample"
-        fi
-        count=$((count + 1))
-    done
-
-    echo ""
-    echo -e "Preview: ${DIM}$preview${NC}"
-    echo ""
+    printf '\nPreview'
+    show_statusline_preview
 
     # Show display settings
     echo -e "${DIM}Display settings:${NC}"
@@ -2223,28 +1901,28 @@ show_help() {
     echo -e "${CYAN}Core (enabled by default):${NC}"
     for mod_def in "${CORE_MODULES[@]}"; do
         local name=$(get_module_name "$mod_def")
-        local desc=$(get_module_description "$name" "both")
+        local desc=$(get_module_description "$mod_def")
         echo "  $name - $desc"
     done
     echo ""
     echo -e "${CYAN}System Monitoring:${NC}"
     for mod_def in "${SYSTEM_MODULES[@]}"; do
         local name=$(get_module_name "$mod_def")
-        local desc=$(get_module_description "$name" "both")
+        local desc=$(get_module_description "$mod_def")
         echo "  $name - $desc"
     done
     echo ""
     echo -e "${CYAN}Development Tools:${NC}"
     for mod_def in "${DEV_MODULES[@]}"; do
         local name=$(get_module_name "$mod_def")
-        local desc=$(get_module_description "$name" "both")
+        local desc=$(get_module_description "$mod_def")
         echo "  $name - $desc"
     done
     echo ""
     echo -e "${CYAN}Extra:${NC}"
     for mod_def in "${EXTRA_MODULES[@]}"; do
         local name=$(get_module_name "$mod_def")
-        local desc=$(get_module_description "$name" "both")
+        local desc=$(get_module_description "$mod_def")
         echo "  $name - $desc"
     done
     echo ""
@@ -2365,6 +2043,11 @@ main() {
                 prompt_update "$@" || exit $?
             fi
         fi
+    fi
+
+    if [ "$INSTALL_MODE" != uninstall ] && ! init_installer_catalog; then
+        print_error "Could not read module catalog" >&2
+        return 1
     fi
 
     case "$INSTALL_MODE" in
