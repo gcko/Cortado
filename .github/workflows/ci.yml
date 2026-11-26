@@ -20,11 +20,19 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # The two macOS jobs split the jq variants. The Homebrew job runs every
+        # suite plus the ShellCheck comparison and the timing steps; the Apple
+        # job runs only the suites in tests/jq-suites.txt with /usr/bin/jq.
         include:
-          - name: macOS (Bash 3.2)
+          - name: macOS (Bash 3.2, Homebrew jq)
             runner: macos-26
+            jq: path
+          - name: macOS (Bash 3.2, Apple jq)
+            runner: macos-26
+            jq: apple
           - name: Ubuntu
             runner: ubuntu-24.04
+            jq: path
     defaults:
       run:
         shell: bash
@@ -75,7 +83,7 @@ jobs:
           exit "$failed"
 
       - name: Compare ShellCheck findings with the merge base
-        if: ${{ !cancelled() && steps.tools.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.tools.outcome == 'success' && matrix.jq != 'apple' }}
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
@@ -108,41 +116,24 @@ jobs:
             exit 1
           fi
 
-      - name: Run all suites with macOS system Bash and both jq variants
+      - name: Run the suites with macOS system Bash and ${{ matrix.jq == 'apple' && 'Apple' || 'Homebrew' }} jq
         if: ${{ !cancelled() && steps.tools.outcome == 'success' && runner.os == 'macOS' }}
-        run: /bin/bash tests/run-jq-variants.sh
+        env:
+          JQ_VARIANT: ${{ matrix.jq }}
+        run: /bin/bash tests/run-jq-variants.sh --variant "$JQ_VARIANT"
 
       - name: Run all suites
         if: ${{ !cancelled() && steps.tools.outcome == 'success' && runner.os != 'macOS' }}
-        run: |
-          log=$(mktemp)
-          trap 'rm -f "$log"' EXIT
-          failed=0
-          for suite in tests/test_*.sh; do
-            status=0
-            perl -e 'alarm shift; exec @ARGV' 300 /bin/bash "$suite" > "$log" 2>&1 || status=$?
-            if [ "$status" -eq 0 ]; then
-              printf 'PASS: %s\n' "${suite##*/}"
-            elif [ "$status" -eq 142 ]; then
-              printf 'TIMEOUT: %s (over 300s)\n' "${suite##*/}"
-              cat "$log"
-              failed=1
-            else
-              printf 'FAIL: %s\n' "${suite##*/}"
-              cat "$log"
-              failed=1
-            fi
-          done
-          exit "$failed"
+        run: /bin/bash tests/run-suites.sh
 
       - name: Record default render p50 and p95
-        if: ${{ !cancelled() && steps.tools.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.tools.outcome == 'success' && matrix.jq != 'apple' }}
         continue-on-error: ${{ runner.os != 'macOS' }}
         env:
           CORTADO_RENDER_P95_LIMIT_MS: ${{ runner.os == 'macOS' && '250' || '0' }}
         run: /bin/bash tests/render_timing.sh 60
 
       - name: Record warm all-modules render p50 and p95
-        if: ${{ !cancelled() && steps.tools.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.tools.outcome == 'success' && matrix.jq != 'apple' }}
         continue-on-error: true
         run: /bin/bash tests/all_modules_timing.sh

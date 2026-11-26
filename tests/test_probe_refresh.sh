@@ -8,12 +8,71 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "$PROJECT_ROOT/tests/lib/assert.sh" plain
 scratch=$(mktemp -d) || exit 1
 trap 'rm -rf "$scratch"' EXIT
+section="${PROBE_TEST_SECTION:-all}"
+
+# The sections are independent and spend most of their time waiting for
+# 5 s refresh deadlines, so a full run starts each one as its own copy of
+# this suite, with its own scratch directory, in PROBE_TEST_JOBS lanes
+# (default 3). Sections are listed slowest first and dealt to lanes in turn.
+if [ "$section" = all ]; then
+    sections='locks deadline validation lifecycle setup clear publication local privacy resolution keys'
+    # Every section this file tests must be in the list, or it would not run,
+    # and every listed name must be a section here. Every section test on a
+    # line counts, and a name may hold letters, digits, _ and -.
+    # shellcheck disable=SC2016 # The pattern matches a literal $section.
+    found=" $(grep -oE '"\$section" = [A-Za-z0-9_-]+' "${BASH_SOURCE[0]}" |
+        sed 's/.* = //' | grep -vx all | sort -u | tr '\n' ' ')"
+    for name in $found; do
+        case " $sections " in
+            *" $name "*) ;;
+            *) fail "section $name is scheduled to run" ;;
+        esac
+    done
+    for name in $sections; do
+        case "$found" in
+            *" $name "*) ;;
+            *) fail "scheduled section $name exists in this file" ;;
+        esac
+    done
+    jobs="${PROBE_TEST_JOBS:-3}"
+    case "$jobs" in ''|*[!0-9]*|0*) jobs=3 ;; esac
+    lane=0
+    lanes=()
+    for name in $sections; do
+        lanes[lane]="${lanes[lane]:-} $name"
+        lane=$(((lane + 1) % jobs))
+    done
+    for lane in "${lanes[@]}"; do
+        (
+            for name in $lane; do
+                PROBE_TEST_SECTION=$name /bin/bash "${BASH_SOURCE[0]}" > "$scratch/$name.out" 2>&1
+                printf '%s\n' "$?" > "$scratch/$name.status"
+            done
+        ) &
+    done
+    wait
+    for name in $sections; do
+        printf '== %s\n' "$name"
+        cat "$scratch/$name.out" 2>/dev/null
+        results=$(sed -nE 's/^Results: ([0-9]+) passed, ([0-9]+) failed$/\1 \2/p' "$scratch/$name.out" 2>/dev/null)
+        if [ -n "$results" ]; then
+            PASS=$((PASS + ${results% *}))
+            FAIL=$((FAIL + ${results#* }))
+            [ "${results% *}" -gt 0 ] || fail "section $name runs at least one assertion"
+        fi
+        if [ -z "$results" ] || [ "$(cat "$scratch/$name.status" 2>/dev/null)" != 0 ]; then
+            fail "section $name reports its results and exits cleanly"
+        fi
+    done
+    printf 'Results: %s passed, %s failed\n' "$PASS" "$FAIL"
+    [ "$FAIL" -eq 0 ]
+    exit
+fi
 mkdir "$scratch/bin" "$scratch/workspace" || exit 1
 cd "$scratch/workspace" || exit 1
 export LC_NUMERIC=C REAL_PERL
 REAL_PERL=$(command -v perl) || exit 1
 export PATH="$scratch/bin:$PATH"
-section="${PROBE_TEST_SECTION:-all}"
 
 cat > "$scratch/bin/perl" <<'STUB'
 #!/bin/bash
@@ -65,8 +124,12 @@ case "$TEST_SAMPLE" in
         printf '%s\n' "$$" > "$CLAUDE_CONFIG_DIR/curl.pid"
         printf '%s\n' 'curl output'
         printf '%s\n' 'curl diagnostic' >&2
-        # Outlast any render by far. The refresh deadline ends it at 5 s.
-        sleep 6
+        # Outlast the renders until the test releases it. Unreleased, the
+        # refresh deadline ends it at 5 s.
+        for ((i=0; i<120; i++)); do
+            [ ! -f "$CLAUDE_CONFIG_DIR/release" ] || break
+            sleep 0.05
+        done
         exit 28 ;;
     hang)
         printf '%s\n' "$$" > "$CLAUDE_CONFIG_DIR/curl.pid"
@@ -264,6 +327,7 @@ if [[ "$section" = all || "$section" = lifecycle ]]; then
         fail 'a contender exits promptly while the first refresh is active'
     fi
     assert_eq 'two renders start only one concurrent request' 1 "$(calls)"
+    : > "$sb/release"
     weather_failure 'a failed request leaves a short-lived failure entry'
     previous_supervisor=$(cat "$sb/supervisor.pid")
     for payload in '{}' '{"context_window":{"used_percentage":0}}' '{"context_window":{"used_percentage":null}}'; do
@@ -851,5 +915,7 @@ if [[ "$section" = all || "$section" = privacy ]]; then
     fi
 fi
 
+# A section that ran nothing tested nothing.
+[ $((PASS + FAIL)) -gt 0 ] || fail "section $section runs at least one assertion"
 printf 'Results: %s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
