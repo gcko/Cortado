@@ -177,20 +177,40 @@ check_trusted_config() {
 # A config path that does not stat may lie under a directory Cortado cannot
 # search, which hides whether the config exists. Set REPLY to a refusal when the
 # nearest ancestor that exists is such a directory. A path whose existing
-# ancestors are all searchable simply does not exist.
+# ancestors are all searchable simply does not exist. An ancestor that is a
+# link Cortado cannot follow is judged where it points, so a config directory
+# linked under an unsearchable directory is refused too.
 check_config_searchable() {
-    local dir="$1"
+    local dir="$1" target links=0 steps=0
     [[ "$dir" = /* ]] || dir="$PWD/$dir"
-    while :; do
-        dir="${dir%/*}"
+    # Every pass drops one name or follows one link, and both are bounded, so
+    # the walk ends for any path or link shape.
+    while (( steps < 4096 )); do
+        steps=$((steps + 1))
+        case "$dir" in
+            */*) dir="${dir%/*}" ;;
+            *) return 0 ;;
+        esac
         [ -n "$dir" ] || return 0
-        [[ -e "$dir" || -L "$dir" ]] || continue
+        if [[ -L "$dir" && ! -e "$dir" ]]; then
+            # A dangling or looping link ends here, silently, after 40 hops.
+            (( links < 40 )) || return 0
+            links=$((links + 1))
+            target=$(command readlink -n "$dir" && printf .) || return 0
+            target="${target%.}"
+            [[ "$target" = /* ]] || target="${dir%/*}/$target"
+            # The next pass examines the target itself.
+            dir="$target/."
+            continue
+        fi
+        [[ -e "$dir" ]] || continue
         [[ -d "$dir" && ! -x "$dir" ]] || return 0
         printf -v REPLY 'cortado: refusing to source config %q: %s' "$1" \
             'cannot search the directory that holds it'
         printf '%s\n' "$REPLY" >&2
         return 1
     done
+    return 0
 }
 
 # Publish a checked legacy file only into a parent where it will be accepted.

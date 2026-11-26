@@ -335,6 +335,88 @@ assert_contains 'A missing config directory still renders the model' 'Opus' "$re
 assert_not_contains 'A missing config directory shows no refusal' 'Config refused' "$rendered"
 assert_empty 'A missing config directory prints no refusal' "$(cat "$TEST_BASE/stderr")"
 
+# A config directory reached through a link is judged where the link points.
+if [ "$EUID" -ne 0 ]; then
+    new_sandbox
+    link_home="$CLAUDE_CONFIG_DIR"
+    mkdir -p -m 700 "$link_home/hidden/dir"
+    write_override "$link_home/hidden/dir/cortado.conf"
+    ln -s "$link_home/hidden/dir" "$link_home/linked"
+    chmod 600 "$link_home/hidden"
+    CLAUDE_CONFIG_DIR="$link_home/linked"
+    render
+    assert_refused 'A config directory linked under an unsearchable directory'
+    assert_contains 'A linked config directory under an unsearchable directory shows the notice' \
+        'Config refused' "$rendered"
+    mkdir -m 700 "$link_home/rel"
+    ln -s ../hidden/dir "$link_home/rel/claude"
+    CLAUDE_CONFIG_DIR="$link_home/rel/claude"
+    render
+    assert_contains 'A relative link to a directory under an unsearchable directory shows the notice' \
+        'Config refused' "$rendered"
+    chmod 700 "$link_home/hidden"
+
+    ln -s "$link_home/nowhere" "$link_home/dangling"
+    CLAUDE_CONFIG_DIR="$link_home/dangling"
+    render
+    assert_not_contains 'A dangling config directory link shows no refusal' 'Config refused' "$rendered"
+    assert_empty 'A dangling config directory link prints no refusal' "$(cat "$TEST_BASE/stderr")"
+    ln -s loop-b "$link_home/loop-a"
+    ln -s loop-a "$link_home/loop-b"
+    CLAUDE_CONFIG_DIR="$link_home/loop-a"
+    render
+    assert_eq 'A looping config directory link still renders' 0 "$render_status"
+    assert_not_contains 'A looping config directory link shows no refusal' 'Config refused' "$rendered"
+
+    # check_config_searchable takes a relative path from the working directory.
+    searchable() (
+        cd "$1" || exit 2
+        # With a third argument, drop search on the working directory after entering it.
+        [ -z "${3:-}" ] || chmod 600 .
+        /bin/bash -c '. "$1/lib/config-permissions.sh"; check_config_searchable "$2" 2>/dev/null' \
+            _ "$REPO_ROOT" "$2" &
+        pid=$!
+        # A relative path must end the walk; give up after about five seconds.
+        for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25; do
+            kill -0 "$pid" 2>/dev/null || { wait "$pid"; exit; }
+            sleep 0.2
+        done
+        kill "$pid" 2>/dev/null
+        exit 3
+    )
+    mkdir -m 700 "$link_home/cwd" "$link_home/cwd/shut"
+    chmod 600 "$link_home/cwd/shut"
+    searchable "$link_home/cwd" shut/cortado.conf
+    assert_eq 'A relative config path under an unsearchable directory is refused' 1 "$?"
+    searchable "$link_home/cwd" absent/cortado.conf
+    assert_eq 'A relative config path that does not exist is not refused' 0 "$?"
+    searchable "$link_home/cwd" cortado.conf
+    assert_eq 'A relative config name in the working directory is not refused' 0 "$?"
+    mkdir -m 700 "$link_home/cwd/gone"
+    searchable "$link_home/cwd/gone" absent/cortado.conf drop-search
+    assert_eq 'A relative path in a working directory that cannot be searched is refused' 1 "$?"
+    chmod 700 "$link_home/cwd/gone"
+
+    # Every link shape ends the walk: these would loop forever without a bound.
+    ln -s self "$link_home/cwd/self"
+    searchable "$link_home/cwd" self/cortado.conf
+    assert_eq 'A link to itself ends the walk without a refusal' 0 "$?"
+    ln -s ../cwd/loop2 "$link_home/cwd/loop1"
+    ln -s loop1 "$link_home/cwd/loop2"
+    searchable "$link_home/cwd" loop1/deeper/cortado.conf
+    assert_eq 'A relative link loop ends the walk without a refusal' 0 "$?"
+    ln -s "$link_home/cwd/chain1/x" "$link_home/cwd/chain2"
+    ln -s "$link_home/cwd/chain2/y" "$link_home/cwd/chain1"
+    searchable "$link_home/cwd" "$link_home/cwd/chain1/cortado.conf"
+    assert_eq 'A loop through link targets deeper than the links ends the walk' 0 "$?"
+    ln -s shut/inner "$link_home/cwd/into-shut"
+    searchable "$link_home/cwd" into-shut/cortado.conf
+    assert_eq 'A relative link into an unsearchable directory is refused' 1 "$?"
+    chmod 700 "$link_home/cwd/shut"
+else
+    printf '  SKIP: root searches every directory\n'
+fi
+
 # A macOS ACL can grant write access the mode bits do not show (#79).
 acl_probe="$TEST_BASE/acl-probe"
 if : > "$acl_probe" && chmod +a 'everyone allow read' "$acl_probe" 2>/dev/null; then
