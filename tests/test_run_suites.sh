@@ -70,6 +70,85 @@ run "$s/test_lost.sh"
 assert_eq 'a suite with no recorded result makes the runner exit non-zero' 1 "$status"
 assert_match 'a suite with no recorded result is named' '^FAIL: test_lost\.sh \(no result recorded\)$' "$output"
 
+# --- a timed-out suite stops everything it started ---------------------------
+# Three children: one that dies on TERM, one that records TERM before it
+# exits, and one that ignores TERM, so only a KILL stops it.
+fake test_hang_kids.sh \
+    'sleep 30 & echo "$!" > "$STATE/kid-plain.pid"' \
+    '(trap "" TERM; exec sleep 30) & echo "$!" > "$STATE/kid-deaf.pid"' \
+    '(trap "echo term > \"\$STATE/kid-termed\"; exit 0" TERM; while :; do sleep 0.1; done) 2> /dev/null & echo "$!" > "$STATE/kid-polite.pid"' \
+    'echo kids-started' \
+    'exec sleep 30'
+# pids_alive <pid files...>: the recorded pids that are still running.
+pids_alive() {
+    local file pid
+    for file in "$@"; do
+        pid=$(cat "$file" 2>/dev/null) || continue
+        [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && printf '%s ' "${file##*/}"
+    done
+}
+# alive_after <seconds> <pid files...>: what is still running after a grace.
+alive_after() {
+    local stop=$((SECONDS + $1)) alive
+    shift
+    while :; do
+        alive=$(pids_alive "$@")
+        [ -n "$alive" ] && [ "$SECONDS" -lt "$stop" ] || break
+        sleep 0.1
+    done
+    printf '%s' "$alive"
+}
+# Leave nothing behind even when an assertion above failed.
+kill_recorded() {
+    local file
+    for file in "$@"; do
+        [ ! -s "$file" ] || kill -KILL "$(cat "$file")" 2>/dev/null
+    done
+}
+trap 'kill_recorded "$STATE"/kid-*.pid; rm -rf "$TEST_BASE"' EXIT
+SUITE_TIMEOUT=1 run "$s/test_hang_kids.sh"
+assert_match 'a suite with children that hangs is named on a TIMEOUT line' \
+    '^TIMEOUT: test_hang_kids\.sh \(over 1s\)$' "$output"
+assert_eq 'no child of a timed-out suite outlives the runner' '' \
+    "$(pids_alive "$STATE"/kid-plain.pid "$STATE"/kid-deaf.pid "$STATE"/kid-polite.pid)"
+assert_eq 'a timed-out suite gets TERM before KILL' 'term' "$(cat "$STATE/kid-termed" 2>/dev/null)"
+assert_eq 'a timed-out suite prints its output and no job notices' \
+    "$(printf '%s\n' 'TIMEOUT: test_hang_kids.sh (over 1s)' '' '==== TIMEOUT: test_hang_kids.sh ====' \
+        kids-started '==== end test_hang_kids.sh ====' '' \
+        'suites: 0 passed, 0 failed, 1 timed out, 0 skipped as flaky, ')" \
+    "$(printf '%s\n' "$output" | sed 's/skipped as flaky, .*/skipped as flaky, /')"
+kill_recorded "$STATE"/kid-*.pid
+rm -f "$STATE"/kid-*
+
+# A worker that dies, or a runner that is interrupted, still stops its suites.
+fake test_orphan.sh 'sleep 30 & echo "$!" > "$STATE/kid-orphan.pid"' 'kill -KILL "$PPID"' 'exec sleep 30'
+SUITE_TIMEOUT=60 run "$s/test_orphan.sh"
+assert_match 'a suite whose worker died is named' '^FAIL: test_orphan\.sh \(no result recorded\)$' "$output"
+assert_eq 'a suite whose worker died is stopped' '' "$(alive_after 5 "$STATE/kid-orphan.pid")"
+kill_recorded "$STATE/kid-orphan.pid"
+
+# Ctrl-C sends INT to the runner's process group; a cancelled job sends TERM.
+# The suites lead their own groups, so neither reaches them directly.
+fake test_interrupted.sh 'sleep 30 & echo "$!" > "$STATE/kid-interrupted.pid"' 'exec sleep 30'
+for signal in INT TERM; do
+    rm -f "$STATE/kid-interrupted.pid"
+    (
+        set -m
+        SUITE_TIMEOUT=60 /bin/bash "$RUNNER" "$s/test_interrupted.sh" > /dev/null 2>&1 &
+        runner_group=$!
+        for ((i = 0; i < 100; i++)); do
+            [ ! -s "$STATE/kid-interrupted.pid" ] || break
+            sleep 0.05
+        done
+        kill "-$signal" -- "-$runner_group" 2>/dev/null
+        wait "$runner_group" 2>/dev/null
+        :
+    )
+    assert_eq "a runner stopped with $signal stops the suites it started" '' \
+        "$(alive_after 5 "$STATE/kid-interrupted.pid")"
+    kill_recorded "$STATE/kid-interrupted.pid"
+done
+
 # --- suites run in parallel, capped by CORTADO_TEST_JOBS ---------------------
 # Each meeting suite passes only while the other one is running.
 CORTADO_TEST_JOBS=2 run "$s/test_meet_a.sh" "$s/test_meet_b.sh"
