@@ -48,7 +48,7 @@ load_config() {
     local config_path="$1" REPLY
     [[ -e "$config_path" || -L "$config_path" ]] || return 1
     if ! check_trusted_config "$config_path" "${2:-user}"; then
-        CONFIG_REFUSALS+=("$config_path")
+        CONFIG_REFUSALS+=("$REPLY")
         return 1
     fi
     # shellcheck source=/dev/null
@@ -185,18 +185,24 @@ fi
 load_config "$CONFIG_FILE" packaged
 
 USER_CONFIG="$CLAUDE_CONFIG_DIR/cortado.conf"
-# One-time carry-over from Barista. Check the original before copying it with
-# its permissions intact. If the copy fails, load the legacy config in place.
+# Carry over trusted Barista settings. Use the checked legacy path in place
+# if we cannot publish a usable copy.
 LEGACY_USER_CONFIG="$CLAUDE_CONFIG_DIR/barista.conf"
 if [[ ! -e "$USER_CONFIG" && ! -L "$USER_CONFIG" ]] &&
    [[ -e "$LEGACY_USER_CONFIG" || -L "$LEGACY_USER_CONFIG" ]]; then
     if check_trusted_config "$LEGACY_USER_CONFIG"; then
-        cp -p "$REPLY" "$USER_CONFIG" 2>/dev/null || USER_CONFIG="$LEGACY_USER_CONFIG"
+        if copy_checked_legacy_config "$REPLY" "$USER_CONFIG" 2>/dev/null; then
+            load_config "$USER_CONFIG"
+        else
+            # shellcheck source=/dev/null
+            . "$REPLY"
+        fi
     else
-        CONFIG_REFUSALS+=("$LEGACY_USER_CONFIG")
+        CONFIG_REFUSALS+=("$REPLY")
     fi
+else
+    load_config "$USER_CONFIG"
 fi
-load_config "$USER_CONFIG"
 
 # =============================================================================
 # LOAD MODULES
@@ -871,10 +877,10 @@ main() {
         fi
     fi
     load_modules "$module_stderr"
-    if [ "${DEBUG_MODE:-false}" = "true" ]; then
+    if [ "${DEBUG_MODE:-false}" = "true" ] && [ "${CONFIG_REFUSALS[0]+set}" ]; then
         local refused_config
         for refused_config in "${CONFIG_REFUSALS[@]}"; do
-            log_debug "$(config_refusal_message "$refused_config")"
+            log_debug "$refused_config"
         done
     fi
     report_module_refusals
@@ -939,7 +945,7 @@ render_statusline() {
     esac
 
     # Compact removes spaces only when joining the rendered sections.
-    local render_separator="${SEPARATOR-}"
+    local render_separator="${SEPARATOR- | }"
     if [ "${DISPLAY_MODE:-normal}" = "compact" ]; then
         remove_render_spaces render_separator
     fi
@@ -956,6 +962,9 @@ render_statusline() {
 
     # Build status line sections
     local sections=""
+    if [ "${CONFIG_REFUSALS[0]+set}" ]; then
+        sections="Config refused"
+    fi
 
     # Process modules in specified order. Split MODULE_ORDER with IFS scoped to
     # the read alone: modules run inside this loop, and a comma IFS here broke

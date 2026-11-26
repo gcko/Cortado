@@ -166,6 +166,20 @@ assert_eq 'a module symlink cannot leave its directory' '🤖 Opus' "$(recipe_re
 rm "$user_dir/mycustom.sh"
 mv "$CLAUDE_CONFIG_DIR/target" "$user_dir/mycustom.sh"
 
+# On Darwin the permission check calls /usr/bin/stat, so a stub on PATH cannot
+# fake its metadata. Inject faults into a linked tree whose check reads stat
+# from PATH; everything else is the tree under test.
+fault_tree="$TEST_BASE/fault-tree"
+mkdir -p "$fault_tree/lib" || exit 1
+for entry in "$tree"/*; do
+    [ "${entry##*/}" = lib ] || ln -s "$entry" "$fault_tree/" || exit 1
+done
+for entry in "$tree"/lib/*; do
+    [ "${entry##*/}" = config-permissions.sh ] || ln -s "$entry" "$fault_tree/lib/" || exit 1
+done
+sed 's@/usr/bin/stat @command stat @g' "$tree/lib/config-permissions.sh" \
+    > "$fault_tree/lib/config-permissions.sh" || exit 1
+
 mkdir "$TEST_BASE/bin"
 cat > "$TEST_BASE/bin/stat" <<'STAT'
 #!/bin/bash
@@ -185,10 +199,12 @@ done
 exec /usr/bin/stat "$@"
 STAT
 chmod 700 "$TEST_BASE/bin/stat"
+assert_eq 'control: the fault tree renders the user module' '🤖 Opus | 🎯 My Output' \
+    "$(tree="$fault_tree" recipe_render 2>/dev/null)"
 assert_eq 'a user module with a different owner cannot render' '🤖 Opus' \
-    "$(PATH="$TEST_BASE/bin:$PATH" recipe_render 2>/dev/null)"
+    "$(tree="$fault_tree" PATH="$TEST_BASE/bin:$PATH" recipe_render 2>/dev/null)"
 assert_eq 'a user module with unreadable ownership metadata cannot render' '🤖 Opus' \
-    "$(TEST_STAT_FAILURE=true PATH="$TEST_BASE/bin:$PATH" recipe_render 2>/dev/null)"
+    "$(tree="$fault_tree" TEST_STAT_FAILURE=true PATH="$TEST_BASE/bin:$PATH" recipe_render 2>/dev/null)"
 
 sed 's/mycustom/UnsafeName/g' "$user_dir/mycustom.sh" > "$user_dir/UnsafeName.sh"
 printf '%s\n' 'MODULE_ORDER=UnsafeName' 'MODULE_UNSAFENAME=true' > "$CLAUDE_CONFIG_DIR/cortado.conf"
@@ -306,7 +322,7 @@ printf '%s\n' "$out" | awk -v n="$n" -v o="$((EUID + 1))" 'BEGIN { FS = OFS = ":
 STAT
 chmod 700 "$TEST_BASE/ownerbin/stat"
 real_config=$(cd "$CLAUDE_CONFIG_DIR" && pwd -P)
-owner_render() { PATH="$TEST_BASE/ownerbin:$PATH" guard_render; }
+owner_render() { tree="$fault_tree" PATH="$TEST_BASE/ownerbin:$PATH" guard_render; }
 assert_eq 'control: the owner stub alone changes nothing' '🤖 Opus | GUARD' "$(owner_render)"
 packaged_order 'MODULE_ORDER="model,guard"'
 assert_eq 'control: a packaged MODULE_ORDER reaches the guard module' '🤖 Opus | GUARD' "$(owner_render)"

@@ -162,6 +162,11 @@ update_source="$CLAUDE_CONFIG_DIR/update-source"
 mkdir -p "$update_source" "$CORTADO_DIR"
 cp -R "$INSTALL" "$REPO_ROOT/VERSION" "$REPO_ROOT/lib" "$update_source/"
 printf '%s\n' 'installed fixture' > "$CORTADO_DIR/cortado.sh"
+INSTALL="$update_source/install.sh" run_update_check --check-update 200 "$installed_release"
+assert_eq 'Standalone installer starts without runtime helpers' 0 "$update_status"
+assert_contains 'Standalone installer completes a release check' 'You have the latest version' "$update_output"
+assert_not_contains 'Standalone installer startup does not try to source a missing helper' \
+    'config-permissions.sh' "$update_output"
 cp -R "$update_source" "$update_source.before"
 cp -R "$CORTADO_DIR" "$CORTADO_DIR.before"
 INSTALL="$update_source/install.sh" assert_update_failed "--update with HTTP 404" 404 "$installed_release"
@@ -259,12 +264,12 @@ assert_eq "do_update with a failed lookup makes one lookup" call "$(cat "$curl_c
 assert_empty "do_update with a failed lookup never checks out a tag" "$GIT_CHECKOUT"
 assert_empty "do_update with a failed lookup never restarts" "$REEXEC_ARGS"
 
+cd "$REPO_ROOT" || exit 1
 rm -f "$FAKE_ROOT/.git" 2>/dev/null
 rmdir "$FAKE_ROOT/.git" 2>/dev/null
 rmdir "$FAKE_ROOT" 2>/dev/null
 
 # --- copy_runtime_files ships lib/config-tui.sh (from-source install) ---
-# do_update cds into FAKE_ROOT; use the repo root captured at the top.
 COPY_DEST=$(mktemp -d)
 assert_rc "copy_runtime_files succeeds" 0 copy_runtime_files "$REPO_ROOT" "$COPY_DEST"
 if [ -f "$COPY_DEST/lib/config-tui.sh" ]; then
@@ -284,6 +289,23 @@ fi
 rm -f "$COPY_DEST/cortado.sh" "$COPY_DEST/VERSION" "$COPY_DEST/lib/"*.sh "$COPY_DEST/modules/"*.sh
 rmdir "$COPY_DEST/lib" "$COPY_DEST/modules" "$COPY_DEST" 2>/dev/null
 
+incomplete_source=$(mktemp -d "$CLAUDE_CONFIG_DIR/incomplete.XXXXXX") || exit 1
+mkdir "$incomplete_source/lib"
+cp "$REPO_ROOT/cortado.sh" "$incomplete_source/"
+ln -s "$REPO_ROOT/modules" "$incomplete_source/modules"
+for missing in config-tui.sh config-permissions.sh; do
+    rm -f "$incomplete_source/lib/"*.sh
+    for helper in config-tui.sh config-permissions.sh; do
+        if [ "$helper" != "$missing" ]; then
+            cp "$REPO_ROOT/lib/$helper" "$incomplete_source/lib/"
+        fi
+    done
+    assert_rc "runtime copy fails if $missing is missing" 1 \
+        copy_runtime_files "$incomplete_source" "$incomplete_source/dest"
+    assert_rc "runtime copy leaves no installed script when $missing is missing" \
+        1 test -e "$incomplete_source/dest/cortado.sh"
+done
+
 # --- migrate_legacy_user_config (Barista -> Cortado) ---
 MIG_TMP=$(mktemp -d)
 printf '%s\n' 'COLOR_THEME="vibrant"' > "$MIG_TMP/barista.conf"
@@ -299,6 +321,39 @@ rm -f "$MIG_TMP/barista.conf" "$MIG_TMP/cortado.conf"
 assert_rc "migrate is a no-op without barista.conf" 0 migrate_legacy_user_config "$MIG_TMP/barista.conf" "$MIG_TMP/cortado.conf"
 [ -f "$MIG_TMP/cortado.conf" ] && { echo "  FAIL: migrate created cortado.conf from nothing"; FAIL=$((FAIL + 1)); }
 rmdir "$MIG_TMP" 2>/dev/null
+
+legacy_source=$(mktemp -d "$CLAUDE_CONFIG_DIR/trusted.XXXXXX") || exit 1
+printf '%s\n' 'MODULE_ORDER=model' 'MODULE_MODEL=true' 'USE_ICONS=true' 'MODEL_ICON=LEGACY' \
+    > "$legacy_source/override" || exit 1
+chmod 600 "$legacy_source/override"
+legacy_payload='{"model":{"display_name":"Opus"}}'
+for scenario in writable-destination refused-source; do
+    legacy_root=$(mktemp -d "$CLAUDE_CONFIG_DIR/legacy.XXXXXX") || exit 1
+    if [ "$scenario" = writable-destination ]; then
+        ln -s "$legacy_source/override" "$legacy_root/barista.conf" && chmod 770 "$legacy_root" || exit 1
+    else
+        cp "$legacy_source/override" "$legacy_root/barista.conf" && chmod 620 "$legacy_root/barista.conf" || exit 1
+    fi
+    legacy_install_rc=0
+    legacy_install_out=$(CLAUDE_CONFIG_DIR="$legacy_root" CACHE_DIR="$legacy_root/cortado-cache" HOME="$legacy_source" \
+        /bin/bash "$REPO_ROOT/install.sh" --minimal --skip-update-check --no-color 2>&1) || legacy_install_rc=$?
+    assert_eq "legacy install succeeds with $scenario" 0 "$legacy_install_rc"
+    if [ "$scenario" = writable-destination ]; then
+        for attempt in first second; do
+            legacy_render=$(printf '%s' "$legacy_payload" | CLAUDE_CONFIG_DIR="$legacy_root" CACHE_DIR="$legacy_root/cortado-cache" \
+                /bin/bash "$legacy_root/cortado/cortado.sh" 2>/dev/null)
+            assert_eq "installed statusline reads the trusted legacy link on the $attempt render" 'LEGACY Opus' "$legacy_render"
+            assert_rc "installer and $attempt render leave the trusted legacy link unshadowed" \
+                1 test -e "$legacy_root/cortado.conf"
+        done
+    else
+        assert_contains 'Installer reports refusal of an unsafe legacy source' 'refusing to source config' "$legacy_install_out"
+        assert_not_contains 'Installer does not promise to use a refused legacy config' \
+            'Cortado will read the old file' "$legacy_install_out"
+        assert_not_contains 'Installer does not announce in-place use of a refused legacy config' \
+            'Using legacy config in place' "$legacy_install_out"
+    fi
+done
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

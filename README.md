@@ -224,7 +224,7 @@ If the installer updates by downloading an archive, it verifies `Cortado-source.
 
 Cortado can read your existing Barista settings.
 
-- **User config.** The first time Cortado runs, it copies `$CLAUDE_CONFIG_DIR/barista.conf` to `cortado.conf`, keeping the file's permissions. It does this only if `cortado.conf` doesn't exist yet, and it leaves the original in place. `./install.sh` does the same copy and tells you about it.
+- **User config.** When there is no `$CLAUDE_CONFIG_DIR/cortado.conf`, Cortado and the installer copy a trusted `barista.conf`, keeping its permissions and leaving the original in place. Cortado uses the trusted legacy file in place if the destination directory fails the permission check or the copy fails. A dangling `cortado.conf` symlink counts as an existing destination.
 - **Project config.** Cortado reads a project's `.barista.conf` when there's no `.cortado.conf` next to it. The first successful save with `cortado config --project` writes the allowed settings to `.cortado.conf` and leaves `.barista.conf` in place.
 - **Install location.** The installer puts Cortado in `$CLAUDE_CONFIG_DIR/cortado/` and points `statusLine` in `settings.json` at `cortado/cortado.sh`. Your previous `statusLine` command is backed up, so `./install.sh --uninstall` can switch back to Barista.
 - **Cache and logs.** These move to `cortado-cache/` and `cortado.log` and are rebuilt automatically. `.usage_history` keeps its name.
@@ -277,7 +277,7 @@ After install, reconfigure without re-running the installer:
 
 ```bash
 cortado config                 # interactive TUI (modules, theme, WAN privacy)
-cortado config --show          # print current settings
+cortado config --show          # print settings and flag an inactive saved file
 cortado config --list          # alias for --show
 cortado config --toggle weather
 cortado config --set COLOR_THEME=monochrome
@@ -292,6 +292,8 @@ The default save path is `$CLAUDE_CONFIG_DIR/cortado.conf` (usually `~/.claude/c
 For the user config, `--set` replaces the last standalone assignment for the key or appends one if needed. When a later line could assign the key again (inside an `if`, say), it appends the new value so it takes effect, and says which line. It saves module flag values of `yes`, `1`, and `on` as `true`, and `no`, `0`, and `off` as `false`, and adds or removes the module in `MODULE_ORDER` the way `--toggle` does.
 
 For the user config, the editor follows symlinks and writes to the target. It refuses a group- or world-writable user config and prints the `chmod go-w` command to run after you review it. A project `.cortado.conf` that is a symlink is refused, because a repository can commit one that points at your own files. Either save keeps the previous contents of an existing file in an owner-only `.bak` beside the file it writes.
+
+Cortado creates a missing global config directory with private permissions and leaves an existing directory's mode alone. When a save succeeds but the statusline still cannot trust the file it wrote (its directory is group- or world-writable, say), the editor says the saved settings are inactive; see [Config file not loading](#config-file-not-loading).
 
 ### Configuration Files
 
@@ -337,8 +339,8 @@ MODULE_ORDER="directory,context,git,model"
 
 Configuration is loaded in order of precedence:
 1. Built-in defaults
-2. `cortado.conf` (in script directory — sourced as bash after a writable check)
-3. `$CLAUDE_CONFIG_DIR/cortado.conf` (user overrides, defaults to `~/.claude/` — also sourced)
+2. `cortado.conf` in the script directory, sourced as Bash after the permission check below
+3. `$CLAUDE_CONFIG_DIR/cortado.conf`, sourced as Bash after the same check with user-file ownership rules
 4. `.cortado.conf` (per-directory display preferences and module disables)
 
 ### Full Configuration Options
@@ -551,9 +553,11 @@ To contribute a module to Cortado, place the same file in the checkout's `module
 - Try a different terminal emulator if issues persist
 
 ### Config file not loading
-- Packaged `cortado.conf` and `$CLAUDE_CONFIG_DIR/cortado.conf` are sourced as bash. Cortado refuses to source either if they are group- or world-writable.
-- Fix the **user** file with `chmod 600 "$CLAUDE_CONFIG_DIR/cortado.conf"` (or `644` if you want it world-readable but not writable).
-- Per-directory `.cortado.conf` is never sourced. `chmod` on that file does not make it executable.
+
+- `Config refused` in the statusline means Cortado skipped a Bash config. Run `cortado config --show` in a terminal for the file and reason on stderr. The same details go to `cortado.log` when a trusted config enables debug logging.
+- For a symlink, check the resolved file and its immediate parent. The file must belong to your user and have no group or world write bits. Root ownership is also allowed for the packaged config. The parent must belong to your user or root and may be group- or world-writable only with the sticky bit. Missing or unreadable permission metadata causes a refusal.
+- For a user-owned file, `chmod 600 /path/to/resolved/cortado.conf` removes extra write access. A private file can still be replaced through a writable parent. If you own that directory and can remove its shared write access, run `chmod go-w /path/to/resolved/parent`. Leave a deliberately shared directory's permissions to its owner.
+- Per-directory `.cortado.conf` uses the literal settings parser.
 
 ### Testing manually
 ```bash
