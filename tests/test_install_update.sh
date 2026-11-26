@@ -173,6 +173,33 @@ INSTALL="$update_source/install.sh" assert_update_failed "--update when curl fai
 assert_rc "failed explicit updates leave source files intact" 0 diff -rq "$update_source.before" "$update_source"
 assert_rc "failed explicit updates leave installed files intact" 0 diff -rq "$CORTADO_DIR.before" "$CORTADO_DIR"
 
+# An installer that cannot load its libraries must not claim to be current.
+partial_source="$CLAUDE_CONFIG_DIR/partial-source"
+mkdir -p "$partial_source"
+cp "$INSTALL" "$REPO_ROOT/VERSION" "$partial_source/"
+for flag in --check-update --update; do
+    INSTALL="$partial_source/install.sh" run_update_check "$flag" 200 '{"tag_name":"v9.9.9"}'
+    assert_eq "$flag without lib/semver.sh exits 1" 1 "$update_status"
+    assert_contains "$flag without lib/semver.sh names the missing library" \
+        "$partial_source/lib/semver.sh" "$update_output"
+    assert_eq "$flag without lib/semver.sh makes no version claim" "" \
+        "$(printf '%s\n' "$update_output" | sed -nE '/You have the latest version|Already up to date|Update Available!|Latest version:/p')"
+    assert_empty "$flag without lib/semver.sh makes no release lookup" "$(cat "$curl_calls")"
+done
+mkdir "$partial_source/lib"
+cp "$REPO_ROOT/lib/semver.sh" "$partial_source/lib/"
+INSTALL="$partial_source/install.sh" run_update_check --check-update 200 '{"tag_name":"v9.9.9"}'
+assert_eq "--check-update without lib/config-permissions.sh exits 1" 1 "$update_status"
+assert_contains "--check-update without lib/config-permissions.sh names the missing library" \
+    "$partial_source/lib/config-permissions.sh" "$update_output"
+assert_empty "--check-update without lib/config-permissions.sh makes no release lookup" "$(cat "$curl_calls")"
+cp "$REPO_ROOT/lib/config-permissions.sh" "$partial_source/lib/"
+INSTALL="$partial_source/install.sh" run_update_check --check-update 200 '{"tag_name":"v9.9.9"}'
+assert_eq "--check-update without lib/module-registry.sh exits 1" 1 "$update_status"
+assert_contains "--check-update without lib/module-registry.sh names the missing library" \
+    "$partial_source/lib/module-registry.sh" "$update_output"
+assert_empty "--check-update without lib/module-registry.sh makes no release lookup" "$(cat "$curl_calls")"
+
 run_update_check --update 200 "$installed_release"
 assert_eq "an explicit update with a confirmed current release exits 0" "0" "$update_status"
 assert_eq "an explicit update reports when the release is confirmed current" "Already up to date ($installed_version)" \

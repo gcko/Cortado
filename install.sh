@@ -62,12 +62,30 @@ setup_colors() {
 # PATHS
 # =============================================================================
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=lib/semver.sh
-. "$SCRIPT_DIR/lib/semver.sh"
-# shellcheck source=lib/config-permissions.sh
-. "$SCRIPT_DIR/lib/config-permissions.sh"
-# shellcheck source=lib/module-registry.sh
-. "$SCRIPT_DIR/lib/module-registry.sh"
+# Without its libraries the installer cannot compare versions or list modules,
+# so stop rather than report a result it never checked.
+_installer_lib_missing() {
+    printf 'Cortado installer: cannot load %s. Run install.sh from a complete Cortado checkout or release.\n' \
+        "$1" >&2
+}
+# Exits when run, returns when sourced (return fails outside a sourced file).
+# shellcheck source=lib/semver.sh disable=SC2317
+. "$SCRIPT_DIR/lib/semver.sh" || {
+    _installer_lib_missing "$SCRIPT_DIR/lib/semver.sh"
+    return 1 2>/dev/null || exit 1
+}
+# Exits when run, returns when sourced (return fails outside a sourced file).
+# shellcheck source=lib/config-permissions.sh disable=SC2317
+. "$SCRIPT_DIR/lib/config-permissions.sh" || {
+    _installer_lib_missing "$SCRIPT_DIR/lib/config-permissions.sh"
+    return 1 2>/dev/null || exit 1
+}
+# Exits when run, returns when sourced (return fails outside a sourced file).
+# shellcheck source=lib/module-registry.sh disable=SC2317
+. "$SCRIPT_DIR/lib/module-registry.sh" || {
+    _installer_lib_missing "$SCRIPT_DIR/lib/module-registry.sh"
+    return 1 2>/dev/null || exit 1
+}
 
 CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 case "$CLAUDE_DIR" in
