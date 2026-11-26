@@ -568,7 +568,7 @@ _update_recover_runtime() {
     for dir in "$parent"/.cortado-previous.*; do
         [ ! -L "$dir" ] && [ -d "$dir" ] || continue
         rmdir -- "$dir" 2>/dev/null && continue
-        [ ! -d "$dir/runtime" ] || dir="$dir/runtime"
+        [ -L "$dir/runtime" ] || [ ! -d "$dir/runtime" ] || dir="$dir/runtime"
         print_warning "An interrupted update left an earlier Cortado runtime at $dir. Cortado does not use it. Copy what you need from it, such as cortado.conf, then remove it."
     done
 }

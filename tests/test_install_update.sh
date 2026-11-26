@@ -962,6 +962,8 @@ assert_eq "a symlinked leftover directory's runtime is untouched" 'outside confi
     "$(cat "${cfg%/config}/outside/runtime/cortado.conf" 2>/dev/null)"
 assert_not_contains "a symlinked leftover directory is not reported as a runtime" \
     ".cortado-previous.outside" "$git_update_output"
+assert_not_contains "a symlinked leftover runtime is not reported as an earlier runtime" \
+    ".cortado-previous.linked/runtime" "$git_update_output"
 
 # --- one update at a time ---
 swap_case live-lock
