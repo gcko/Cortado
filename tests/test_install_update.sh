@@ -1215,6 +1215,19 @@ assert_eq "TERM just after a fresh install takes the lock exits 143" 143 "$fresh
 assert_rc "TERM just after a fresh install takes the lock releases it" 1 test -L "$fresh_lock"
 assert_rc "TERM just after a fresh install takes the lock publishes no runtime" 1 test -e "$fresh_root/cortado"
 
+# The lock names the process doing the swap (the do_install subshell that runs
+# ln), so killing only the installer that waits for it never makes it look stale.
+# shellcheck disable=SC2016 # The stub body expands when the stub runs.
+printf '%s\n' '#!/bin/bash' 'for last in "$@"; do :; done' '/bin/ln "$@" || exit $?' \
+    'case "$last" in */.cortado-update.lock) readlink "$last" > "$FRESH_SEEN.lock"; echo "$PPID" > "$FRESH_SEEN.worker" ;; esac' \
+    > "$fresh_bin/ln"
+export FRESH_SEEN="$CLAUDE_CONFIG_DIR/fresh-seen"
+FRESH_PATH="$fresh_bin:$PATH" fresh_install
+assert_eq "a fresh install with its lock observed still exits 0" 0 "$fresh_rc"
+assert_rc "a fresh install's lock was observed" 0 test -s "$FRESH_SEEN.lock"
+assert_eq "a fresh install's lock names the process doing the swap" \
+    "$(cat "$FRESH_SEEN.worker" 2>/dev/null)" "$(cat "$FRESH_SEEN.lock" 2>/dev/null)"
+
 legacy_source=$(mktemp -d "$CLAUDE_CONFIG_DIR/trusted.XXXXXX") || exit 1
 printf '%s\n' 'MODULE_ORDER=model' 'MODULE_MODEL=true' 'USE_ICONS=true' 'MODEL_ICON=LEGACY' \
     > "$legacy_source/override" || exit 1
