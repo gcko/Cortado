@@ -319,7 +319,6 @@ load_modules() {
         cached_probe() { REPLY=; }
         _snapshot_probe_cache() { :; }
         init_cache() { return 1; }
-        _file_mtime() { printf '0\n'; }
         is_compact() { [[ "${DISPLAY_MODE:-normal}" == compact || "${1:-}" == true ]]; }
         get_icon() { echo "$1"; }
         get_icon_reply() { REPLY="$1"; }

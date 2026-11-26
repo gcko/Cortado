@@ -32,7 +32,8 @@ if [ ! -x "$TEST_BASE/no-dd/python3" ]; then
     ln -s "$(command -v python3)" "$TEST_BASE/no-dd/python3" || exit 1
 fi
 without_tool "$TEST_BASE/no-jq" jq
-# Supply a battery reading even on hosts without pmset.
+# Supply a battery reading even on hosts without pmset. The battery render pins
+# darwin, because battery is a macOS-only module and is skipped on Linux.
 rm -f "$TEST_BASE/no-grep/pmset"
 cat > "$TEST_BASE/no-grep/pmset" <<'EOF'
 #!/bin/bash
@@ -160,7 +161,7 @@ render() {
 
 for debug in false true; do
     render "$PROJECT_ROOT" "$TEST_BASE/no-grep" clean 'MODULE_ORDER="battery,model"' \
-        'MODULE_BATTERY="true"' "DEBUG_MODE=$debug"
+        'CORTADO_OS=darwin' 'MODULE_BATTERY="true"' "DEBUG_MODE=$debug"
     assert_eq "Missing grep keeps both battery and model readings (debug $debug)" '🔋 80% ⚡ | 🤖 Opus' "$out"
     assert_eq "Missing grep keeps process stderr quiet (debug $debug)" '' "$err"
     if [ "$debug" = true ]; then

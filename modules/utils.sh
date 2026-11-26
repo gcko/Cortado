@@ -15,11 +15,13 @@
 # =============================================================================
 # CORTADO_OS and the BSD/GNU stat and epoch helpers live in lib/platform.sh.
 # cortado.sh loads it and resolves CORTADO_OS once, before modules load. A
-# module sourced on its own (tests) gets the helpers here and sets CORTADO_OS
-# itself. Do not reload over a trusted config's replacement of a helper.
+# module sourced on its own (tests) gets the helpers here, and CORTADO_OS is
+# resolved from the host unless the caller forced one. Do not reload over a
+# trusted config's replacement of a helper.
 if ! declare -F cortado_resolve_os >/dev/null; then
     # shellcheck source=lib/platform.sh
     . "${BASH_SOURCE[0]%utils.sh}../lib/platform.sh"
+    cortado_resolve_os
 fi
 
 # =============================================================================

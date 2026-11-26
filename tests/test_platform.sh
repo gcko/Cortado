@@ -95,6 +95,12 @@ assert_eq 'a forced darwin is kept' 'darwin|' "$(resolved darwin)"
 assert_eq 'a forced linux is kept' 'linux|' "$(resolved linux)"
 assert_eq 'a forced wsl is refused and falls back' "$host_os|wsl" "$(resolved wsl)"
 
+# A module sourced with utils.sh alone (no cortado.sh) must still know the host.
+# shellcheck disable=SC2016
+standalone_os() { env -u CORTADO_OS ${1:+CORTADO_OS="$1"} /bin/bash -c '. "$1/modules/utils.sh"; printf %s "${CORTADO_OS-unset}"' _ "$PROJECT_ROOT"; }
+assert_eq 'utils.sh on its own resolves the host platform' "$host_os" "$(standalone_os)"
+assert_eq 'utils.sh on its own keeps a forced linux' linux "$(standalone_os linux)"
+
 echo "=== BSD and GNU helpers follow the host, not a forced platform ==="
 probe="$TEST_BASE/probe"
 : > "$probe"
@@ -122,6 +128,21 @@ else
 fi
 assert_eq 'a UTC timestamp converts to epoch seconds' 1767225600 "$(cortado_utc_epoch 2026-01-01T00:00:00)"
 assert_eq 'an unparsable timestamp converts to 0' 0 "$(cortado_utc_epoch not-a-time)"
+
+echo "=== an install missing utils.sh still reads file times through lib/platform.sh ==="
+partial="$TEST_BASE/partial"
+mkdir "$partial"
+cp "$PROJECT_ROOT/cortado.sh" "$PROJECT_ROOT/cortado.conf" "$partial/"
+cp -R "$PROJECT_ROOT/modules" "$PROJECT_ROOT/lib" "$partial/"
+rm "$partial/modules/utils.sh"
+printf '%s\n' '# @cortado-module probe' '# @default true' '# @platforms darwin,linux' \
+    "module_probe() { printf 'mtime=%s\\n' \"\$(_file_mtime '$probe')\"; }" > "$partial/modules/probe.sh"
+partial_cfg=$(mktemp -d "$TEST_BASE/partial-cfg.XXXXXX") || exit 1
+chmod 700 "$partial_cfg"
+printf '%s\n' 'MODULE_ORDER="probe"' > "$partial_cfg/cortado.conf"
+chmod 600 "$partial_cfg/cortado.conf"
+assert_eq 'a missing utils.sh does not stub the mtime helper to 0' 'mtime=1577836800' \
+    "$(printf '{}' | CLAUDE_CONFIG_DIR="$partial_cfg" CACHE_DIR="$partial_cfg/cortado-cache" /bin/bash "$partial/cortado.sh" 2>/dev/null)"
 
 printf '\nResults: %s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

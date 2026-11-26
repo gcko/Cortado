@@ -176,8 +176,9 @@ assert_debug_warning() {
     fi
 }
 
-assert_render default 'TERMINAL_WIDTH=200'
-assert_render compact 'DISPLAY_MODE=compact' 'TERMINAL_WIDTH=60'
+# The default and compact fixtures show the macOS battery, so pin darwin on every host.
+assert_render default 'CORTADO_OS=darwin' 'TERMINAL_WIDTH=200'
+assert_render compact 'CORTADO_OS=darwin' 'DISPLAY_MODE=compact' 'TERMINAL_WIDTH=60'
 # Exercise the same stubbed macOS hardware on every host.
 assert_render all-modules \
     'export APP_SANDBOX_CONTAINER_ID=golden' 'CORTADO_OS=darwin' \
