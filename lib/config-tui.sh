@@ -287,6 +287,19 @@ _cfg_sync_module_order() {
     fi
 }
 
+# REPLY is the catalog module whose flag variable is exactly $1.
+_cfg_module_name_for_var() {
+    local key="$1" mod_def name
+    for mod_def in "${_CFG_ALL_MODULES[@]}"; do
+        name="${mod_def%%:*}"
+        if [ "$(_cfg_module_var "$name")" = "$key" ]; then
+            REPLY="$name"
+            return 0
+        fi
+    done
+    return 1
+}
+
 # Recognize a standalone assignment, retaining its optional export and comment.
 # The caller checks the surrounding shell syntax before replacing the line.
 _cfg_assignment() {
@@ -297,14 +310,14 @@ _cfg_assignment() {
     [[ "$1" =~ $pattern ]]
 }
 
+# True when the next line starts a new command. An unfinished quote or compound
+# command fails the first parse. A lone `if` on the next line cannot parse at a
+# boundary; it parses when a heredoc body or a line continuation absorbs it.
 _cfg_at_shell_boundary() {
-    local prefix="$1" diagnostics
-    case "${prefix%$'\n'}" in *\\) return 1 ;; esac
-    # An unfinished quote or compound command fails the first parse. On Bash
-    # 3.2 an unfinished heredoc can pass silently, but it consumes the sentinel.
-    diagnostics=$(printf '%s' "$prefix" | BASH_ENV='' /bin/bash -n 2>&1) || return 1
-    [ -z "$diagnostics" ] || return 1
-    if printf '%s\n)\n' "$prefix" | BASH_ENV='' /bin/bash -n 2>/dev/null; then
+    local prefix="$1" separator=$'\n'
+    printf '%s' "$prefix" | BASH_ENV='' /bin/bash -n 2>/dev/null || return 1
+    case "$prefix" in ''|*$'\n') separator="" ;; esac
+    if printf '%s%sif\n' "$prefix" "$separator" | BASH_ENV='' /bin/bash -n 2>/dev/null; then
         return 1
     fi
     return 0
@@ -313,8 +326,8 @@ _cfg_at_shell_boundary() {
 _cfg_render_global_conf() {
     local source="$1"
     shift
-    local edits=("$@") lines=() locations=() replacements=()
-    local prefix="" line newline index=0 i text key ending
+    local edits=("$@") lines=() locations=() replacements=() later=()
+    local prefix="" line newline index=0 i text key ending chosen pattern
     local LC_ALL=C
 
     if [ -n "$source" ]; then
@@ -325,6 +338,7 @@ _cfg_render_global_conf() {
                 newline=""
             fi
             text="${line%$'\r'}"
+            chosen=""
             if _cfg_assignment "$text"; then
                 key="${BASH_REMATCH[3]}"
                 ending="${BASH_REMATCH[7]-}${line#"$text"}$newline"
@@ -334,8 +348,22 @@ _cfg_render_global_conf() {
                     if _cfg_at_shell_boundary "$prefix"; then
                         locations[i]="$index"
                         replacements[i]="${BASH_REMATCH[1]}$key=\"$(_cfg_shell_quote "${edits[i]#*=}")\"$ending"
+                        unset 'later[i]'
+                        chosen="$i"
                     fi
                     break
+                done
+            fi
+            # Any later mention outside a whole-line comment may assign the key
+            # again (a conditional, a heredoc), so the edit must come after it.
+            if [ "${#locations[@]}" -gt 0 ] && ! [[ "$text" =~ ^[[:blank:]]*(#|$) ]]; then
+                for ((i=0; i<${#edits[@]}; i++)); do
+                    if [ -n "${locations[i]+x}" ] && [ "$i" != "$chosen" ]; then
+                        pattern="(^|[^A-Za-z0-9_])${edits[i]%%=*}="
+                        if [[ "$text" =~ $pattern ]]; then
+                            later[i]=$((index + 1))
+                        fi
+                    fi
                 done
             fi
             lines[index]="$line$newline"
@@ -344,20 +372,23 @@ _cfg_render_global_conf() {
         done < "$source" || return 1
     fi
 
-    local appended="" location
+    local appended="" location warnings=""
     for ((i=0; i<${#edits[@]}; i++)); do
-        if [ -n "${locations[i]+x}" ]; then
+        key="${edits[i]%%=*}"
+        if [ -n "${later[i]+x}" ]; then
+            warnings="${warnings}config: $key is also assigned at line ${later[i]}; appended the new value so it takes effect"$'\n'
+        elif [ -n "${locations[i]+x}" ]; then
             location="${locations[i]}"
             lines[location]="${replacements[i]}"
-        else
-            key="${edits[i]%%=*}"
-            appended="$appended$key=\"$(_cfg_shell_quote "${edits[i]#*=}")\""$'\n'
+            continue
         fi
+        appended="$appended$key=\"$(_cfg_shell_quote "${edits[i]#*=}")\""$'\n'
     done
     if [ -n "$appended" ] && ! _cfg_at_shell_boundary "$prefix"; then
         printf '%s\n' 'config: cannot append a setting to incomplete shell syntax' >&2
         return 1
     fi
+    printf '%s' "$warnings" >&2
     printf '%s' "${lines[@]+"${lines[@]}"}" || return 1
     if [ -n "$appended" ]; then
         case "$prefix" in ''|*$'\n') ;; *) printf '\n' || return 1 ;; esac
@@ -416,9 +447,7 @@ _cfg_target_mode() {
         mode=$(stat -c '%a' "$target") || return 1
     fi
     case "$mode" in ''|*[!0-7]*) return 1 ;; esac
-    # Tightening the mode must never make an untrusted global config sourceable.
-    if (( (8#$mode & 0022) != 0 )); then return 1; fi
-    printf '%o' "$((8#$mode & 0700))"
+    printf '%s' "$mode"
 }
 
 _cfg_write_conf() (
@@ -426,16 +455,32 @@ _cfg_write_conf() (
     shift 2
     local target lock snapshot="" tmp="" status=0
 
+    # A project file comes from an untrusted repository, so never follow its link.
+    if [ "$scope" = project ] && [ -L "$path" ]; then
+        printf 'config: project config is a symlink; edit its target directly: %s\n' "$path" >&2
+        return 1
+    fi
+    # This function runs in a subshell, so the mask covers a new config
+    # directory and the lock without leaking to the caller.
+    umask 077
     mkdir -p -- "${path%/*}" || return 1
     if ! _cfg_resolve_target "$path"; then
         printf 'config: could not resolve config destination: %s\n' "$path" >&2
         return 1
     fi
     target="$REPLY"
+    # Refuse a directory before its lock would be made inside it.
+    if [ -e "$target" ] && [ ! -f "$target" ]; then
+        printf 'config: config destination is not a regular file: %s\n' "$target" >&2
+        return 1
+    fi
     lock="$target.cortado-lock"
-    umask 077
-    if ! mkdir -- "$lock"; then
-        printf 'config: could not lock config destination: %s\n' "$target" >&2
+    if ! mkdir -- "$lock" 2>/dev/null; then
+        if [ -e "$lock" ]; then
+            printf 'config: could not lock %s; if no other cortado config is running, remove it: %s\n' "$target" "$lock" >&2
+        else
+            printf 'config: could not create the edit lock: %s\n' "$lock" >&2
+        fi
         return 1
     fi
     trap 'rm -f -- "${tmp:-}" "${snapshot:-}"; rmdir -- "$lock"' EXIT
@@ -462,12 +507,19 @@ _cfg_stage_conf() {
             printf 'config: cannot save over a config with unsafe ownership or permissions: %s\n' "$target" >&2
             return 1
         fi
+        # Tightening the mode must never make an untrusted user config sourceable.
+        # A project file is never sourced, so it is saved owner-only instead.
+        if [ "$scope" != project ] && (( (8#$mode & 0022) != 0 )); then
+            printf 'config: refusing to save over a group- or world-writable config: %s; review it, then run: chmod go-w %s\n' "$target" "$target" >&2
+            return 1
+        fi
+        printf -v mode '%o' "$((8#$mode & 0700))"
         if [ -L "$backup" ] || { [ -e "$backup" ] && [ ! -f "$backup" ]; }; then
             printf 'config: backup destination is not a regular file: %s\n' "$backup" >&2
             return 1
         fi
         snapshot=$(mktemp "$dir/.cortado-config.XXXXXX") || return 1
-        cat -- "$target" > "$snapshot" || return 1
+        cat -- "$target" >| "$snapshot" || return 1
         if IFS= read -r -d '' ignored < "$snapshot"; then
             printf 'config: cannot preserve a NUL byte in %s\n' "$target" >&2
             return 1
@@ -476,9 +528,9 @@ _cfg_stage_conf() {
 
     tmp=$(mktemp "$dir/.cortado-config.XXXXXX") || return 1
     if [ "$scope" = project ]; then
-        _cfg_render_project_conf "$snapshot" > "$tmp" || return 1
+        _cfg_render_project_conf "$snapshot" >| "$tmp" || return 1
     else
-        _cfg_render_global_conf "$snapshot" "$@" > "$tmp" || return 1
+        _cfg_render_global_conf "$snapshot" "$@" >| "$tmp" || return 1
     fi
     chmod "$mode" "$tmp" || return 1
     if [ -n "$snapshot" ]; then
@@ -497,7 +549,12 @@ _cfg_save_menu() {
         for mod_def in "${_CFG_ALL_MODULES[@]}"; do
             name=$(_cfg_mod_name "$mod_def")
             var=$(_cfg_module_var "$name")
-            edits+=("$var=${!var:-false}")
+            # The renderer needs true, so legacy yes/on/1 are saved canonically.
+            if _cfg_module_enabled "$name"; then
+                edits+=("$var=true")
+            else
+                edits+=("$var=false")
+            fi
         done
     fi
     _cfg_write_conf "$path" "$scope" "${edits[@]+"${edits[@]}"}"
@@ -921,7 +978,16 @@ cortado_config_main() {
                 echo "config: project config cannot set $key to that value" >&2
                 return 2
             fi
-            if _cfg_write_conf "$path" "$scope" "$key=$val"; then
+            local edits=("$key=$val") old_order="${MODULE_ORDER:-}"
+            # The renderer runs only the modules MODULE_ORDER lists, as --toggle keeps.
+            if [ "$scope" = global ] && _cfg_module_name_for_var "$key"; then
+                printf -v "$key" '%s' "$val"
+                _cfg_sync_module_order "$REPLY"
+                if [ "$MODULE_ORDER" != "$old_order" ]; then
+                    edits+=("MODULE_ORDER=$MODULE_ORDER")
+                fi
+            fi
+            if _cfg_write_conf "$path" "$scope" "${edits[@]}"; then
                 echo "Set $key=$val → $path"
                 return 0
             fi

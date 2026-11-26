@@ -4,7 +4,6 @@
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CORTADO="$SCRIPT_DIR/cortado.sh"
-umask 077
 TEST_BASE=$(mktemp -d)
 trap 'rm -rf "$TEST_BASE"' EXIT
 # Each case opts into startup protection by exporting its own setting.
