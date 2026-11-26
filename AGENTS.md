@@ -200,7 +200,7 @@ Regression tests live in `tests/` and share the Bash assertions in `tests/lib/as
 /bin/bash tests/test_config_cli.sh      # cortado config CLI and Barista migration
 /bin/bash tests/test_install_update.sh  # installer update flags, runtime copy, migration
 /bin/bash tests/run-jq-variants.sh      # all suites with Homebrew and Apple jq on macOS
-/bin/bash tests/render_timing.sh        # p50 and p95 for default renders with fresh caches
+/bin/bash tests/render_timing.sh        # p50 and p95 for default renders with fresh caches, then while a weather request hangs
 /bin/bash tests/all_modules_timing.sh   # p50 and p95 with all modules enabled and warm probe caches
 ```
 
@@ -222,7 +222,7 @@ DEBUG_MODE="true"  # In config
 
 ## Pre-PR Checks
 
-[Cortado's GitHub Actions workflow](.github/workflows/ci.yml) runs on every pull request and on pushes to `main`. It checks macOS system Bash 3.2 with Homebrew and Apple jq, and Ubuntu. Each suite runs under a 300 s limit. On macOS the default-render timing (60 samples) blocks above p95 250 ms, a regression guard; the 150 ms target holds on a developer Mac, but GitHub's shared runner measures about 188 ms (#25). Warm all-modules timing and Ubuntu default timing are informational. Windows is not supported (owner decision, 2026-11-25, on #24), so CI does not run it. Releases follow the `cortado-release` skill.
+[Cortado's GitHub Actions workflow](.github/workflows/ci.yml) runs on every pull request and on pushes to `main`. It checks macOS system Bash 3.2 with Homebrew and Apple jq, and Ubuntu. Each suite runs under a 300 s limit. On macOS the default-render timing (60 samples) blocks above p95 250 ms, a regression guard, and a second series of 60 renders while a weather request hangs is reported but does not gate; the 150 ms target holds on a developer Mac, but GitHub's shared runner measures about 188 ms (#25). Warm all-modules timing and Ubuntu default timing are informational. Windows is not supported (owner decision, 2026-11-25, on #24), so CI does not run it. Releases follow the `cortado-release` skill.
 
 Run the local checks below from the repository root before opening a pull request and again before merging. Paste their output into the pull request's `## Verification` section. This is the canonical local gate.
 

@@ -6,10 +6,11 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "$PROJECT_ROOT/tests/lib/render.sh" docker
 
 unset DOCKER_HOST DOCKER_CONTEXT
-export DOCKER_CONFIG="$TEST_BASE/docker-config"
+export DOCKER_CONFIG="$TEST_BASE/docker-config" DOCKER_CALLS="$TEST_BASE/docker.calls"
 mkdir "$DOCKER_CONFIG"
 cat > "$TEST_BASE/bin/docker" <<'STUB'
 #!/bin/bash
+printf '%s\n' "$*" >> "$DOCKER_CALLS"
 case "$*" in
     info) exit 2 ;;
     'ps -q'|'ps -aq')
@@ -102,5 +103,29 @@ for entry in "$sb"/cortado-cache/docker-*; do
     printf '%s\n' '-- 5' > "$entry"
 done
 assert_eq 'a status-only cache requires a running count' 'DOCKER: --' "$(selection_output 'DOCKER_SHOW_RUNNING=false')"
+
+# An unusable context name is absence, with no Docker CLI call. Two renders,
+# with time between them for any refresh the first one might start.
+expect_no_docker_call() {
+    local desc="$1" sb="$2" i first second
+    : > "$DOCKER_CALLS"
+    first=$(render normal '' "CLAUDE_CONFIG_DIR='$sb'")
+    for ((i=0; i<30; i++)); do
+        [ ! -s "$DOCKER_CALLS" ] || break
+        sleep 0.05
+    done
+    sleep 0.1
+    second=$(render normal '' "CLAUDE_CONFIG_DIR='$sb'")
+    assert_eq "$desc (cold)" 'DOCKER: --' "$first"
+    assert_eq "$desc (after a refresh window)" 'DOCKER: --' "$second"
+    assert_eq "$desc makes no Docker CLI call" '' "$(cat "$DOCKER_CALLS")"
+}
+printf '%s\n' '{"currentContext":"bad context!"}' > "$DOCKER_CONFIG/config.json"
+sb=$(mktemp -d "$TEST_BASE/invalid-context.XXXXXX") || exit 1
+expect_no_docker_call 'an invalid currentContext shows absence' "$sb"
+sb=$(mktemp -d "$TEST_BASE/metadata.XXXXXX") || exit 1
+mkdir -m 700 "$sb/cortado-cache"
+(umask 077; printf '%s\n' stale > "$sb/cortado-cache/docker")
+expect_no_docker_call 'a cache file named docker cannot supply the Docker selection' "$sb"
 printf '\nResults: %s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

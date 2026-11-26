@@ -188,16 +188,17 @@ _snapshot_probe_cache() {
             exit 0;
         }
         print "private\n";
+        # Metadata lines start with "@", which no cache name below can.
         if ($node ne "" || $npm ne "") {
             require Digest::SHA;
-            print "node ", Digest::SHA::sha256_hex(join("\0", $node, $node_fn, $pwd, $path_env)), "\n"
+            print "\@node ", Digest::SHA::sha256_hex(join("\0", $node, $node_fn, $pwd, $path_env)), "\n"
                 if $node ne "";
-            print "npm ", Digest::SHA::sha256_hex(join("\0", $npm, $npm_fn, $pwd, $path_env)), "\n"
+            print "\@npm ", Digest::SHA::sha256_hex(join("\0", $npm, $npm_fn, $pwd, $path_env)), "\n"
                 if $npm ne "";
         }
         if ($docker eq "true" && defined &docker_selection) {
             my ($digest, $selected) = docker_selection();
-            print "docker $digest $selected\n" if defined $digest;
+            print "\@docker $digest $selected\n" if defined $digest;
         }
         opendir(my $dir, $path) or exit 1;
         for (my $i=0; $i < 128 && defined(my $name = readdir($dir)); $i++) {
@@ -218,8 +219,8 @@ _snapshot_probe_cache() {
     local entries=$'\n'"$snapshot"$'\n'
     local marker
     for marker in node npm docker; do
-        if [[ "$entries" == *$'\n'"$marker "* ]]; then
-            local value=${entries#*$'\n'"$marker "}
+        if [[ "$entries" == *$'\n'"@$marker "* ]]; then
+            local value=${entries#*$'\n'"@$marker "}
             value=${value%%$'\n'*}
             case "$marker" in
                 node) _probe_node_digest=$value ;;
@@ -317,6 +318,8 @@ cached_probe() {
             sub bounded {
                 my ($seconds, $task) = @_;
                 return 1 if $seconds <= 0;
+                # Below one microsecond, alarm() sets a zero timer, which disarms it.
+                $seconds = 0.001 if $seconds < 0.001;
                 pipe(my $stop, my $notify) or return 1;
                 my $worker = fork();
                 defined($worker) or return 1;

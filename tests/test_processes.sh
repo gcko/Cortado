@@ -119,5 +119,30 @@ printf 'State:\tS (sleeping)\n' > "$TEST_BASE/proc/2/status"
 check "a later arrival cannot replace an unreadable PID in the snapshot" "PROC: --/2 [OK]" newcomer Linux
 
 check 'a Darwin process with an unclassified state still contributes to total' 'PROC: 1/3 [OK]' unclassified
+# A cached reading is shown only if the probe could have published it: a
+# positive total of at most ten digits, and a running count no larger.
+render_cached() (
+    local sb
+    sb=$(mktemp -d "$TEST_BASE/cached.XXXXXX") || exit 1
+    mkdir -m 700 "$sb/cortado-cache" || exit 1
+    printf '%s\n' 'MODULE_ORDER="processes"' 'MODULE_PROCESSES="true"' \
+        'COLOR_THEME="monochrome"' 'PROC_SHOW_RUNNING="true"' 'PROC_SHOW_STATUS="true"' \
+        'TERMINAL_WIDTH=200' > "$sb/cortado.conf"
+    chmod 600 "$sb/cortado.conf" || exit 1
+    (umask 077; printf '%s\n' "$1" > "$sb/cortado-cache/processes-running")
+    # The seeded entry is fresh, so the render starts no probe.
+    CLAUDE_CONFIG_DIR="$sb" CACHE_DIR="$sb/cortado-cache" render_sample
+)
+
+check_cached() {
+    assert_eq "$1" "$2" "$(render_cached "$3")"
+}
+check_cached 'a valid cached reading is displayed' 'PROC: 3/12 [OK]' '12 3'
+check_cached 'a cached unknown running count beside a total is displayed' 'PROC: --/12 [OK]' '12 --'
+check_cached 'a cached zero total is absence' 'PROC: --' '0 --'
+check_cached 'a cached running count above the total is absence' 'PROC: --' '5 10'
+check_cached 'a cached total beyond ten digits is absence' 'PROC: --' '9999999999999999999999 1'
+check_cached 'a cached running count beyond ten digits is absence' 'PROC: --' '12 9999999999999999999999'
+check_cached 'a cached total with a leading zero is absence' 'PROC: --' '012 3'
 printf 'Results: %s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

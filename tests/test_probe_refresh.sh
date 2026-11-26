@@ -32,6 +32,22 @@ esac
 if [ "${TEST_SAMPLE:-}" = broken-snapshot ] && [ "${1:-}" = -MFcntl=:mode ]; then
     exit 1
 fi
+# Leave the probe half a microsecond of its deadline: the third monotonic
+# reading (the probe's bounded() call) lands just before the deadline.
+if [ "${TEST_SAMPLE:-}" = tiny-deadline ] && [[ "${2:-}" == -MPOSIX=setsid* ]]; then
+    shift 3
+    exec "$REAL_PERL" -MFcntl=:DEFAULT,:flock,:mode -MPOSIX=setsid,setpgid,_exit \
+        -MTime::HiRes=alarm,CLOCK_MONOTONIC -e '
+        BEGIN {
+            my ($calls, $start) = (0);
+            *main::clock_gettime = sub {
+                my $now = Time::HiRes::clock_gettime(@_);
+                $start = $now unless defined $start;
+                return ++$calls == 3 ? $start + 4.9999995 : $now;
+            };
+        }
+    ' "$@"
+fi
 exec "$REAL_PERL" "$@"
 STUB
 cat > "$scratch/bin/curl" <<'STUB'
@@ -49,7 +65,8 @@ case "$TEST_SAMPLE" in
         printf '%s\n' "$$" > "$CLAUDE_CONFIG_DIR/curl.pid"
         printf '%s\n' 'curl output'
         printf '%s\n' 'curl diagnostic' >&2
-        sleep 2
+        # Outlast any render by far. The refresh deadline ends it at 5 s.
+        sleep 6
         exit 28 ;;
     hang)
         printf '%s\n' "$$" > "$CLAUDE_CONFIG_DIR/curl.pid"
@@ -81,6 +98,9 @@ case "$TEST_SAMPLE" in
     malformed-v6) printf '%s\n' '1234:::abcd' ;;
     multiline) printf '%s\n' '2001:db8::1' '2001:db8::2' ;;
     nul) printf '203.0.113.9\000garbage' ;;
+    tiny-deadline)
+        printf '%s\n' "$$" > "$CLAUDE_CONFIG_DIR/curl.pid"
+        exec sleep 20 ;;
     held|held-failure)
         printf '%s\n' "$$" > "$CLAUDE_CONFIG_DIR/held.pid"
         for ((i=0; i<80; i++)); do
@@ -144,13 +164,26 @@ render_is() {
     fi
 }
 
-fast_render() {
+# A generous regression ceiling only. Whether a render waited for a probe is
+# proved structurally (the probe is still running after the render returns);
+# the 250 ms budget is measured over many samples in tests/render_timing.sh.
+render_within_ceiling() {
     local elapsed
     elapsed=$(cat "$sb/elapsed")
-    if LC_ALL=C awk -v elapsed="$elapsed" 'BEGIN {exit !(elapsed + 0 < 0.250)}'; then
+    if LC_ALL=C awk -v elapsed="$elapsed" 'BEGIN {exit !(elapsed + 0 < 2)}'; then
         pass "$1 (${elapsed}s)"
     else
         fail "$1 (${elapsed}s)"
+    fi
+}
+
+# The render returned while the background process was still running.
+still_running() {
+    local desc="$1" pid="$2"
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+        pass "$desc"
+    else
+        fail "$desc"
     fi
 }
 
@@ -212,7 +245,13 @@ if [[ "$section" = all || "$section" = lifecycle ]]; then
         fi
     fi
     render_is 'a second render while curl runs returns weather absence' '--' slow '{"context_window":null}'
-    fast_render 'a second render finishes below 250 ms during a sleeping curl'
+    still_running 'the second render returns while the sleeping curl still runs' "$(cat "$sb/curl.pid" 2>/dev/null)"
+    if ! lock_is_free "$CACHE_DIR/weather-default-u-lock"; then
+        pass 'the second render returns while the refresh still holds its lock'
+    else
+        fail 'the second render returns while the refresh still holds its lock'
+    fi
+    render_within_ceiling 'a second render during a sleeping curl stays under the 2 s ceiling'
     contender=
     for ((i=0; i<16; i++)); do
         contender=$(cat "$sb/supervisor.pid")
@@ -225,12 +264,11 @@ if [[ "$section" = all || "$section" = lifecycle ]]; then
         fail 'a contender exits promptly while the first refresh is active'
     fi
     assert_eq 'two renders start only one concurrent request' 1 "$(calls)"
-    [ "$FAIL" -eq 0 ] || exit 1
     weather_failure 'a failed request leaves a short-lived failure entry'
     previous_supervisor=$(cat "$sb/supervisor.pid")
     for payload in '{}' '{"context_window":{"used_percentage":0}}' '{"context_window":{"used_percentage":null}}'; do
         render_is 'a render during failure cooldown still shows absence' '--' slow "$payload"
-        fast_render 'a render during failure cooldown finishes below 250 ms'
+        render_within_ceiling 'a render during failure cooldown stays under the 2 s ceiling'
     done
     assert_eq 'the failure entry suppresses further attempts until expiry' 1 "$(calls)"
     assert_eq 'renders during cooldown launch no worker' "$previous_supervisor" "$(cat "$sb/supervisor.pid")"
@@ -277,6 +315,25 @@ if [[ "$section" = all || "$section" = deadline ]]; then
     else
         fail 'the hung probe started in the background'
     fi
+    sandbox weather
+    render_is 'a sub-microsecond remaining deadline renders absence' '--' tiny-deadline
+    if wait_for_file "$CACHE_DIR/weather-default-u-failed" 130; then
+        pass 'a sub-microsecond remaining deadline still ends the refresh'
+    else
+        fail 'a sub-microsecond remaining deadline still ends the refresh'
+    fi
+    if wait_for_lock "$CACHE_DIR/weather-default-u-lock"; then
+        pass 'a sub-microsecond remaining deadline releases the lock'
+    else
+        fail 'a sub-microsecond remaining deadline releases the lock'
+    fi
+    if [ -s "$sb/curl.pid" ] && kill -0 "$(cat "$sb/curl.pid")" 2>/dev/null; then
+        fail 'a sub-microsecond remaining deadline leaves no probe running'
+        kill -KILL "$(cat "$sb/curl.pid")" 2>/dev/null || :
+    else
+        pass 'a sub-microsecond remaining deadline leaves no probe running'
+    fi
+
     sandbox weather
     render_is 'a stalled failure-cache writer does not delay the render' '--' stalled-write
     if wait_for_file "$sb/writer.pid" && process_exits "$(cat "$sb/writer.pid")" 45 &&
@@ -397,6 +454,18 @@ if [[ "$section" = all || "$section" = locks ]]; then
     fi
     exec 8>&-
 
+    # Owner-only mode and a reader get a FIFO past every check but the file type.
+    sandbox weather
+    mkfifo -m 600 "$CACHE_DIR/weather-default-u-lock"
+    exec 8<>"$CACHE_DIR/weather-default-u-lock"
+    render_is 'an owner-only FIFO lock with a reader leaves weather absent' '--' normal
+    if wait_for_file "$sb/supervisor.pid" && process_exits "$(cat "$sb/supervisor.pid")"; then
+        assert_eq 'an owner-only FIFO lock prevents the probe from running' 0 "$(calls)"
+    else
+        fail 'an owner-only FIFO lock with a reader is rejected'
+    fi
+    exec 8>&-
+
     sandbox weather
     : > "$CACHE_DIR/weather-default-u-lock"
     chmod 644 "$CACHE_DIR/weather-default-u-lock"
@@ -409,13 +478,19 @@ if [[ "$section" = all || "$section" = locks ]]; then
         fail 'a refresh writes to a cache protected by the repaired lock'
     fi
 
+    # The target is private and holds a fresh reading under the current key,
+    # so only the symlink itself can be what refuses it.
     sandbox weather
     rmdir "$CACHE_DIR"
-    mkdir "$sb/outside"
-    printf '%s\n' '☀️+72°F' > "$sb/outside/weather"
+    mkdir -m 700 "$sb/outside"
+    (umask 077; printf '%s\n' '☀️+72°F' > "$sb/outside/weather-default-u")
     ln -s "$sb/outside" "$CACHE_DIR"
     render_is 'a symlinked cache directory never supplies a reading' '--' normal
-    assert_eq 'a symlinked cache directory leaves its target alone' '' "$(ls "$sb/outside" | sed '/^weather$/d')"
+    sleep 0.3
+    render_is 'a symlinked cache directory supplies no reading after a refresh window' '--' normal
+    assert_eq 'a symlinked cache directory leaves its private target alone' 'weather-default-u' "$(ls -A "$sb/outside")"
+    assert_eq 'a symlinked cache directory starts no request' 0 "$(calls)"
+    assert_eq 'a symlinked cache directory schedules no refresh' '' "$(cat "$sb/supervisor.pid" 2>/dev/null)"
 fi
 
 if [[ "$section" = all || "$section" = validation ]]; then
@@ -586,9 +661,11 @@ STUB
     sandbox weather
     /bin/chmod 755 "$CACHE_DIR"
     render_is 'a stalled directory setup leaves weather absent' '--' stalled-setup
-    render_is 'a second render stays available while setup is stalled' '--' stalled-setup
-    fast_render 'stalled directory setup stays off the foreground path'
     if wait_for_file "$sb/setup.pids"; then
+        render_is 'a second render stays available while setup is stalled' '--' stalled-setup
+        still_running 'the second render returns while the first setup is still stalled' \
+            "$(head -1 "$sb/setup.pids")"
+        render_within_ceiling 'stalled directory setup stays off the foreground path'
         while IFS= read -r pid; do
             if process_exits "$pid" 116; then
                 pass 'a setup child exits within the deadline'
@@ -753,6 +830,25 @@ if [[ "$section" = all || "$section" = privacy ]]; then
         render_is 'a private cache retains the existing entry' "$expected" normal
         assert_eq 'permission repair does not repeat a probe for a valid entry' 0 "$(calls)"
     done
+
+    # Without a render's snapshot, cached_probe checks the directory itself.
+    sandbox weather
+    (umask 077; printf '%s\n' '☀️+72°F' > "$CACHE_DIR/weather-default-u")
+    chmod 755 "$CACHE_DIR"
+    output=$(
+        TEST_SAMPLE=normal /bin/bash -c '
+            . "$1/modules/utils.sh"
+            cached_probe weather-default-u 600 15 "$1/modules/weather.sh" _weather_probe https://wttr.in
+            printf "%s" "$REPLY"
+        ' standalone "$PROJECT_ROOT"
+    )
+    assert_eq 'a standalone read refuses a fresh entry in a shared directory' '' "$output"
+    if wait_for_file "$sb/supervisor.pid" && process_exits "$(cat "$sb/supervisor.pid")"; then
+        assert_eq 'the standalone refresh repairs the directory without a request' \
+            '700 0' "$(perl -e 'printf "%o", (stat($ARGV[0]))[2] & 0777' "$CACHE_DIR") $(calls)"
+    else
+        fail 'the standalone read schedules a repair'
+    fi
 fi
 
 printf 'Results: %s passed, %s failed\n' "$PASS" "$FAIL"

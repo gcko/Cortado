@@ -98,7 +98,10 @@ module_processes() {
 
     local total_procs running_procs
     IFS=' ' read -r total_procs running_procs <<< "$REPLY"
-    if ! [[ "$total_procs" =~ ^[0-9]+$ && "$running_procs" =~ ^([0-9]+|--)$ ]] ||
+    # Accept only what the probe can publish: a positive total, and a running
+    # count no larger than it. Ten digits keep the arithmetic in range.
+    if ! [[ "$total_procs" =~ ^[1-9][0-9]{0,9}$ && "$running_procs" =~ ^(0|[1-9][0-9]{0,9}|--)$ ]] ||
+        { [ "$running_procs" != -- ] && [ "$running_procs" -gt "$total_procs" ]; } ||
         { [ "$show_total" != true ] && [ "$show_running" = true ] && [ "$running_procs" = -- ]; }; then
         printf '%s --\n' "$icon"
         return

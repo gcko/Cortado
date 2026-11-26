@@ -49,5 +49,31 @@ for bash_bin in /bin/bash "$(command -v bash)"; do
     done
     assert_eq "an external Node version warms under nounset ($bash_bin)" 'NODE: 22.14.0' "$output"
 done
+# With no Node on PATH, a cache file named node must not stand in for the
+# runtime's identity and start a probe of an empty command.
+mkdir "$TEST_BASE/no-node-bin"
+for tool in awk bash cat chmod date dirname grep jq mkdir mktemp mv perl rm sed stat tr uname; do
+    tool_path=$(type -P "$tool") && ln -s "$tool_path" "$TEST_BASE/no-node-bin/$tool"
+done
+sb=$(mktemp -d "$TEST_BASE/metadata.XXXXXX") || exit 1
+mkdir -m 700 "$sb/cortado-cache"
+(umask 077; printf '%s\n' stale > "$sb/cortado-cache/node")
+printf '%s\n' 'MODULE_ORDER=node' 'MODULE_NODE=true' 'COLOR_THEME="monochrome"' > "$sb/cortado.conf"
+chmod 600 "$sb/cortado.conf"
+output=$(printf '{}' | LC_ALL=C PATH="$TEST_BASE/no-node-bin" CLAUDE_CONFIG_DIR="$sb" \
+    /bin/bash "$PROJECT_ROOT/cortado.sh" 2>&1)
+assert_eq 'without Node, a cache file named node leaves the line absent' 'NODE: --' "$output"
+other_entries() {
+    local entry
+    for entry in "$sb/cortado-cache"/* "$sb/cortado-cache"/.[!.]*; do
+        [ -e "$entry" ] || [ -L "$entry" ] || continue
+        [ "${entry##*/}" = node ] || printf '%s\n' "${entry##*/}"
+    done
+}
+for ((i=0; i<10; i++)); do
+    [ -z "$(other_entries)" ] || break
+    sleep 0.05
+done
+assert_eq 'without Node, a cache file named node starts no probe' '' "$(other_entries)"
 printf '\nResults: %s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
