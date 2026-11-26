@@ -151,6 +151,40 @@ assert_rc 'IFS is not a setting' 1 allowed IFS x
 assert_rc 'the opt-in is not a setting' 1 allowed CORTADO_CONF_ALLOW_BASH 1
 assert_rc 'CACHE_DIR is not a setting' 1 allowed CACHE_DIR /tmp
 
+# The trusted policy and its assignment run as one call when the statusline
+# loads a config (trusted_config_apply). It must accept, refuse and explain
+# exactly as trusted_config_setting_allowed does, and assign what it accepts.
+apply_mismatches=$(
+    LC_ALL=C
+    keys="$(compgen -v _CORTADO_CORE_KEY_TYPE_ | sed 's/^_CORTADO_CORE_KEY_TYPE_//')
+$(compgen -v _CORTADO_KEY_TYPE_ | sed 's/^_CORTADO_KEY_TYPE_//')
+MODULE_GIT MODULE_NOSUCH GIT_FOO PATH IFS CORTADO_CONF_ALLOW_BASH CACHE_DIR lower A-B 1ABC"
+    checked=0
+    for key in $keys; do
+        for value in '' true false yes maybe 60 -1 abc 0.5 1.2.3 ' | ' '-.'; do
+            CONFIG_POLICY_REASON='' CONFIG_POLICY_KIND=''
+            trusted_config_setting_allowed "$key" "$value" && want=0 || want=$?
+            want="$want|$CONFIG_POLICY_REASON|$CONFIG_POLICY_KIND"
+            CONFIG_POLICY_REASON='' CONFIG_POLICY_KIND=''
+            checked=$((checked + 1))
+            if [ "$key" = PATH ] || [ "$key" = IFS ]; then saved="${!key}"; fi
+            trusted_config_apply "$key" "$value" && got=0 || got=$?
+            got="$got|$CONFIG_POLICY_REASON|$CONFIG_POLICY_KIND"
+            if [ "$key" = PATH ] || [ "$key" = IFS ]; then printf -v "$key" '%s' "$saved"; fi
+            if [ "$got" != "$want" ]; then
+                printf '%s=[%s]: apply %s, policy %s\n' "$key" "$value" "$got" "$want"
+            elif [ "${got%%|*}" = 0 ] && [ "${!key}" != "$value" ]; then
+                printf '%s=[%s]: accepted but not assigned\n' "$key" "$value"
+            fi
+        done
+    done
+    printf 'checked %s\n' "$checked"
+)
+assert_match 'the combined trusted apply is compared on every key and value' \
+    '^checked [0-9]{4,}$' "${apply_mismatches##*$'\n'}"
+assert_eq 'the combined trusted apply agrees with the trusted policy on every key' '' \
+    "$(printf '%s\n' "$apply_mismatches" | sed '/^checked [0-9]*$/d')"
+
 # The shipped config is pure data: every line is a comment or a setting.
 unread_lines=()
 collect_unread() { unread_lines+=("$1: $2"); }
