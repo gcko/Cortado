@@ -5,7 +5,8 @@
 module_id_valid() {
     local LC_ALL=C
     case "$1" in
-        ''|*[!a-z0-9-]*|order|utils|payload) return 1 ;;
+        # A leading hyphen reads as an option to echo, tr and the config CLI.
+        ''|-*|*[!a-z0-9-]*|order|utils|payload) return 1 ;;
         *) return 0 ;;
     esac
 }
@@ -49,8 +50,9 @@ read_module_headers() {
                         if ($3 ~ /^(core|system|dev|extra)$/) category = $3
                         if ($4 ~ /^[0-9]+$/) position = $4 + 0
                     }
-                    if ($2 == "@description") {
-                        sub(/^[[:space:]]*#[[:space:]]+@description[[:space:]]+/, "")
+                    # An empty description keeps the ID as its label.
+                    if ($2 == "@description" &&
+                        sub(/^[[:space:]]*#[[:space:]]+@description[[:space:]]+/, "") && $0 != "") {
                         if ($0 !~ /[|[:cntrl:]]/) description = $0
                     }
                     if ($2 == "@config" && i <= builtin_end &&
@@ -79,13 +81,24 @@ read_module_headers() {
     ' "${@:2}"
 }
 
+# Record a refused user module file for the debug log.
+module_refused() {
+    _CORTADO_MODULE_REFUSED_IDS="$_CORTADO_MODULE_REFUSED_IDS$1 "
+    _CORTADO_MODULE_REFUSALS+=("$2:$3")
+}
+
 discover_module_registry() {
     local shipped_dir="$1" user_dir="${2:-}" apply_defaults="${3:-false}"
     local path id key target builtin_end path_var
     local records enabled args platforms flag category description keys
     local candidates=()
 
+    # Only this discovery may bind a source path. Drop inherited or earlier ones.
+    unset "${!_CORTADO_SOURCE_@}"
     _CORTADO_MODULE_CATALOG=()
+    # Refusals are reported after config loads, and only in debug mode.
+    _CORTADO_MODULE_REFUSALS=()
+    _CORTADO_MODULE_REFUSED_IDS=' '
     _CORTADO_PROJECT_KEYS=' '
     _CORTADO_MODULE_FLAGS=' '
     _CORTADO_MODULE_IDS=' '
@@ -98,8 +111,8 @@ discover_module_registry() {
     done
     builtin_end=${#candidates[@]}
 
-    if [[ -n "$user_dir" && -d "$user_dir" && ! -L "$user_dir" ]] && type check_trusted_config >/dev/null 2>&1; then
-        if check_trusted_config "$user_dir" module-directory; then
+    if [[ -n "$user_dir" && -d "$user_dir" ]] && type check_trusted_config >/dev/null 2>&1; then
+        if [[ ! -L "$user_dir" ]] && check_trusted_config "$user_dir" module-directory 2>/dev/null; then
             user_dir="$REPLY"
             for path in "$user_dir"/*.sh; do
                 [ -f "$path" ] || continue
@@ -109,13 +122,29 @@ discover_module_registry() {
                 local id_key="${REPLY#_CORTADO_MODULE_}"
                 # Reserve installed filenames before examining user code.
                 [ ! -e "$shipped_dir/$id.sh" ] || continue
-                check_trusted_config "$path" module || continue
+                if ! check_trusted_config "$path" module 2>/dev/null; then
+                    module_refused "$id" module "$path"
+                    continue
+                fi
                 target="$REPLY"
                 # Source the checked target. A link must stay inside the checked
                 # directory so an external path cannot replace an ancestor.
-                [ "${target%/*}" = "$user_dir" ] || continue
+                if [ "${target%/*}" != "$user_dir" ]; then
+                    module_refused "$id" module "$path"
+                    continue
+                fi
                 printf -v "_CORTADO_SOURCE_$id_key" '%s' "$target"
                 candidates+=("id:$id" "$target")
+            done
+        else
+            _CORTADO_MODULE_REFUSALS+=("module directory:$user_dir")
+            # Read only the names, so a listed module is reported as refused.
+            for path in "$user_dir"/*.sh; do
+                id=${path##*/}
+                id=${id%.sh}
+                if module_id_valid "$id"; then
+                    _CORTADO_MODULE_REFUSED_IDS="$_CORTADO_MODULE_REFUSED_IDS$id "
+                fi
             done
         fi
     fi

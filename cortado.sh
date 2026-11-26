@@ -359,8 +359,10 @@ run_module() {
         # An untrusted project may suppress or reorder already selected user
         # modules. Only the trusted order can authorize sourcing a new one.
         case ",$trusted_module_order," in *",$module_name,"*) ;; *) return 0 ;; esac
+        # A false last command in the file is not a failure. The function
+        # check below decides whether the module can run.
         # shellcheck source=/dev/null
-        . "${!path}" || return
+        . "${!path}" || log_debug "User module $module_name: sourcing returned status $?"
     fi
     func_name="module_${module_name//-/_}"
     if ! declare -F "$func_name" >/dev/null; then
@@ -410,7 +412,25 @@ validate_module_order() {
         get_module_function "$module"
         func_name=$REPLY
         if [ -z "$func_name" ]; then
-            log_debug "Warning: Unknown module in MODULE_ORDER: $module"
+            case "$_CORTADO_MODULE_REFUSED_IDS" in
+                *" $module "*) log_debug "Warning: Refused module in MODULE_ORDER (unsafe owner or permissions): $module" ;;
+                *) log_debug "Warning: Unknown module in MODULE_ORDER: $module" ;;
+            esac
+        fi
+    done
+}
+
+# Discovery runs before config sets DEBUG_MODE, so it only collects refusals.
+# Like a refused cortado.conf, they are reported only in debug mode.
+report_module_refusals() {
+    local entry message
+    [ "${DEBUG_MODE:-false}" = true ] || return 0
+    [ "${#_CORTADO_MODULE_REFUSALS[@]}" -gt 0 ] || return 0
+    for entry in "${_CORTADO_MODULE_REFUSALS[@]}"; do
+        message=$(config_refusal_message "${entry#*:}" "${entry%%:*}")
+        printf '%s\n' "$message" >&2
+        if declare -F log_debug >/dev/null; then
+            log_debug "$message"
         fi
     done
 }
@@ -874,6 +894,7 @@ main() {
         fi
     fi
     load_modules "$module_stderr"
+    report_module_refusals
 
     # Resolve the OS in main so trusted configs can supply a uname hook.
     # Issue #31 will replace render_os with CORTADO_OS.
@@ -1117,6 +1138,7 @@ cortado_cli_dispatch() {
                 # shellcheck source=/dev/null
                 . "$MODULES_DIR/utils.sh"
             fi
+            report_module_refusals
             # shellcheck disable=SC1091
             . "$SCRIPT_DIR/lib/config-tui.sh"
             cortado_config_main "$@"

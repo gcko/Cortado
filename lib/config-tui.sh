@@ -61,8 +61,12 @@ _cfg_is_global_key() {
         TERMINAL_WIDTH|RIGHT_SIDE_RESERVE|VERSION_*|UPDATE_*)
             return 0
             ;;
-        *) return 1 ;;
     esac
+    # Settings a shipped module declares with @config.
+    case "${_CORTADO_PROJECT_KEYS:-}" in
+        *" $key "*) return 0 ;;
+    esac
+    return 1
 }
 
 # Values that would break KEY="value" or inject when the user config is sourced.

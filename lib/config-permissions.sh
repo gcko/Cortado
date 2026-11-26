@@ -10,6 +10,8 @@ _trusted_config_path() (
 
     [[ "$path" = /* ]] || path="$PWD/$path"
     while :; do
+        # A trailing slash would make the path its own parent below. Keep "/".
+        while [[ "$path" = */ && "$path" != / ]]; do path="${path%/}"; done
         # Resolve directory symlinks with Bash, then follow any file symlink.
         CDPATH='' builtin cd -P -- "${path%/*}/" || return 1
         path="${PWD%/}/${path##*/}"
@@ -59,8 +61,9 @@ _trusted_config_path() (
     printf '%s.' "$path"
 )
 
+# The optional noun names what was refused (default: config).
 config_refusal_message() {
-    printf 'cortado: refusing to source config with unsafe or unknown permissions: %q\n' "$1"
+    printf 'cortado: refusing to source %s with unsafe or unknown permissions: %q\n' "${2:-config}" "$1"
 }
 
 # Set REPLY to the checked path so callers source the same target they checked.
