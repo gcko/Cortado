@@ -80,18 +80,21 @@ _cfg_module_enabled() {
         is_module_enabled "$name"
         return
     fi
+    # The statusline runs a module only when its flag is exactly true, so a
+    # yes, 1 or on spelling is reported as off, as it renders.
     var=$(_cfg_module_var "$name")
     val="${!var:-false}"
-    case "$val" in
-        true|TRUE|1|yes|YES|on|ON) return 0 ;;
-        *) return 1 ;;
-    esac
+    [ "$val" = true ]
 }
 
 _cfg_set_module() {
     local name="$1" state="$2" scope="${3:-global}" var
     var=$(_cfg_module_var "$name")
     if [ "$scope" = "project" ]; then
+        # Disabling a module that is already off is not an edit.
+        if [ "$state" = false ] && ! _cfg_module_enabled "$name" project; then
+            return 0
+        fi
         _cfg_set_project_value "$var" "$state"
     else
         printf -v "$var" '%s' "$state"
@@ -132,7 +135,7 @@ _cfg_load_into_shell() {
     local scope="${2:-global}"
     if [ "$scope" = "project" ]; then
         _CFG_PROJECT_SETTINGS=()
-        _CFG_PROJECT_ORIGINAL=()
+        _CFG_PROJECT_EDITS=()
         [ ! -f "$path" ] || load_config_safe "$path" _cfg_load_project_value
     else
         # cortado.sh already reported a packaged refusal at startup. The
@@ -151,6 +154,9 @@ _cfg_load_into_shell() {
                     load_config_data "$REPLY" "$path"
                 fi
             fi
+        elif ! check_config_searchable "$path" 2>/dev/null; then
+            # The renderer refuses a config it cannot tell exists.
+            _CFG_GLOBAL_CONFIG_REFUSED=true
         fi
         # Start from the order the renderer falls back to, never an empty one.
         MODULE_ORDER="${MODULE_ORDER:-${CORTADO_DEFAULT_MODULE_ORDER:-}}"
@@ -178,37 +184,28 @@ _cfg_load_into_shell() {
 }
 
 _cfg_load_project_value() {
-    # Keep a valid preference on disk even if this invocation inherited the key.
-    _CFG_PROJECT_SETTINGS+=("$3")
-    _CFG_PROJECT_ORIGINAL+=("$3")
+    # The accepted settings seed a new .cortado.conf from a legacy .barista.conf.
+    # Keep each as a clean line, the last value per key, never the raw line:
+    # the legacy file may be a link to a file of the user's.
+    local line settings=()
+    for line in "${_CFG_PROJECT_SETTINGS[@]+"${_CFG_PROJECT_SETTINGS[@]}"}"; do
+        [ "${line%%=*}" = "$1" ] || settings+=("$line")
+    done
+    _CFG_PROJECT_SETTINGS=("${settings[@]+"${settings[@]}"}" "$1=\"$(_cfg_shell_quote "$2")\"")
     project_config_assign "$1" "$2"
 }
 
 _cfg_set_project_value() {
-    local key="$1" val="$2" line
-    local settings=()
+    local key="$1" val="$2" edit
+    local edits=()
     project_config_setting_allowed "$key" "$val" || return 1
     project_config_assign "$key" "$val" || return 1
-    # Bash 3.2 treats an empty array as unset under nounset.
-    for line in "${_CFG_PROJECT_SETTINGS[@]+"${_CFG_PROJECT_SETTINGS[@]}"}"; do
-        [ "${line%%=*}" = "$key" ] || settings+=("$line")
+    # One edit per key, the latest. Bash 3.2 treats an empty array as unset
+    # under nounset.
+    for edit in "${_CFG_PROJECT_EDITS[@]+"${_CFG_PROJECT_EDITS[@]}"}"; do
+        [ "${edit%%=*}" = "$key" ] || edits+=("$edit")
     done
-    _CFG_PROJECT_SETTINGS=("${settings[@]+"${settings[@]}"}" "$key=\"$val\"")
-}
-
-_cfg_rebuild_module_order() {
-    local order="" mod_def name
-    for mod_def in "${_CFG_ALL_MODULES[@]}"; do
-        name=$(_cfg_mod_name "$mod_def")
-        if _cfg_module_enabled "$name"; then
-            if [ -n "$order" ]; then
-                order="${order},${name}"
-            else
-                order="$name"
-            fi
-        fi
-    done
-    MODULE_ORDER="$order"
+    _CFG_PROJECT_EDITS=("${edits[@]+"${edits[@]}"}" "$key=$val")
 }
 
 _cfg_order_add() {
@@ -294,9 +291,23 @@ _cfg_at_shell_boundary() {
     return 0
 }
 
-_cfg_render_global_conf() {
-    local source="$1"
-    shift
+# True when a line assigns a key under the file's grammar, leaving the
+# assignment's parts in BASH_REMATCH. A data file (the project config) is read
+# one line at a time, so only a line the data parser reads assigns anything.
+_cfg_line_assigns() {
+    if [ "$1" = data ]; then
+        config_parse_line "$2" || return 1
+    fi
+    _cfg_assignment "$2"
+}
+
+# Write the source with each KEY=VALUE edit applied: the last line that assigns
+# the key is replaced in place, a missing key is appended, and every other byte
+# is kept. The shell grammar (the user config, which the opt-in may source)
+# also respects shell syntax around the line; the data grammar does not need to.
+_cfg_render_conf() {
+    local grammar="$1" source="$2"
+    shift 2
     local edits=("$@") lines=() locations=() replacements=() later=()
     local prefix="" line newline index=0 i text key ending chosen pattern
     local LC_ALL=C
@@ -310,13 +321,13 @@ _cfg_render_global_conf() {
             fi
             text="${line%$'\r'}"
             chosen=""
-            if _cfg_assignment "$text"; then
+            if _cfg_line_assigns "$grammar" "$text"; then
                 key="${BASH_REMATCH[3]}"
                 ending="${BASH_REMATCH[7]-}${line#"$text"}$newline"
                 for ((i=0; i<${#edits[@]}; i++)); do
                     [ "${edits[i]%%=*}" = "$key" ] || continue
                     # Preserve earlier duplicates and replace the last assignment.
-                    if _cfg_at_shell_boundary "$prefix"; then
+                    if [ "$grammar" = data ] || _cfg_at_shell_boundary "$prefix"; then
                         locations[i]="$index"
                         replacements[i]="${BASH_REMATCH[1]}$key=\"$(_cfg_shell_quote "${edits[i]#*=}")\"$ending"
                         unset 'later[i]'
@@ -327,7 +338,8 @@ _cfg_render_global_conf() {
             fi
             # Any later mention outside a whole-line comment may assign the key
             # again (a conditional, a heredoc), so the edit must come after it.
-            if [ "${#locations[@]}" -gt 0 ] && ! [[ "$text" =~ ^[[:blank:]]*(#|$) ]]; then
+            if [ "$grammar" = shell ] && [ "${#locations[@]}" -gt 0 ] &&
+                ! [[ "$text" =~ ^[[:blank:]]*(#|$) ]]; then
                 for ((i=0; i<${#edits[@]}; i++)); do
                     if [ -n "${locations[i]+x}" ] && [ "$i" != "$chosen" ]; then
                         pattern="(^|[^A-Za-z0-9_])${edits[i]%%=*}="
@@ -355,7 +367,7 @@ _cfg_render_global_conf() {
         fi
         appended="$appended$key=\"$(_cfg_shell_quote "${edits[i]#*=}")\""$'\n'
     done
-    if [ -n "$appended" ] && ! _cfg_at_shell_boundary "$prefix"; then
+    if [ -n "$appended" ] && [ "$grammar" = shell ] && ! _cfg_at_shell_boundary "$prefix"; then
         printf '%s\n' 'config: cannot append a setting to incomplete shell syntax' >&2
         return 1
     fi
@@ -368,38 +380,16 @@ _cfg_render_global_conf() {
     return 0
 }
 
-_cfg_render_project_conf() {
-    local source="$1" line original kept
-    local header='# Cortado project configuration'
-    local number=0
-    if [ -n "$source" ]; then
-        while IFS= read -r line || [ -n "$line" ]; do
-            number=$((number + 1))
-            [ "$line" != "$header" ] || continue
-            kept=false
-            for original in "${_CFG_PROJECT_ORIGINAL[@]+"${_CFG_PROJECT_ORIGINAL[@]}"}"; do
-                if [ "$line" = "$original" ]; then
-                    kept=true
-                    break
-                fi
-            done
-            if [ "$kept" = false ]; then
-                printf 'config: project save omits or reformats line %s (original in .bak)\n' "$number" >&2
-            fi
-        done < "$source" || return 1
-    fi
-    printf '%s\n' "$header" "${_CFG_PROJECT_SETTINGS[@]+"${_CFG_PROJECT_SETTINGS[@]}"}"
-}
-
 # Resolve relative links against the link's parent, including links in a chain.
 _cfg_resolve_target() {
     local path="$1" link hops=0
     case "$path" in /*) ;; *) path="$PWD/$path" ;; esac
     while [ -L "$path" ]; do
         if [ "$hops" -ge 40 ]; then return 1; fi
-        # The marker preserves any trailing newlines in the link's name.
-        link=$(readlink "$path" && printf '.') || return 1
-        link="${link%$'\n.'}"
+        # -n and the marker keep any trailing newline in the target's name,
+        # as the renderer's trust check reads it.
+        link=$(command readlink -n "$path" && printf '.') || return 1
+        link="${link%.}"
         case "$link" in
             /*) path="$link" ;;
             *) path="${path%/*}/$link" ;;
@@ -469,7 +459,9 @@ _cfg_write_conf() (
 _cfg_stage_conf() {
     local target="$1" scope="$2"
     shift 2
-    local dir="${target%/*}" backup="$target.bak" mode=600 ignored
+    local dir="${target%/*}" backup="$target.bak" mode=600 ignored grammar=shell
+    # A project file is data and its edit keeps every other byte, so it needs no backup.
+    [ "$scope" != project ] || { grammar=data backup=''; }
     if [ -L "$target" ] || { [ -e "$target" ] && [ ! -f "$target" ]; }; then
         printf 'config: config destination is not a regular file: %s\n' "$target" >&2
         return 1
@@ -486,7 +478,7 @@ _cfg_stage_conf() {
             return 1
         fi
         printf -v mode '%o' "$((8#$mode & 0700))"
-        if [ -L "$backup" ] || { [ -e "$backup" ] && [ ! -f "$backup" ]; }; then
+        if [ -n "$backup" ] && { [ -L "$backup" ] || { [ -e "$backup" ] && [ ! -f "$backup" ]; }; }; then
             printf 'config: backup destination is not a regular file: %s\n' "$backup" >&2
             return 1
         fi
@@ -496,40 +488,81 @@ _cfg_stage_conf() {
             printf 'config: cannot preserve a NUL byte in %s\n' "$target" >&2
             return 1
         fi
+    elif [ "$scope" = project ]; then
+        # A new project file starts with a header and the settings the project
+        # parser accepted from a legacy .barista.conf, never that file's bytes:
+        # a repository can link it to a file of the user's.
+        snapshot=$(mktemp "$dir/.cortado-config.XXXXXX") || return 1
+        printf '%s\n' '# Cortado project configuration' \
+            "${_CFG_PROJECT_SETTINGS[@]+"${_CFG_PROJECT_SETTINGS[@]}"}" >| "$snapshot" || return 1
     fi
 
     tmp=$(mktemp "$dir/.cortado-config.XXXXXX") || return 1
-    if [ "$scope" = project ]; then
-        _cfg_render_project_conf "$snapshot" >| "$tmp" || return 1
-    else
-        _cfg_render_global_conf "$snapshot" "$@" >| "$tmp" || return 1
-    fi
+    _cfg_render_conf "$grammar" "$snapshot" "$@" >| "$tmp" || return 1
     chmod "$mode" "$tmp" || return 1
-    if [ -n "$snapshot" ]; then
+    if [ -n "$snapshot" ] && [ -n "$backup" ]; then
         mv -f -- "$snapshot" "$backup" || return 1
     fi
     mv -f -- "$tmp" "$target" || return 1
 }
 
+# Record what the menu starts from, so a save writes only what the user changed.
+_cfg_menu_snapshot() {
+    local mod_def name
+    _CFG_BASE_THEME="${COLOR_THEME:-}" _CFG_BASE_ORDER="${MODULE_ORDER:-}"
+    _CFG_BASE_SHOW_WAN="${NETWORK_SHOW_WAN:-}" _CFG_BASE_WAN_REDACT="${NETWORK_WAN_REDACT:-}"
+    _CFG_BASE_SHOWN=()
+    for mod_def in "${_CFG_ALL_MODULES[@]}"; do
+        name=$(_cfg_mod_name "$mod_def")
+        if _cfg_module_enabled "$name"; then
+            _CFG_BASE_SHOWN+=(true)
+        else
+            _CFG_BASE_SHOWN+=(false)
+        fi
+    done
+}
+
+# Set _CFG_SAVE_UNCHANGED=true, and write nothing, when there is no edit.
 _cfg_save_menu() {
-    local path="$1" scope="$2" mod_def name var
-    local edits=()
+    local path="$1" scope="$2" mod_def name var state i=0
+    local edits=() flags=()
+    _CFG_SAVE_UNCHANGED=false
     if [ "$scope" = global ]; then
-        _cfg_rebuild_module_order
-        edits=("COLOR_THEME=$COLOR_THEME" "NETWORK_SHOW_WAN=$NETWORK_SHOW_WAN"
-            "NETWORK_WAN_REDACT=$NETWORK_WAN_REDACT" "MODULE_ORDER=$MODULE_ORDER")
+        MODULE_ORDER="$_CFG_BASE_ORDER"
         for mod_def in "${_CFG_ALL_MODULES[@]}"; do
             name=$(_cfg_mod_name "$mod_def")
             var=$(_cfg_module_var "$name")
-            # The renderer needs true, so legacy yes/on/1 are saved canonically.
-            if _cfg_module_enabled "$name"; then
-                edits+=("$var=true")
-            else
-                edits+=("$var=false")
+            state=false
+            ! _cfg_module_enabled "$name" || state=true
+            # Write only a flag the user changed.
+            if [ "$state" != "${_CFG_BASE_SHOWN[i]}" ]; then
+                flags+=("$var=$state")
+                _cfg_sync_module_order "$name"
             fi
+            i=$((i + 1))
         done
+        [ "$COLOR_THEME" = "$_CFG_BASE_THEME" ] || edits+=("COLOR_THEME=$COLOR_THEME")
+        [ "$NETWORK_SHOW_WAN" = "$_CFG_BASE_SHOW_WAN" ] || edits+=("NETWORK_SHOW_WAN=$NETWORK_SHOW_WAN")
+        [ "$NETWORK_WAN_REDACT" = "$_CFG_BASE_WAN_REDACT" ] ||
+            edits+=("NETWORK_WAN_REDACT=$NETWORK_WAN_REDACT")
+        [ "$MODULE_ORDER" = "$_CFG_BASE_ORDER" ] || edits+=("MODULE_ORDER=$MODULE_ORDER")
+        edits+=("${flags[@]+"${flags[@]}"}")
+    else
+        edits=("${_CFG_PROJECT_EDITS[@]+"${_CFG_PROJECT_EDITS[@]}"}")
     fi
-    _cfg_write_conf "$path" "$scope" "${edits[@]+"${edits[@]}"}"
+    if [ "${#edits[@]}" -eq 0 ]; then
+        _CFG_SAVE_UNCHANGED=true
+        return 0
+    fi
+    _cfg_write_conf "$path" "$scope" "${edits[@]}"
+}
+
+_cfg_report_save() {
+    if [ "$_CFG_SAVE_UNCHANGED" = true ]; then
+        echo "No changes to save; $1 is unchanged."
+    else
+        echo "Saved $1"
+    fi
 }
 
 _cfg_show() {
@@ -729,12 +762,13 @@ _cfg_interactive_modules() {
     echo ""
 }
 
+# Start on the option at index $2, the current value, so Enter keeps it.
 _cfg_interactive_choice() {
-    local title="$1"
-    shift
+    local title="$1" current_idx="$2"
+    shift 2
     local options=("$@")
     local count=${#options[@]}
-    local current_idx=0 drawn="false" key escape_seq label
+    local drawn="false" key escape_seq label
 
     printf "\033[?25l"
     echo ""
@@ -774,9 +808,11 @@ _cfg_interactive_choice() {
 }
 
 _cfg_run_interactive() {
-    local path="$1" scope="$2" mod_group theme
+    local path="$1" scope="$2" mod_group theme start
+    local theme_options=()
     _CFG_SAVE_REQUESTED=0
     _CFG_QUIT_REQUESTED=0
+    _cfg_menu_snapshot
 
     echo ""
     printf "%sCortado config%s  %s\n" "$CFG_BOLD" "$CFG_NC" "$path"
@@ -791,20 +827,26 @@ _cfg_run_interactive() {
             Extra) _cfg_interactive_modules "Extra modules" "$scope" "${_CFG_EXTRA_MODULES[@]}" ;;
         esac
         [ "$_CFG_QUIT_REQUESTED" = "1" ] && { echo "Cancelled — no changes written."; return 1; }
-        [ "$_CFG_SAVE_REQUESTED" = "1" ] && { _cfg_save_menu "$path" "$scope" && echo "Saved $path"; return; }
+        [ "$_CFG_SAVE_REQUESTED" = "1" ] && { _cfg_save_menu "$path" "$scope" && _cfg_report_save "$path"; return; }
     done
 
     if [ "$scope" = "project" ] && project_config_inherited COLOR_THEME; then
         echo "Color theme is read-only (set in the startup environment)."
     else
-        _cfg_interactive_choice "Color theme" \
-            "default|Standard emoji" \
-            "monochrome|ASCII labels and indicators"
-        case "${CFG_CHOICE_RESULT:-0}" in
-            0) theme="default" ;;
-            1) theme="monochrome" ;;
+        theme_options=("default|Standard emoji" "monochrome|ASCII labels and indicators")
+        start=0
+        case "${COLOR_THEME:-default}" in
+            default) ;;
+            monochrome) start=1 ;;
+            # A theme the menu does not list can be kept as it is.
+            *'|'*) ;;
+            *) theme_options=("$COLOR_THEME|Keep the current theme" "${theme_options[@]}") ;;
         esac
-        if [ "$scope" = "project" ]; then
+        _cfg_interactive_choice "Color theme" "$start" "${theme_options[@]}"
+        theme="${theme_options[${CFG_CHOICE_RESULT:-$start}]%%|*}"
+        if [ "$theme" = "${COLOR_THEME:-default}" ]; then
+            :
+        elif [ "$scope" = "project" ]; then
             if ! _cfg_set_project_value COLOR_THEME "$theme"; then
                 echo "config: could not set the project color theme" >&2
                 return 2
@@ -815,15 +857,27 @@ _cfg_run_interactive() {
     fi
 
     if [ "$scope" = "global" ]; then
-        _cfg_interactive_choice "WAN IP (privacy)" \
+        start=0
+        case "$NETWORK_SHOW_WAN" in
+            true|TRUE|yes|YES|1|on|ON)
+                case "$NETWORK_WAN_REDACT" in
+                    false|FALSE|no|NO|0|off|OFF) start=2 ;;
+                    *) start=1 ;;
+                esac
+                ;;
+        esac
+        _cfg_interactive_choice "WAN IP (privacy)" "$start" \
             "off|Do not fetch WAN IP (recommended)" \
             "redacted|Fetch but redact" \
             "show|Show full WAN IP"
-        case "${CFG_CHOICE_RESULT:-0}" in
-            0) NETWORK_SHOW_WAN="false"; NETWORK_WAN_REDACT="true" ;;
-            1) NETWORK_SHOW_WAN="true"; NETWORK_WAN_REDACT="true" ;;
-            2) NETWORK_SHOW_WAN="true"; NETWORK_WAN_REDACT="false" ;;
-        esac
+        # Keeping the current choice keeps both settings as they are.
+        if [ "${CFG_CHOICE_RESULT:-$start}" != "$start" ]; then
+            case "$CFG_CHOICE_RESULT" in
+                0) NETWORK_SHOW_WAN="false"; NETWORK_WAN_REDACT="true" ;;
+                1) NETWORK_SHOW_WAN="true"; NETWORK_WAN_REDACT="true" ;;
+                2) NETWORK_SHOW_WAN="true"; NETWORK_WAN_REDACT="false" ;;
+            esac
+        fi
     fi
 
     echo ""
@@ -839,8 +893,9 @@ _cfg_run_interactive() {
             ;;
     esac
     if _cfg_save_menu "$path" "$scope"; then
-        echo "Saved $path"
-        echo "Restart Claude Code (or re-render statusline) to apply."
+        _cfg_report_save "$path"
+        [ "$_CFG_SAVE_UNCHANGED" = true ] ||
+            echo "Restart Claude Code (or re-render statusline) to apply."
         return 0
     fi
     echo "Failed to write $path" >&2
@@ -1034,6 +1089,7 @@ cortado_config_main() {
                 return 2
             fi
             local edits=("$key=$val") old_order="${MODULE_ORDER:-}"
+            [ "$scope" != project ] || edits=("${_CFG_PROJECT_EDITS[@]}")
             # The renderer runs only the modules MODULE_ORDER lists, as --toggle keeps.
             if [ "$scope" = global ] && _cfg_module_name_for_var "$key"; then
                 printf -v "$key" '%s' "$val"
@@ -1074,6 +1130,7 @@ cortado_config_main() {
                 echo "config: unknown module: $toggle_name" >&2
                 return 2
             fi
+            [ "$scope" != project ] || edits=("${_CFG_PROJECT_EDITS[@]+"${_CFG_PROJECT_EDITS[@]}"}")
             if _cfg_write_conf "$path" "$scope" "${edits[@]+"${edits[@]}"}"; then
                 if _cfg_module_enabled "$toggle_name" "$scope"; then
                     echo "Enabled $toggle_name → $path"

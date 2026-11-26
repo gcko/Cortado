@@ -13,7 +13,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 section="${WRITER_TEST_SECTION:-all}"
 if [ "$section" = all ]; then
     run_sections WRITER_TEST_SECTION "${WRITER_TEST_JOBS:-4}" "${BASH_SOURCE[0]}" \
-        refused modules permissions failed umask lines order shell later menu project
+        menusave refused modules permissions failed umask lines usermodule order shell later menu project
 fi
 
 TEST_BASE=$(mktemp -d) || exit 1
@@ -53,6 +53,18 @@ with_umask() (
     umask "$1"
     shift
     "$@"
+)
+# Drive the real menu through a terminal with the given keys (default: s, save).
+menu_save() (
+    export TERM=xterm NO_COLOR=1
+    if [ "$(uname)" = Darwin ]; then
+        script -q /dev/null /bin/bash "$CORTADO" config <<< "${1:-s}"
+    else
+        # The shell started by script expands this path.
+        # shellcheck disable=SC2016
+        CORTADO_MENU_SCRIPT="$CORTADO" script -q -c 'exec /bin/bash "$CORTADO_MENU_SCRIPT" config' /dev/null \
+            <<< "${1:-s}"
+    fi
 )
 
 if section_is lines; then
@@ -117,6 +129,22 @@ CONFIG
     assert_contains 'writer identifies the failed lookup' 'could not resolve config destination' "$(cat "$stderr")"
     assert_rc 'a failed link lookup leaves the target alone' 0 cmp -s "$expected" "$target"
     rm "$TEST_BASE/bin/readlink"
+
+    # The renderer keeps a trailing newline in a link target's name (#86).
+    rm -f "$config"
+    nl_dir="$TEST_BASE/newline target"
+    mkdir "$nl_dir"
+    nl_target="$nl_dir/user.conf"$'\n'
+    printf '%s\n' 'MODULE_ORDER="model"' 'MODEL_ICON="NL"' > "$nl_target"
+    chmod 600 "$nl_target"
+    ln -s "$nl_target" "$config"
+    assert_rc 'set edits a link target whose name ends in a newline' 0 config_edit --set MODEL_ICON=EDITED
+    assert_file_contains 'the newline-named target holds the edit' 'MODEL_ICON="EDITED"' "$nl_target"
+    assert_rc 'no sibling without the newline is created' 1 test -e "$nl_dir/user.conf"
+    nl_line=$(printf '%s' '{"model":{"display_name":"Opus"}}' | /bin/bash "$CORTADO" 2>/dev/null |
+        sed $'s/\x1b\\[[0-9;]*m//g')
+    assert_eq 'the statusline reads the edited newline-named target' 'EDITED Opus' "$nl_line"
+    rm -rf "$config" "$nl_dir"
 fi
 
 if section_is modules; then
@@ -166,11 +194,76 @@ if section_is project; then
     rm "$project"
 
     printf '%s\n' 'SEPARATOR=" | "' 'HOME=ignored-by-project-parser' > "$project"
+    cp "$project" "$before"
+    { cat "$before"; printf '%s\n' 'MODULE_MODEL="false"'; } > "$expected"
     assert_rc 'project set accepts a false alias' 0 project_edit --set MODULE_MODEL=off
-    assert_file_contains 'project disable is stored canonically' 'MODULE_MODEL="false"' "$project"
-    assert_file_contains 'project save backs up its original preference' 'SEPARATOR=" | "' "$project.bak"
-    assert_contains 'project save identifies omitted input by line number' 'omits or reformats line 2' "$(cat "$stderr")"
-    assert_not_contains 'project warning omits the original contents' 'ignored-by-project-parser' "$(cat "$stderr")"
+    assert_rc 'project disable is appended canonically, other lines kept' 0 cmp -s "$expected" "$project"
+    assert_empty 'a clean project edit prints no warning' "$(cat "$stderr")"
+    assert_rc 'a clean project edit leaves no backup' 1 test -e "$project.bak"
+
+    # --project --set changes one line and keeps every other byte (#78).
+    printf '%s\n' '# my prefs' 'MODULE_CPU="true"' '' 'DISPLAY_MODE="compact"' > "$project"
+    printf '%s\n' '# my prefs' 'MODULE_CPU="false"' '' 'DISPLAY_MODE="compact"' > "$expected"
+    assert_rc 'project set edits a commented project file' 0 project_edit --set MODULE_CPU=false
+    assert_rc 'only the MODULE_CPU line of the project file changed' 0 cmp -s "$expected" "$project"
+    assert_empty 'the project edit prints no warning' "$(cat "$stderr")"
+    assert_rc 'the project edit leaves no backup' 1 test -e "$project.bak"
+
+    printf '%s\n' 'COLOR_THEME=default  # first' 'export SEPARATOR=" | "' 'COLOR_THEME=monochrome # wins' \
+        'if true; then' 'DISPLAY_MODE=compact' 'fi' > "$project"
+    printf '%s\n' 'COLOR_THEME=default  # first' 'export SEPARATOR=" | "' 'COLOR_THEME="minimal" # wins' \
+        'if true; then' 'DISPLAY_MODE="verbose"' 'fi' > "$expected"
+    assert_rc 'project set replaces a duplicate key' 0 project_edit --set COLOR_THEME=minimal
+    assert_rc 'project set edits a line the data parser reads inside a conditional' 0 \
+        project_edit --set DISPLAY_MODE=verbose
+    assert_rc 'the last duplicate is replaced in place, keeping its comment, and nothing else changes' 0 \
+        cmp -s "$expected" "$project"
+    printf '%s\n' 'COLOR_THEME=default  # first' 'export SEPARATOR="~"' 'COLOR_THEME="minimal" # wins' \
+        'if true; then' 'DISPLAY_MODE="verbose"' 'fi' > "$expected"
+    assert_rc 'project set edits an exported line' 0 project_edit --set 'SEPARATOR=~'
+    assert_rc 'the exported line keeps export' 0 cmp -s "$expected" "$project"
+
+    printf 'DISPLAY_MODE=normal\r\n# no final newline' > "$project"
+    printf 'DISPLAY_MODE="compact"\r\n# no final newline\nCOLOR_THEME="minimal"\n' > "$expected"
+    assert_rc 'project set edits a CRLF line' 0 project_edit --set DISPLAY_MODE=compact
+    assert_rc 'project set appends a missing key after an unterminated line' 0 project_edit --set COLOR_THEME=minimal
+    assert_rc 'the CRLF line keeps its CR and the unterminated line is kept' 0 cmp -s "$expected" "$project"
+    assert_rc 'no project backup after several edits' 1 test -e "$project.bak"
+
+    # The project file is data: a line is an assignment only when the data parser
+    # reads it, and shell syntax around it does not matter.
+    printf '%s\n' 'SEPARATOR="unclosed' 'COLOR_THEME=default' "COLOR_THEME=\$'x'" 'echo COLOR_THEME=x' > "$project"
+    printf '%s\n' 'SEPARATOR="unclosed' 'COLOR_THEME="minimal"' "COLOR_THEME=\$'x'" 'echo COLOR_THEME=x' \
+        'DISPLAY_MODE="compact"' > "$expected"
+    assert_rc 'project set edits past an unclosed quote' 0 project_edit --set COLOR_THEME=minimal
+    assert_empty 'a later line the parser refuses is not reported' "$(cat "$stderr")"
+    assert_rc 'project set appends after an unclosed quote' 0 project_edit --set DISPLAY_MODE=compact
+    assert_rc 'the parsed assignment changed and the refused lines are kept' 0 cmp -s "$expected" "$project"
+    rm -f "$project"
+
+    # A new file from a legacy .barista.conf carries only the settings the project
+    # parser accepted, never the bytes of a file the repository links elsewhere.
+    printf '%s\n' 'TOKEN=test-token-REDACTED' 'SEPARATOR=legacy' > "$TEST_BASE/home/private.conf"
+    ln -s ../home/private.conf "$TEST_BASE/project/.barista.conf"
+    printf '%s\n' '# Cortado project configuration' 'SEPARATOR="legacy"' 'COLOR_THEME="minimal"' > "$expected"
+    assert_rc 'project set migrates a linked legacy config' 0 project_edit --set COLOR_THEME=minimal
+    assert_rc 'the new project file holds only accepted legacy settings and the edit' 0 cmp -s "$expected" "$project"
+    rm -f "$project" "$TEST_BASE/project/.barista.conf" "$TEST_BASE/home/private.conf"
+
+    # The seed is rebuilt from parsed values, one line per key with the last
+    # value winning; an accepted line's comment or spelling never carries over.
+    printf '%s\n' 'COLOR_THEME=monochrome # PRIVATE-MARKER' 'SEPARATOR=first' 'SEPARATOR=second' \
+        > "$TEST_BASE/home/private.conf"
+    ln -s ../home/private.conf "$TEST_BASE/project/.barista.conf"
+    printf '%s\n' '# Cortado project configuration' 'COLOR_THEME="monochrome"' 'SEPARATOR="second"' \
+        'MODULE_CPU="false"' > "$expected"
+    assert_rc 'project set migrates a legacy config with a comment and a duplicate' 0 \
+        project_edit --set MODULE_CPU=false
+    assert_rc 'the seed holds each legacy setting once, as a clean line' 0 cmp -s "$expected" "$project"
+    assert_not_contains 'no legacy comment bytes reach the project file' PRIVATE-MARKER "$(cat "$project")"
+    assert_eq 'the last legacy value of a duplicated key wins, once' 'SEPARATOR="second"' \
+        "$(grep '^SEPARATOR=' "$project")"
+    rm -f "$project" "$TEST_BASE/project/.barista.conf" "$TEST_BASE/home/private.conf"
 
     # A project file is never sourced, so a group-writable one is saved owner-only.
     rm -f "$project" "$project.bak"
@@ -179,7 +272,7 @@ if section_is project; then
     assert_rc 'a group-writable project config saves under umask 002' 0 with_umask 002 project_edit --set MODULE_MODEL=off
     assert_file_contains 'the group-writable project config gets the change' 'MODULE_MODEL="false"' "$project"
     assert_eq 'the saved project config is owner-only' 600 "$(file_mode "$project")"
-    assert_eq 'the project backup is owner-only' 600 "$(file_mode "$project.bak" 2>/dev/null)"
+    assert_rc 'the group-writable project config leaves no backup' 1 test -e "$project.bak"
     rm -f "$project" "$project.bak"
 fi
 
@@ -404,22 +497,61 @@ if section_is later; then
     assert_empty 'a longer key with the same ending is not reported' "$(cat "$stderr")"
 fi
 
+if section_is menusave; then
+    echo "=== menu saves write only what changed (#77) ==="
+    if command -v script >/dev/null 2>&1; then
+        # A menu save writes only what the user changed (#77).
+        rm -f "$config" "$config.bak"
+        # shellcheck disable=SC2016 # The conditional is literal config text.
+        printf '%s\n' 'MODULE_CPU=false' 'COLOR_THEME=default' \
+            'if [ "${ON_WORK_LAPTOP:-}" = 1 ]; then MODULE_CPU=true; COLOR_THEME=monochrome; fi' \
+            '# local preference' 'MODULE_ORDER="cpu,model"' > "$config"
+        cp "$config" "$before"
+        menu_out=$(menu_save 2>&1)
+        assert_rc 'a menu save with no edits leaves the file byte-identical' 0 cmp -s "$before" "$config"
+        assert_rc 'a menu save with no edits writes no backup' 1 test -e "$config.bak"
+        assert_contains 'a menu save with no edits says nothing changed' 'No changes to save' "$menu_out"
+        ON_WORK_LAPTOP=1 CORTADO_CONF_ALLOW_BASH=1 menu_save >/dev/null 2>&1
+        assert_rc 'a no-op save under a sourced conditional bakes in no host values' 0 cmp -s "$before" "$config"
+        menu_save $'\n\n\n\n\n\ny\n' >/dev/null 2>&1
+        assert_rc 'walking the whole menu with Enter changes nothing' 0 cmp -s "$before" "$config"
+
+        printf '%s\n' 'COLOR_THEME=minimal' 'NETWORK_SHOW_WAN=yes' 'NETWORK_WAN_REDACT=off' > "$config"
+        cp "$config" "$before"
+        menu_save $'\n\n\n\n\n\ny\n' >/dev/null 2>&1
+        assert_rc 'Enter keeps a theme and WAN choice the menu does not list first' 0 cmp -s "$before" "$config"
+
+        # Space toggles the first core module (sandbox) off, then s saves.
+        printf '%s\n' '# order kept' 'MODULE_ORDER="cpu,sandbox,model"' 'MODULE_SANDBOX=true' \
+            'MODULE_CPU=true' 'COLOR_THEME=default' > "$config"
+        printf '%s\n' '# order kept' 'MODULE_ORDER="cpu,model"' 'MODULE_SANDBOX="false"' \
+            'MODULE_CPU=true' 'COLOR_THEME=default' > "$expected"
+        menu_out=$(menu_save ' s' 2>&1)
+        assert_rc 'a menu toggle changes its flag and its place in the order only' 0 cmp -s "$expected" "$config"
+        assert_contains 'a menu save with an edit reports the save' "Saved $config" "$menu_out"
+    else
+        # Every case here drives the menu through script(1), which CI installs.
+        fail 'menu save cases need script(1)'
+    fi
+fi
+
 if section_is menu; then
     echo "=== menu save and sourced shell options ==="
-    menu_save() (
-        export TERM=xterm NO_COLOR=1
-        if [ "$(uname)" = Darwin ]; then
-            script -q /dev/null /bin/bash "$CORTADO" config <<< s
-        else
-            # The shell started by script expands this path.
-            # shellcheck disable=SC2016
-            CORTADO_MENU_SCRIPT="$CORTADO" script -q -c 'exec /bin/bash "$CORTADO_MENU_SCRIPT" config' /dev/null <<< s
-        fi
-    )
     if command -v script >/dev/null 2>&1; then
-        printf '%s\n' 'MODULE_CPU=yes' > "$config"
+        # The statusline reads only true as on, so the menu and --show report a
+        # yes flag as off, and a save that changes nothing leaves it alone.
+        printf '%s\n' 'MODULE_ORDER="model,cpu"' 'MODULE_CPU=yes' 'COLOR_THEME=monochrome' > "$config"
+        cp "$config" "$before"
+        yes_line=$(printf '%s' '{"model":{"display_name":"Opus"}}' | /bin/bash "$CORTADO" 2>/dev/null |
+            sed $'s/\x1b\\[[0-9;]*m//g')
+        assert_eq 'the statusline does not render a yes flag' 'MODEL: Opus' "$yes_line"
+        assert_rc 'show runs with a yes flag' 0 config_edit --show
+        assert_eq 'show reports a yes flag as off, as the statusline renders it' '[off] cpu' \
+            "$(sed -n 's/^ *\(\[[a-z ]*\]\) *cpu .*/\1 cpu/p' "$stdout")"
         menu_save >/dev/null 2>&1
-        assert_eq 'a menu save stores a yes flag as true' 'MODULE_CPU="true"' "$(grep '^MODULE_CPU=' "$config")"
+        assert_rc 'a menu save without edits leaves a yes flag as written' 0 cmp -s "$before" "$config"
+        assert_rc 'toggle turns the yes flag on' 0 config_edit --toggle cpu
+        assert_eq 'toggle stores the flag as true' 'MODULE_CPU="true"' "$(grep '^MODULE_CPU=' "$config")"
     else
         echo "SKIP: script is not installed"
     fi
@@ -432,6 +564,45 @@ if section_is menu; then
     assert_rc 'a project save works under a noclobber user config' 0 project_edit --set MODULE_MODEL=off
     assert_rc 'the project file gets the change under noclobber' 0 cmp -s "$expected" "$project"
     rm -f "$project" "$project.bak"
+fi
+
+if section_is usermodule; then
+    echo "=== settings a user module declares (#81) ==="
+    user_modules="$CLAUDE_CONFIG_DIR/cortado-modules"
+    mkdir -m 700 "$user_modules"
+    # shellcheck disable=SC2016 # The module source keeps its expansion literal.
+    printf '%s\n' '# @cortado-module mine' '# @default true' '# @args none' \
+        '# @config MINE_LABEL:string' '# @config MINE_COUNT:int' '# @config OTHER_LABEL:string' \
+        '# @config BASH_ENV:string' '# @description Mine' \
+        'module_mine() { printf "MINE=%s\n" "${MINE_LABEL:-default}"; }' > "$user_modules/mine.sh"
+    # A module may claim BASH_* only under its own prefix, and BASH* stays reserved.
+    # shellcheck disable=SC2016 # The module source keeps its expansion literal.
+    printf '%s\n' '# @cortado-module bash' '# @default false' '# @args none' \
+        '# @config BASH_ENV:string' '# @description Reserved' 'module_bash() { :; }' > "$user_modules/bash.sh"
+    chmod 600 "$user_modules/mine.sh" "$user_modules/bash.sh"
+    printf '%s\n' '# my modules' 'MODULE_ORDER="model,mine"' 'COLOR_THEME=monochrome' > "$config"
+    cp "$config" "$before"
+    { cat "$before"; printf '%s\n' 'MINE_LABEL="hello"'; } > "$expected"
+    assert_rc 'set accepts a setting the user module declares' 0 config_edit --set MINE_LABEL=hello
+    assert_rc 'the user module setting is appended and nothing else changes' 0 cmp -s "$expected" "$config"
+    mine_line=$(printf '%s' '{"model":{"display_name":"Opus"}}' | /bin/bash "$CORTADO" 2>/dev/null |
+        sed $'s/\x1b\\[[0-9;]*m//g')
+    assert_eq 'the statusline renders the saved user module setting' 'MODEL: Opus | MINE=hello' "$mine_line"
+    assert_rc 'set refuses a mistyped value for a user module int' 2 config_edit --set MINE_COUNT=lots
+    assert_contains 'the type refusal names the type' 'MINE_COUNT expects a int value' "$(cat "$stderr")"
+    cp "$config" "$before"
+    for key in NOT_A_KEY OTHER_LABEL BASH_ENV; do
+        assert_rc "set still refuses $key" 2 config_edit --set "$key=x"
+        assert_contains "the $key refusal names the key" "unknown or invalid key: $key" "$(cat "$stderr")"
+    done
+    assert_rc 'refused keys leave the config byte-identical' 0 cmp -s "$before" "$config"
+    assert_rc 'toggle saves with a user module setting present' 0 config_edit --toggle cpu
+    assert_eq 'toggle keeps the user module setting' 'MINE_LABEL="hello"' "$(grep '^MINE_LABEL=' "$config")"
+    if command -v script >/dev/null 2>&1; then
+        menu_save >/dev/null 2>&1
+        assert_eq 'a menu save keeps the user module setting' 'MINE_LABEL="hello"' "$(grep '^MINE_LABEL=' "$config")"
+    fi
+    rm -rf "$user_modules" "$config" "$config.bak"
 fi
 
 if section_is umask; then

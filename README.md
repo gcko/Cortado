@@ -297,11 +297,13 @@ cortado config --path          # print the resolved config path
 cortado config --help          # show usage
 ```
 
-The default save path is `$CLAUDE_CONFIG_DIR/cortado.conf` (usually `~/.claude/cortado.conf`). Use `--project` to save allowed preferences in the current directory. Cancel leaves the file untouched.
+The default save path is `$CLAUDE_CONFIG_DIR/cortado.conf` (usually `~/.claude/cortado.conf`). Use `--project` to save allowed preferences in the current directory. Cancel leaves the file untouched. A menu save writes only the settings you changed, and moves only the modules you switched on or off in `MODULE_ORDER`; with no changes it writes nothing. The theme and WAN choices start on the current setting, so pressing Enter through them keeps it. The statusline runs a module only when its flag is exactly `true`, so the menu and `--show` report a flag spelled `yes`, `1` or `on` as off, as it renders; switching it on saves `true`.
 
 For the user config, `--set` replaces the last standalone assignment for the key or appends one if needed. When a later line could assign the key again (inside an `if`, say), it appends the new value so it takes effect, and says which line. It refuses a value that does not fit the setting's type. It saves module flag values of `yes`, `1`, and `on` as `true`, and `no`, `0`, and `off` as `false`, and adds or removes the module in `MODULE_ORDER` the way `--toggle` does.
 
-For the user config, the editor follows symlinks and writes to the target. It refuses a group- or world-writable user config and prints the `chmod go-w` command to run after you review it. A project `.cortado.conf` that is a symlink is refused, because a repository can commit one that points at your own files. Either save keeps the previous contents of an existing file in an owner-only `.bak` beside the file it writes.
+For a project `.cortado.conf`, `--set`, `--toggle` and a menu save change only the lines they set: the last line the project parser reads as that key is replaced in place, a missing key is appended, and comments, blank lines and every other line stay as they were. A new project file starts with a header and the settings Cortado accepted from a legacy `.barista.conf`.
+
+For the user config, the editor follows symlinks and writes to the target. It refuses a group- or world-writable user config and prints the `chmod go-w` command to run after you review it. A project `.cortado.conf` that is a symlink is refused, because a repository can commit one that points at your own files. A user config save keeps the previous contents of an existing file in an owner-only `.bak` beside the file it writes; a project save changes only its own lines, so it writes no `.bak`, and saves the file owner-only.
 
 Cortado creates a missing global config directory with private permissions and leaves an existing directory's mode alone. When a save succeeds but the statusline still cannot trust the file it wrote (its directory is group- or world-writable, say), the editor says the saved settings are inactive; see [Config file not loading](#config-file-not-loading).
 
@@ -537,7 +539,7 @@ MODULE_MYCUSTOM="true"
 MODULE_ORDER="model,mycustom"
 ```
 
-Then make the files private. A shell with umask `002`, the default on Ubuntu, creates them group-writable. Cortado skips a group- or world-writable module or module directory and leaves it off the statusline with no notice; with `DEBUG_MODE="true"`, `cortado.log` names what it refused. A refused `cortado.conf`, including one in a group- or world-writable Claude config directory, shows `Config refused` at the start of the statusline instead; see [Config file not loading](#config-file-not-loading).
+Then make the files private. A shell with umask `002`, the default on Ubuntu, creates them group-writable. Cortado skips a group- or world-writable module or module directory (on macOS, also one with an ACL entry that lets others write it) and leaves it off the statusline with no notice; with `DEBUG_MODE="true"`, `cortado.log` names what it refused. A refused `cortado.conf`, including one in a group- or world-writable Claude config directory, shows `Config refused` at the start of the statusline instead; see [Config file not loading](#config-file-not-loading).
 
 ```bash
 dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
@@ -572,7 +574,8 @@ To contribute a module to Cortado, place the same file in the checkout's `module
 
 - `Config partly read` means Cortado skipped lines it could not read as data, or values of the wrong type. Run `cortado config --show` to see each one, or `cortado config --migrate --dry-run` for a list with line numbers.
 - `Config refused` in the statusline means Cortado skipped a whole config file. Run `cortado config --show` in a terminal for the file and reason on stderr. The same details go to `cortado.log` when a trusted config enables debug logging.
-- For a symlink, check the resolved file and its immediate parent. The file must belong to your user and have no group or world write bits. Root ownership is also allowed for the packaged config. The parent must belong to your user or root and may be group- or world-writable only with the sticky bit. Missing or unreadable permission metadata causes a refusal.
+- For a symlink, check the resolved file and its immediate parent. The file must belong to your user and have no group or world write bits. Root ownership is also allowed for the packaged config. The parent must belong to your user or root and may be group- or world-writable only with the sticky bit. On macOS, an ACL entry that lets anyone but you change the file or its parent is refused the same way (`ls -le` lists them; `chmod -N` removes them); entries that only read, deny, or name your own user are fine. Missing or unreadable permission metadata causes a refusal.
+- A Claude config directory you cannot search (after `chmod 600` on the directory, say, or a symlinked config directory whose target sits under one) also shows `Config refused`, because Cortado cannot tell whether a config is there. Run `chmod 700` on the directory to fix it. A config directory that does not exist is not an error. `cortado.log` lives in that directory, so in this case the reason appears only on stderr.
 - For a user-owned file, `chmod 600 /path/to/resolved/cortado.conf` removes extra write access. A private file can still be replaced through a writable parent. If you own that directory and can remove its shared write access, run `chmod go-w /path/to/resolved/parent`. Leave a deliberately shared directory's permissions to its owner.
 - Per-directory `.cortado.conf` uses the same data parser, with the narrower project allowlist.
 

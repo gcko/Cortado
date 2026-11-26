@@ -6,18 +6,73 @@ _config_permission_error() {
     return 1
 }
 
+# Refuse a macOS ACL entry that lets anyone but the current user change a path.
+# The mode bits do not show ACLs. Only read-class rights and inheritance flags
+# are harmless; any other right, or an entry this cannot read, counts as a
+# write. Deny entries never widen access. Reads the `ls -led` listing that
+# _check_config_metadata started on stdin; a listing that does not end with
+# its nonce did not finish, so the path is refused.
+_check_config_acl() {
+    local entry who rights right me='' finished=false
+    local pattern='^ [0-9]+: (.+) (allow|deny) ([a-z_,]+)$'
+    while IFS= read -r entry; do
+        if [ "$entry" = "$_CORTADO_ACL_DONE" ]; then
+            finished=true
+            break
+        fi
+        case "$entry" in
+            ' '[0-9]*': '*) ;;
+            *) continue ;;
+        esac
+        [[ "$entry" =~ $pattern ]] ||
+            { _config_permission_error 'an access control entry could not be read'; return; }
+        [ "${BASH_REMATCH[2]}" = allow ] || continue
+        who="${BASH_REMATCH[1]% inherited}" rights="${BASH_REMATCH[3]},"
+        while [ -n "$rights" ]; do
+            right="${rights%%,*}" rights="${rights#*,}"
+            case "$right" in
+                read|readattr|readextattr|readsecurity|execute|search|list) ;;
+                file_inherit|directory_inherit|limit_inherit|only_inherit) ;;
+                *)
+                    [ -n "$me" ] || me=$(/usr/bin/id -un) ||
+                        { _config_permission_error 'could not read the current user name'; return; }
+                    [ "$who" = "user:$me" ] ||
+                        { _config_permission_error 'an access control entry lets others write'; return; }
+                    ;;
+            esac
+        done
+    done
+    [ "$finished" = true ] ||
+        _config_permission_error 'could not read access control lists'
+}
+
 # Check the immediate physical parent and, when supplied, the resolved file.
 # Print a reason on failure so stderr and the renderer's debug log can agree.
 _check_config_metadata() {
+    case "${BASH_VERSINFO[5]}" in
+        *-darwin*)
+            # macOS has no cheaper sign of an ACL than listing it, so the listing
+            # starts now and runs beside stat. Its random last line shows it ended.
+            # A pipe, not process substitution, so the file parses in POSIX mode.
+            local _CORTADO_ACL_DONE="cortado-acl-$RANDOM-$RANDOM-$RANDOM" scope="$1"
+            shift
+            { /bin/ls -led -- "$@" 2>/dev/null && printf '%s\n' "$_CORTADO_ACL_DONE"; } |
+                _check_config_metadata_now "$scope" "$@"
+            ;;
+        *) _check_config_metadata_now "$@" ;;
+    esac
+}
+
+_check_config_metadata_now() {
     local scope="$1"; shift
-    local metadata mode entry pattern file_mode file_owner dir_mode dir_owner
+    local metadata mode entry pattern file_mode file_owner dir_mode dir_owner acl=false
     local LC_ALL=C
 
     # OSTYPE can be overridden by the environment or by loaded config.
     case "${BASH_VERSINFO[5]}" in
         *-darwin*)
             # BSD %Lp omits the sticky bit. %p includes it and the file type.
-            mode='[0-7]{5,6}'
+            mode='[0-7]{5,6}' acl=true
             metadata=$(/usr/bin/stat -f '%p:%u' "$@") ||
                 { _config_permission_error 'could not read permission metadata'; return; }
             ;;
@@ -59,6 +114,7 @@ _check_config_metadata() {
         (( (8#$dir_mode & 022) == 0 || (8#$dir_mode & 01000) != 0 )) ||
             { _config_permission_error 'parent is group- or world-writable without the sticky bit'; return; }
     fi
+    [ "$acl" = false ] || _check_config_acl
 }
 
 _trusted_config_path() (
@@ -116,6 +172,45 @@ check_trusted_config() {
         return 1
     fi
     REPLY="${checked%.}"
+}
+
+# A config path that does not stat may lie under a directory Cortado cannot
+# search, which hides whether the config exists. Set REPLY to a refusal when the
+# nearest ancestor that exists is such a directory. A path whose existing
+# ancestors are all searchable simply does not exist. An ancestor that is a
+# link Cortado cannot follow is judged where it points, so a config directory
+# linked under an unsearchable directory is refused too.
+check_config_searchable() {
+    local dir="$1" target links=0 steps=0
+    [[ "$dir" = /* ]] || dir="$PWD/$dir"
+    # Every pass drops one name or follows one link, and both are bounded, so
+    # the walk ends for any path or link shape.
+    while (( steps < 4096 )); do
+        steps=$((steps + 1))
+        case "$dir" in
+            */*) dir="${dir%/*}" ;;
+            *) return 0 ;;
+        esac
+        [ -n "$dir" ] || return 0
+        if [[ -L "$dir" && ! -e "$dir" ]]; then
+            # A dangling or looping link ends here, silently, after 40 hops.
+            (( links < 40 )) || return 0
+            links=$((links + 1))
+            target=$(command readlink -n "$dir" && printf .) || return 0
+            target="${target%.}"
+            [[ "$target" = /* ]] || target="${dir%/*}/$target"
+            # The next pass examines the target itself.
+            dir="$target/."
+            continue
+        fi
+        [[ -e "$dir" ]] || continue
+        [[ -d "$dir" && ! -x "$dir" ]] || return 0
+        printf -v REPLY 'cortado: refusing to source config %q: %s' "$1" \
+            'cannot search the directory that holds it'
+        printf '%s\n' "$REPLY" >&2
+        return 1
+    done
+    return 0
 }
 
 # Publish a checked legacy file only into a parent where it will be accepted.

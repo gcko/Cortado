@@ -70,7 +70,10 @@ load_checked_config() {
 # Load a config only after verifying its target and parent.
 load_config() {
     local config_path="$1" REPLY
-    [[ -e "$config_path" || -L "$config_path" ]] || return 1
+    if [[ ! -e "$config_path" && ! -L "$config_path" ]]; then
+        check_config_searchable "$config_path" || CONFIG_REFUSALS+=("$REPLY")
+        return 1
+    fi
     if ! check_trusted_config "$config_path" "${2:-user}"; then
         CONFIG_REFUSALS+=("$REPLY")
         return 1

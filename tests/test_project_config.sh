@@ -204,9 +204,11 @@ printf '%s\n' 'MODULE_WEATHER="true"' 'GIT_FOO=project-fixture' 'UPDATE_REPO=pro
 rc=0
 project_config --toggle directory >/dev/null 2>&1 || rc=$?
 assert_eq "project toggle can disable an enabled module" "0" "$rc"
-assert_eq "project toggle saves only explicit valid overrides" \
-    $'RATE_5H_LABEL="quota"\nSEPARATOR=" ~ "\nMODULE_ORDER=model,directory,weather\nMODULE_DIRECTORY="false"' \
-    "$(sed -n '/^[A-Z_0-9]*=/p' "$PROJECT_FILE")"
+# The edit appends one line and keeps the rest, including lines the parser
+# ignores, which still have no effect (#78).
+assert_eq "project toggle appends its flag and keeps every other line" \
+    $'MODULE_WEATHER="true"\nGIT_FOO=project-fixture\nUPDATE_REPO=project-fixture\nMODEL_ICON="project-fixture;"\nRATE_5H_LABEL="quota"\nSEPARATOR=" ~ "\nMODULE_ORDER=model,directory,weather\nMODULE_DIRECTORY="false"' \
+    "$(cat "$PROJECT_FILE")"
 assert_eq "project order still skips both disabled modules" "MODEL: Test" "$(render)"
 
 rm -f "$PROJECT_FILE"
@@ -219,7 +221,7 @@ assert_eq "invalid legacy edit leaves no project file" "absent" "$(if [ ! -e "$P
 rc=0
 project_config --set COLOR_THEME=minimal >/dev/null 2>&1 || rc=$?
 assert_eq "valid legacy edit succeeds" "0" "$rc"
-assert_eq "legacy edit migrates only allowed settings" $'SEPARATOR=legacy\nCOLOR_THEME="minimal"' \
+assert_eq "legacy edit migrates only allowed settings" $'SEPARATOR="legacy"\nCOLOR_THEME="minimal"' \
     "$(sed -n '/^[A-Z_0-9]*=/p' "$PROJECT_FILE")"
 
 echo "=== first and empty project saves ==="
@@ -259,9 +261,37 @@ rm -f "$PROJECT_FILE"
 rc=0
 project_menu 's' > "$TEST_BASE/result" 2>&1 || rc=$?
 assert_eq "saving an empty project succeeds with nounset" "0" "$rc"
-printf '%s\n' "$header" > "$TEST_BASE/header"
-assert_eq "an empty save writes only its header and newline" "0" \
-    "$(cmp -s "$TEST_BASE/header" "$PROJECT_FILE"; echo "$?")"
+# A save with no edits writes nothing, not even a header (#77).
+assert_eq "an empty save creates no project file" "absent" \
+    "$(if [ ! -e "$PROJECT_FILE" ]; then echo absent; fi)"
+assert_eq "an empty save says nothing changed" "No changes to save; $PROJECT_FILE is unchanged." \
+    "$(sed -n 's/^.*\(No changes to save.*\)$/\1/p' "$TEST_BASE/result")"
+
+# A module that is already off is not an edit; the menu's n writes only the
+# modules it turns off.
+cp "$CLAUDE_CONFIG_DIR/cortado.conf" "$TEST_BASE/trusted-before-none"
+printf '%s\n' 'MODULE_BATTERY=false' >> "$CLAUDE_CONFIG_DIR/cortado.conf"
+printf '%s\n' '# keep' > "$PROJECT_FILE"
+rc=0
+project_menu 'ns' > "$TEST_BASE/result" 2>&1 || rc=$?
+assert_eq "disabling every core module saves" "0" "$rc"
+assert_eq "a core module the menu turned off is written" 'MODULE_MODEL="false"' \
+    "$(grep '^MODULE_MODEL=' "$PROJECT_FILE")"
+assert_eq "no line is written for a core module that was already off" "0" \
+    "$(grep -c '^MODULE_BATTERY=' "$PROJECT_FILE")"
+assert_eq "the first line is kept" "# keep" "$(sed -n 1p "$PROJECT_FILE")"
+cp "$TEST_BASE/trusted-before-none" "$CLAUDE_CONFIG_DIR/cortado.conf"
+rm -f "$PROJECT_FILE"
+
+# Walking the project menu with Enter keeps the theme it starts on.
+printf '%s\n' '# keep' 'COLOR_THEME=monochrome' > "$PROJECT_FILE"
+cp "$PROJECT_FILE" "$TEST_BASE/project-before"
+rc=0
+project_menu $'\n\n\n\n\ny\n' > "$TEST_BASE/result" 2>&1 || rc=$?
+assert_eq "an unchanged project menu walk succeeds" "0" "$rc"
+assert_eq "an unchanged project menu walk leaves the file byte-identical" "0" \
+    "$(cmp -s "$TEST_BASE/project-before" "$PROJECT_FILE"; echo "$?")"
+rm -f "$PROJECT_FILE"
 assert_rc "a menu save releases its edit lock" 1 test -d "$PROJECT_FILE.cortado-lock"
 
 rm -f "$PROJECT_FILE"
@@ -285,8 +315,9 @@ for name in cpu directory; do
 done
 assert_eq "project show omits global WAN settings" "" "$(printf '%s\n' "$out" | sed -n '/^NETWORK_SHOW_WAN=/p')"
 out=$(/bin/bash "$CORTADO" config --show)
-assert_eq "global show still recognizes the trusted CPU alias" "[on ] cpu" \
-    "$(printf '%s\n' "$out" | awk '/\] cpu / {print $1, $2, $3}')"
+# The statusline reads only true as on, so show reports the yes alias as off.
+assert_eq "global show reports the trusted CPU alias as the statusline renders it" "[off] cpu" \
+    "$(printf '%s\n' "$out" | sed -n 's/^ *\(\[[a-z ]*\]\) *cpu .*/\1 cpu/p')"
 rc=0
 project_config --toggle cpu > "$TEST_BASE/result" 2>&1 || rc=$?
 assert_eq "project toggle rejects enabling the CPU alias" "2" "$rc"
@@ -317,7 +348,7 @@ rc=0
 COLOR_THEME=vibrant project_menu $' \n\n\n\ny\n' > "$TEST_BASE/result" 2>&1 || rc=$?
 assert_eq "a valid disable still saves alongside the read-only theme" "0" "$rc"
 assert_eq "another project menu edit preserves the stored theme" \
-    "$header"$'\nCOLOR_THEME=minimal\nMODULE_SANDBOX="false"' "$(cat "$PROJECT_FILE" 2>/dev/null)"
+    $'COLOR_THEME=minimal\nMODULE_SANDBOX="false"' "$(cat "$PROJECT_FILE" 2>/dev/null)"
 
 echo "=== project policy probes ==="
 printf '%s\n' 'MODULE_ORDER=model,sandbox' 'MODULE_SANDBOX=true' 'MODEL_ICON=TRUSTED' \
@@ -334,27 +365,32 @@ printf '%s\n' 'HOME=/project-fixture' 'PATH=/project-fixture' 'IFS=project-fixtu
 rc=0
 project_config --set 'SEPARATOR= | ' > "$TEST_BASE/result" 2>&1 || rc=$?
 assert_eq "the editor accepts a quoted pipe separator" "0" "$rc"
-# Even protected environment keys would be retained by a later edit if admitted
-# by the parser. Check persistence separately from effective environment values.
-assert_eq "saving never retains project HOME, PATH or IFS assignments" \
-    "$header"$'\nSEPARATOR=" | "' "$(cat "$PROJECT_FILE" 2>/dev/null)"
+# An edit keeps the lines it does not change (#78); the project parser still
+# ignores HOME, PATH and IFS, so keeping them gives them no effect.
+assert_eq "saving appends the setting and keeps the ignored lines as they were" \
+    $'HOME=/project-fixture\nPATH=/project-fixture\nIFS=project-fixture\nSEPARATOR=" | "' \
+    "$(cat "$PROJECT_FILE" 2>/dev/null)"
+assert_eq "the kept HOME, PATH and IFS lines still have no effect" 'TRUSTED Test' "$(render)"
 
 printf '%s\n' 'COLOR_THEME=default' 'SEPARATOR=" | "' 'COLOR_THEME=monochrome' > "$PROJECT_FILE"
 rc=0
 project_config --set COLOR_THEME=minimal > "$TEST_BASE/result" 2>&1 || rc=$?
 assert_eq "replacing a duplicated project setting succeeds" "0" "$rc"
-assert_eq "replacing a duplicate stores exactly one new preference" \
-    "$header"$'\nSEPARATOR=" | "\nCOLOR_THEME="minimal"' "$(cat "$PROJECT_FILE" 2>/dev/null)"
+assert_eq "replacing a duplicate changes the last assignment in place" \
+    $'COLOR_THEME=default\nSEPARATOR=" | "\nCOLOR_THEME="minimal"' "$(cat "$PROJECT_FILE" 2>/dev/null)"
 
 echo "=== project menu saves ==="
 cat "$TEST_BASE/menu.conf" >> "$CLAUDE_CONFIG_DIR/cortado.conf"
 for save in early final; do
     printf '%s\n' 'NETWORK_SHOW_WAN=true' 'WEATHER_LOCATION=Lisbon' 'SEPARATOR=" | "' > "$PROJECT_FILE"
     case "$save" in
-        early) keys=' s'; expected="$header"$'\nSEPARATOR=" | "\nMODULE_SANDBOX="false"' ;;
+        early)
+            keys=' s'
+            expected=$'NETWORK_SHOW_WAN=true\nWEATHER_LOCATION=Lisbon\nSEPARATOR=" | "\nMODULE_SANDBOX="false"'
+            ;;
         final)
             keys=$' \n\n\n\n\e[B\ny\n'
-            expected="$header"$'\nSEPARATOR=" | "\nMODULE_SANDBOX="false"\nCOLOR_THEME="monochrome"'
+            expected=$'NETWORK_SHOW_WAN=true\nWEATHER_LOCATION=Lisbon\nSEPARATOR=" | "\nMODULE_SANDBOX="false"\nCOLOR_THEME="monochrome"'
             ;;
     esac
     rc=0
@@ -362,7 +398,7 @@ for save in early final; do
     assert_eq "$save project menu save succeeds" "0" "$rc"
     assert_eq "$save project menu save reports the path" "Saved $PROJECT_FILE" \
         "$(sed -n 's/^.*\(Saved .*\)$/\1/p' "$TEST_BASE/result")"
-    assert_eq "$save project menu stores only explicit allowed settings" "$expected" \
+    assert_eq "$save project menu appends its edits and keeps the other lines" "$expected" \
         "$(cat "$PROJECT_FILE" 2>/dev/null)"
     assert_eq "$save project menu omits the WAN menu" "" "$(sed -n '/WAN IP (privacy)/p' "$TEST_BASE/result")"
 done

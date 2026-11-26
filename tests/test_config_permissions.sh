@@ -3,7 +3,8 @@
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TEST_BASE=$(mktemp -d) || exit 1
-trap 'rm -rf "$TEST_BASE"' EXIT
+# A case below gives a file an ACL that denies delete; clear ACLs so it can go.
+trap 'chmod -RN "$TEST_BASE" 2>/dev/null; rm -rf "$TEST_BASE"' EXIT
 TEST_BASE=$(cd "$TEST_BASE" && pwd -P) || exit 1
 # shellcheck source=tests/lib/assert.sh
 . "$REPO_ROOT/tests/lib/assert.sh" indented
@@ -288,6 +289,244 @@ write_override "$config"
 chmod 1777 "$CLAUDE_CONFIG_DIR"
 render
 assert_eq 'A sticky parent protects an owner-only override' 'OVERRIDE Opus' "$rendered"
+
+# A config directory Cortado cannot search hides whether a config exists (#85).
+if [ "$EUID" -ne 0 ]; then
+    new_sandbox
+    write_override "$config"
+    chmod 600 "$CLAUDE_CONFIG_DIR"
+    render
+    chmod 700 "$CLAUDE_CONFIG_DIR"
+    assert_refused 'A config directory without search permission'
+    assert_contains 'An unsearchable config directory shows the refusal notice' 'Config refused' "$rendered"
+    assert_file_contains 'The unsearchable directory refusal names the reason' \
+        'cannot search the directory that holds it' "$TEST_BASE/stderr"
+
+    new_sandbox
+    hidden_parent="$CLAUDE_CONFIG_DIR"
+    CLAUDE_CONFIG_DIR="$hidden_parent/inner"
+    mkdir -m 700 "$CLAUDE_CONFIG_DIR"
+    write_override "$CLAUDE_CONFIG_DIR/cortado.conf"
+    chmod 600 "$hidden_parent"
+    render
+    chmod 700 "$hidden_parent"
+    assert_refused 'A config directory below an unsearchable directory'
+    assert_contains 'An unsearchable ancestor shows the refusal notice' 'Config refused' "$rendered"
+
+    new_sandbox
+    write_override "$config"
+    chmod 600 "$CLAUDE_CONFIG_DIR"
+    show_status=0
+    /bin/bash "$tree/cortado.sh" config --show > "$TEST_BASE/config.out" 2> "$TEST_BASE/config.err" ||
+        show_status=$?
+    chmod 700 "$CLAUDE_CONFIG_DIR"
+    assert_eq 'Show runs with an unsearchable config directory' 0 "$show_status"
+    assert_file_contains 'Show says the unsearchable config is inactive' 'Saved settings are inactive' \
+        "$TEST_BASE/config.out"
+else
+    printf '  SKIP: root searches every directory\n'
+fi
+
+new_sandbox
+CLAUDE_CONFIG_DIR="$CLAUDE_CONFIG_DIR/absent/claude"
+render
+assert_eq 'A config directory that does not exist renders silently with the defaults' 0 "$render_status"
+assert_contains 'A missing config directory still renders the model' 'Opus' "$rendered"
+assert_not_contains 'A missing config directory shows no refusal' 'Config refused' "$rendered"
+assert_empty 'A missing config directory prints no refusal' "$(cat "$TEST_BASE/stderr")"
+
+# A config directory reached through a link is judged where the link points.
+if [ "$EUID" -ne 0 ]; then
+    new_sandbox
+    link_home="$CLAUDE_CONFIG_DIR"
+    mkdir -m 700 "$link_home/hidden" "$link_home/hidden/dir"
+    write_override "$link_home/hidden/dir/cortado.conf"
+    ln -s "$link_home/hidden/dir" "$link_home/linked"
+    chmod 600 "$link_home/hidden"
+    CLAUDE_CONFIG_DIR="$link_home/linked"
+    render
+    assert_refused 'A config directory linked under an unsearchable directory'
+    assert_contains 'A linked config directory under an unsearchable directory shows the notice' \
+        'Config refused' "$rendered"
+    mkdir -m 700 "$link_home/rel"
+    ln -s ../hidden/dir "$link_home/rel/claude"
+    CLAUDE_CONFIG_DIR="$link_home/rel/claude"
+    render
+    assert_contains 'A relative link to a directory under an unsearchable directory shows the notice' \
+        'Config refused' "$rendered"
+    chmod 700 "$link_home/hidden"
+
+    ln -s "$link_home/nowhere" "$link_home/dangling"
+    CLAUDE_CONFIG_DIR="$link_home/dangling"
+    render
+    assert_not_contains 'A dangling config directory link shows no refusal' 'Config refused' "$rendered"
+    assert_empty 'A dangling config directory link prints no refusal' "$(cat "$TEST_BASE/stderr")"
+    ln -s loop-b "$link_home/loop-a"
+    ln -s loop-a "$link_home/loop-b"
+    CLAUDE_CONFIG_DIR="$link_home/loop-a"
+    render
+    assert_eq 'A looping config directory link still renders' 0 "$render_status"
+    assert_not_contains 'A looping config directory link shows no refusal' 'Config refused' "$rendered"
+
+    # check_config_searchable takes a relative path from the working directory.
+    searchable() (
+        cd "$1" || exit 2
+        # With a third argument, drop search on the working directory after entering it.
+        [ -z "${3:-}" ] || chmod 600 .
+        /bin/bash -c '. "$1/lib/config-permissions.sh"; check_config_searchable "$2" 2>/dev/null' \
+            _ "$REPO_ROOT" "$2" &
+        pid=$!
+        # A relative path must end the walk; give up after about five seconds.
+        for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25; do
+            kill -0 "$pid" 2>/dev/null || { wait "$pid"; exit; }
+            sleep 0.2
+        done
+        kill "$pid" 2>/dev/null
+        exit 3
+    )
+    mkdir -m 700 "$link_home/cwd" "$link_home/cwd/shut"
+    chmod 600 "$link_home/cwd/shut"
+    searchable "$link_home/cwd" shut/cortado.conf
+    assert_eq 'A relative config path under an unsearchable directory is refused' 1 "$?"
+    searchable "$link_home/cwd" absent/cortado.conf
+    assert_eq 'A relative config path that does not exist is not refused' 0 "$?"
+    searchable "$link_home/cwd" cortado.conf
+    assert_eq 'A relative config name in the working directory is not refused' 0 "$?"
+    mkdir -m 700 "$link_home/cwd/gone"
+    searchable "$link_home/cwd/gone" absent/cortado.conf drop-search
+    assert_eq 'A relative path in a working directory that cannot be searched is refused' 1 "$?"
+    chmod 700 "$link_home/cwd/gone"
+
+    # Every link shape ends the walk: these would loop forever without a bound.
+    ln -s self "$link_home/cwd/self"
+    searchable "$link_home/cwd" self/cortado.conf
+    assert_eq 'A link to itself ends the walk without a refusal' 0 "$?"
+    ln -s ../cwd/loop2 "$link_home/cwd/loop1"
+    ln -s loop1 "$link_home/cwd/loop2"
+    searchable "$link_home/cwd" loop1/deeper/cortado.conf
+    assert_eq 'A relative link loop ends the walk without a refusal' 0 "$?"
+    ln -s "$link_home/cwd/chain1/x" "$link_home/cwd/chain2"
+    ln -s "$link_home/cwd/chain2/y" "$link_home/cwd/chain1"
+    searchable "$link_home/cwd" "$link_home/cwd/chain1/cortado.conf"
+    assert_eq 'A loop through link targets deeper than the links ends the walk' 0 "$?"
+    ln -s shut/inner "$link_home/cwd/into-shut"
+    searchable "$link_home/cwd" into-shut/cortado.conf
+    assert_eq 'A relative link into an unsearchable directory is refused' 1 "$?"
+    chmod 700 "$link_home/cwd/shut"
+else
+    printf '  SKIP: root searches every directory\n'
+fi
+
+# A macOS ACL can grant write access the mode bits do not show (#79).
+acl_probe="$TEST_BASE/acl-probe"
+if : > "$acl_probe" && chmod +a 'everyone allow read' "$acl_probe" 2>/dev/null; then
+    rm -f "$acl_probe"
+    me=$(id -un)
+    write_module() {
+        mkdir -m 700 "$CLAUDE_CONFIG_DIR/cortado-modules" 2>/dev/null
+        printf '%s\n' '# @cortado-module mine' '# @default true' '# @args none' \
+            'module_mine() { printf "MINE\n"; }' > "$CLAUDE_CONFIG_DIR/cortado-modules/mine.sh"
+        chmod 600 "$CLAUDE_CONFIG_DIR/cortado-modules/mine.sh"
+        printf '%s\n' 'MODULE_ORDER="model,mine"' 'MODULE_MODEL="true"' 'MODEL_ICON="OVERRIDE"' > "$config"
+        chmod 600 "$config"
+    }
+
+    for entry in 'everyone allow write,append' 'everyone allow writeattr' 'staff allow chown' \
+        "everyone allow read,delete"; do
+        new_sandbox
+        write_override "$config"
+        chmod +a "$entry" "$config" || exit 1
+        render
+        assert_refused "A config with the ACL entry '$entry'"
+        assert_file_contains "The ACL refusal for '$entry' names the entry" \
+            'an access control entry lets others write' "$TEST_BASE/stderr"
+    done
+
+    # A listing line this cannot read fails closed, here one forged by a file name.
+    new_sandbox
+    forged="$CLAUDE_CONFIG_DIR/user.conf"$'\n'' 0: forged entry'
+    write_override "$forged"
+    ln -s "$forged" "$config"
+    render
+    assert_refused 'A config whose ACL listing has an unreadable entry'
+    assert_file_contains 'The unreadable entry is named as the reason' \
+        'an access control entry could not be read' "$TEST_BASE/stderr"
+
+    new_sandbox
+    write_override "$config"
+    chmod +a 'everyone allow add_file,delete_child' "$CLAUDE_CONFIG_DIR" || exit 1
+    render
+    assert_refused 'A config whose directory has a write ACL entry'
+    assert_contains 'A directory ACL refusal shows the notice' 'Config refused' "$rendered"
+
+    new_sandbox
+    write_override "$config"
+    chmod +a "user:$me allow write,append" "$config" || exit 1
+    chmod +a 'everyone deny write,delete' "$config" || exit 1
+    chmod +a 'everyone allow read,readattr,readextattr,readsecurity' "$config" || exit 1
+    render
+    assert_eq 'An owner, deny or read-only ACL entry keeps the override' 'OVERRIDE Opus' "$rendered"
+
+    new_sandbox
+    chmod +a "user:$me allow write,file_inherit" "$CLAUDE_CONFIG_DIR" || exit 1
+    chmod +a 'everyone allow list,search,file_inherit' "$CLAUDE_CONFIG_DIR" || exit 1
+    write_override "$config"
+    render
+    assert_contains 'The config inherited its owner entry' "user:$me inherited allow write" \
+        "$(/bin/ls -le "$config")"
+    assert_eq 'Inherited owner and read-only entries keep the override' 'OVERRIDE Opus' "$rendered"
+
+    new_sandbox
+    write_module
+    render
+    assert_eq 'A private user module renders' 'OVERRIDE Opus | MINE' "$rendered"
+    chmod +a 'everyone allow write,append' "$CLAUDE_CONFIG_DIR/cortado-modules/mine.sh" || exit 1
+    render
+    assert_eq 'A user module with a write ACL entry does not run' 'OVERRIDE Opus' "$rendered"
+
+    new_sandbox
+    write_module
+    chmod +a 'everyone allow add_file,delete_child' "$CLAUDE_CONFIG_DIR/cortado-modules" || exit 1
+    render
+    assert_eq 'A user module in a directory with a write ACL entry does not run' 'OVERRIDE Opus' "$rendered"
+
+    new_sandbox
+    write_module
+    chmod +a "user:$me allow write,append" "$CLAUDE_CONFIG_DIR/cortado-modules/mine.sh" || exit 1
+    chmod +a 'everyone allow read' "$CLAUDE_CONFIG_DIR/cortado-modules/mine.sh" || exit 1
+    render
+    assert_eq 'A user module with owner and read-only ACL entries runs' 'OVERRIDE Opus | MINE' "$rendered"
+else
+    rm -f "$acl_probe"
+    printf '  SKIP: chmod +a is not available (macOS ACL cases)\n'
+fi
+
+# The ACL listing runs beside stat and must end with its nonce; a listing that
+# stopped early (ls failed or was cut off) refuses, whatever it held so far.
+acl_parse() {
+    /bin/bash -c '. "$1/lib/config-permissions.sh"; _CORTADO_ACL_DONE=done-marker _check_config_acl' _ "$REPO_ROOT"
+}
+assert_eq 'A finished listing with no ACL entries passes' 0 \
+    "$(printf '%s\n' '-rw-------  1 me  staff  0 Nov 26 12:00 /x' done-marker | acl_parse >/dev/null; echo "$?")"
+assert_eq 'A finished listing with a read-only entry passes' 0 \
+    "$(printf '%s\n' '-rw-------  1 me  staff  0 Nov 26 12:00 /x' ' 0: group:everyone allow read' done-marker |
+        acl_parse >/dev/null; echo "$?")"
+assert_eq 'A listing without its nonce is refused' 1 \
+    "$(printf '%s\n' '-rw-------  1 me  staff  0 Nov 26 12:00 /x' | acl_parse >/dev/null; echo "$?")"
+assert_contains 'An unfinished listing names the reason' 'could not read access control lists' \
+    "$(printf '%s\n' '-rw-------  1 me  staff  0 Nov 26 12:00 /x' | acl_parse)"
+# ls numbers entries from 0; the eleventh and later have two-digit indexes.
+acl_eleven=$(printf '%s\n' '-rw-------  1 me  staff  0 Nov 26 12:00 /x'
+    for i in 0 1 2 3 4 5 6 7 8 9; do printf ' %s: user:root deny write\n' "$i"; done
+    printf '%s\n' ' 10: group:everyone allow write' done-marker)
+assert_eq 'A foreign write grant at a two-digit index is refused' 1 \
+    "$(printf '%s\n' "$acl_eleven" | acl_parse >/dev/null; echo "$?")"
+assert_contains 'The two-digit entry is refused as a foreign write' 'an access control entry lets others write' \
+    "$(printf '%s\n' "$acl_eleven" | acl_parse)"
+assert_eq 'The same listing without the foreign grant passes' 0 \
+    "$(printf '%s\n' "$acl_eleven" | grep -v ' 10: ' | acl_parse >/dev/null; echo "$?")"
+assert_eq 'A write entry after the nonce is not part of the listing' 0 \
+    "$(printf '%s\n' done-marker ' 0: group:everyone allow write' | acl_parse >/dev/null; echo "$?")"
 
 mkdir -m 700 "$TEST_BASE/safe target" "$TEST_BASE/shared target"
 write_override "$TEST_BASE/safe target/override"
