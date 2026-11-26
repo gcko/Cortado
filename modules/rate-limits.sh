@@ -374,11 +374,23 @@ _read_usage_cache() {
 }
 
 # Set REPLY to a reset time's Unix epoch, or to 0 when it cannot be parsed.
+# Applies a +HH:MM/-HH:MM offset, which cortado_utc_epoch would ignore.
 _rate_reset_epoch_reply() {
-    REPLY=$(cortado_utc_epoch "${1%%.*}")
+    local stamp='^([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})([.][0-9]+)?(Z|([+-])([0-9]{2}):([0-9]{2}))?$'
+    local sign offset=0
+    REPLY=0
+    [[ "$1" =~ $stamp ]] || return 0
+    sign=${BASH_REMATCH[4]}
+    if [ -n "$sign" ]; then
+        offset=$((10#${BASH_REMATCH[5]} * 3600 + 10#${BASH_REMATCH[6]} * 60))
+    fi
+    REPLY=$(cortado_utc_epoch "${BASH_REMATCH[1]}")
     case "$REPLY" in
-        ''|0*|*[!0-9]*) REPLY=0 ;;
+        ''|0*|*[!0-9]*) REPLY=0; return 0 ;;
     esac
+    # Local time east of UTC (+) is ahead of UTC, so subtract its offset.
+    REPLY=$((REPLY - ${sign:-+}offset))
+    [ "$REPLY" -gt 0 ] || REPLY=0
 }
 
 # Render the placeholder line shown when no 5-hour or 7-day usage is available.

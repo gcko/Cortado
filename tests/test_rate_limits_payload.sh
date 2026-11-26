@@ -337,6 +337,28 @@ sb=$(sandbox reset-unknown)
 assert_eq "a reading with no parseable reset time keeps its age" "5h:42%~6h0m [OK] 7d:10%~6h0m [OK]" \
     "$(render_reset_cache "$sb" 21600 "" not-a-time)"
 
+sb=$(sandbox reset-equals-now)
+assert_eq "a window that resets at this very second shows absence" "5h:-- 7d:10%~6h0m [OK] (1d 18h)" \
+    "$(render_reset_cache "$sb" 21600 2020-01-01T06:00:00Z 2020-01-03T00:00:00Z)"
+
+# 05:00-05:00 is 10:00Z, four hours after the pinned 06:00Z: still open.
+sb=$(sandbox reset-negative-offset)
+assert_eq "a reset time west of UTC is converted before the window is judged" \
+    "5h:42%~6h0m [OK] (4h 0m) 7d:10%~6h0m [OK] (1d 18h)" \
+    "$(render_reset_cache "$sb" 21600 2020-01-01T05:00:00.000000-05:00 2020-01-03T00:00:00Z)"
+
+# 07:00+02:00 is 05:00Z, an hour before the pinned 06:00Z: already over.
+sb=$(sandbox reset-positive-offset)
+assert_eq "a reset time east of UTC that has passed shows absence" "5h:-- 7d:10%~6h0m [OK] (1d 18h)" \
+    "$(render_reset_cache "$sb" 21600 2020-01-01T07:00:00+02:00 2020-01-03T00:00:00Z)"
+
+sb=$(sandbox payload-reset-offset)
+printf '%s\n' 'RATE_SHOW_USAGE_STATUS="true"' >> "$sb/cortado.conf"
+offset_payload='{"rate_limits":{"five_hour":{"used_percentage":42,"resets_at":"2020-01-01T05:00:00-05:00"},"seven_day":{"used_percentage":10,"resets_at":"2020-01-03T00:00:00Z"}}}'
+assert_eq "a payload reset time west of UTC keeps its open window and countdown" \
+    "5h:42% [OK] (4h 0m) 7d:10% [OK] (1d 18h)" \
+    "$(TEST_NOW=1577858400 PATH="$TEST_BASE/fallback-bin:$PATH" render "$sb" "$offset_payload")"
+
 sb=$(sandbox payload-reset-passed)
 printf '%s\n' 'RATE_SHOW_USAGE_STATUS="true"' >> "$sb/cortado.conf"
 past_payload=$(printf '{"rate_limits":{"five_hour":{"used_percentage":65,"resets_at":%s},"seven_day":{"used_percentage":32,"resets_at":%s}}}' \
