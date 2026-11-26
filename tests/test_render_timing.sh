@@ -56,5 +56,21 @@ assert_eq "a failed stub render exits without percentiles" 1 "$?"
 assert_contains "the timing report identifies the failed render" 'Default render 1 failed' "$out"
 assert_not_contains "a failed render has no p50" 'p50=' "$out"
 
+# The warm all-modules timing is informational: a slow first Node start is
+# waited for, and a Node that never publishes is reported, not fatal.
+warm_script="$PROJECT_ROOT/tests/all_modules_timing.sh"
+mkdir "$fixture/slow-node" "$fixture/broken-node" || exit 1
+printf '%s\n' '#!/bin/bash' 'sleep 4' 'echo v20.11.1' > "$fixture/slow-node/node"
+printf '%s\n' '#!/bin/bash' 'exit 1' > "$fixture/broken-node/node"
+chmod 700 "$fixture/slow-node/node" "$fixture/broken-node/node"
+out=$(PATH="$fixture/slow-node:$PATH" CORTADO_ALL_MODULES_SAMPLES=2 /bin/bash "$warm_script" 2>&1)
+assert_eq "the warm timing waits for a Node that takes 4 s to start" 0 "$?"
+assert_not_contains "a slow Node still publishes its version" 'Node did not publish' "$out"
+assert_contains "the warm timing reports its series after a slow Node" 'Warm all-modules render (n=2)' "$out"
+out=$(PATH="$fixture/broken-node:$PATH" CORTADO_ALL_MODULES_SAMPLES=2 NODE_WAIT_SECONDS=3 /bin/bash "$warm_script" 2>&1)
+assert_eq "a Node that never publishes does not fail the warm timing" 0 "$?"
+assert_contains "a Node that never publishes is reported" 'Node did not publish its version' "$out"
+assert_contains "the warm timing still reports its series without Node" 'Warm all-modules render (n=2)' "$out"
+
 printf 'Results: %s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
