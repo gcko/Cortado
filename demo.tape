@@ -9,6 +9,12 @@ Set Width 1200
 Set Height 600
 Set Theme "Dracula"
 
+# Record in a throwaway config directory so the demo never writes to ~/.claude.
+Hide
+Type 'export CLAUDE_CONFIG_DIR="$(mktemp -d)" && clear'
+Enter
+Show
+
 Type "# Cortado - Statusline for Claude Code"
 Enter
 Sleep 500ms
