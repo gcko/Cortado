@@ -124,8 +124,9 @@ jobs:
 
       # The timing steps run before the suites, so they time a quiet runner
       # rather than one still busy with the parallel suites' leftovers.
-      # The Ubuntu job enforces the default-render p95 limit of 150 ms (its
-      # p95 measured 66-130 ms across 35 runs). The macOS runner swings
+      # The Ubuntu job enforces the default-render p95 limit of 200 ms. Its p95
+      # measured 66-130 ms across 35 runs, and 152 ms (p50 122 ms) on a slower
+      # runner host in run 45824276777, so 150 ms tripped on host speed alone. The macOS runner swings
       # between about 134 and 462 ms on the same code, so its jobs print p50
       # and p95 for information only. Listing ci:render-p95 in tests/flaky.txt
       # quarantines the Ubuntu gate: p50 and p95 are still measured and
@@ -134,7 +135,7 @@ jobs:
         if: ${{ !cancelled() && steps.tools.outcome == 'success' && matrix.jq != 'apple' }}
         continue-on-error: ${{ runner.os != 'Linux' }}
         env:
-          CORTADO_RENDER_P95_LIMIT_MS: ${{ runner.os == 'Linux' && '150' || '0' }}
+          CORTADO_RENDER_P95_LIMIT_MS: ${{ runner.os == 'Linux' && '200' || '0' }}
         run: |
           if awk '$1 == "ci:render-p95" { found = 1 } END { exit !found }' tests/flaky.txt; then
             printf '%s\n' "::notice::ci:render-p95 is quarantined in tests/flaky.txt; p95 is reported, not enforced (limit ${CORTADO_RENDER_P95_LIMIT_MS} ms)"
