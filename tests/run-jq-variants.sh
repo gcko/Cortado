@@ -34,6 +34,11 @@ esac
 if [ "$#" -eq 0 ]; then
     set -- "$test_dir"/test_*.sh
 fi
+# A missing suite is a usage error in every mode, before any filtering could
+# drop it from the apple variant or a listing.
+for suite in "$@"; do
+    [ -f "$suite" ] || { echo "run-jq-variants: no such suite: $suite" >&2; exit 2; }
+done
 
 # The JSON suites: the first word of each line, without comments, blank lines
 # or "!" exclusions.

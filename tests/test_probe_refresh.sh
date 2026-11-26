@@ -16,14 +16,24 @@ section="${PROBE_TEST_SECTION:-all}"
 # (default 3). Sections are listed slowest first and dealt to lanes in turn.
 if [ "$section" = all ]; then
     sections='locks deadline validation lifecycle setup clear publication local privacy resolution keys'
-    # Every section this file tests must be in the list, or it would not run.
+    # Every section this file tests must be in the list, or it would not run,
+    # and every listed name must be a section here. Every section test on a
+    # line counts, and a name may hold letters, digits, _ and -.
     # shellcheck disable=SC2016 # The pattern matches a literal $section.
-    while IFS= read -r name; do
-        case " all $sections " in
+    found=" $(grep -oE '"\$section" = [A-Za-z0-9_-]+' "${BASH_SOURCE[0]}" |
+        sed 's/.* = //' | grep -vx all | sort -u | tr '\n' ' ')"
+    for name in $found; do
+        case " $sections " in
             *" $name "*) ;;
             *) fail "section $name is scheduled to run" ;;
         esac
-    done < <(sed -nE 's/.*"\$section" = ([a-z]+) .*/\1/p' "${BASH_SOURCE[0]}")
+    done
+    for name in $sections; do
+        case "$found" in
+            *" $name "*) ;;
+            *) fail "scheduled section $name exists in this file" ;;
+        esac
+    done
     jobs="${PROBE_TEST_JOBS:-3}"
     case "$jobs" in ''|*[!0-9]*|0*) jobs=3 ;; esac
     lane=0
@@ -48,6 +58,7 @@ if [ "$section" = all ]; then
         if [ -n "$results" ]; then
             PASS=$((PASS + ${results% *}))
             FAIL=$((FAIL + ${results#* }))
+            [ "${results% *}" -gt 0 ] || fail "section $name runs at least one assertion"
         fi
         if [ -z "$results" ] || [ "$(cat "$scratch/$name.status" 2>/dev/null)" != 0 ]; then
             fail "section $name reports its results and exits cleanly"
@@ -904,5 +915,7 @@ if [[ "$section" = all || "$section" = privacy ]]; then
     fi
 fi
 
+# A section that ran nothing tested nothing.
+[ $((PASS + FAIL)) -gt 0 ] || fail "section $section runs at least one assertion"
 printf 'Results: %s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

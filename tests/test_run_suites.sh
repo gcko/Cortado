@@ -117,9 +117,11 @@ assert_contains 'a missing suite is named' 'test_missing.sh' "$output"
 
 # --- the jq suite list --------------------------------------------------------
 # A suite depends on how jq parses JSON when it calls jq, uses the JSON
-# helpers, loads the payload-reading modules, or feeds a payload field that
-# modules read. Such a suite must be listed, or excluded with a reason.
-JSON_PATTERN='(^|[^[:alnum:]_-])jq([^[:alnum:]_-]|$)|json_get|payload\.sh|rate-limits\.sh|context\.sh|cost\.sh|model\.sh|context_window|rate_limits|current_dir|"cwd"|[{,]cwd:|total_cost_usd|display_name|output_style|session_id|five_hour|seven_day|spend_limit|claudeAiOauth'
+# helpers, loads the payload-reading modules, feeds a payload field that
+# modules read, or holds any JSON object literal ({"key" or {\"key\"), since
+# modules/payload.sh parses more fields than this pattern names. Such a suite
+# must be listed, or excluded with a reason.
+JSON_PATTERN='(^|[^[:alnum:]_-])jq([^[:alnum:]_-]|$)|json_get|payload\.sh|rate-limits\.sh|context\.sh|cost\.sh|model\.sh|context_window|rate_limits|current_dir|"cwd"|[{,]cwd:|total_cost_usd|display_name|output_style|session_id|five_hour|seven_day|spend_limit|claudeAiOauth|\{\\?"[A-Za-z_]+\\?"'
 
 # jq_list_problems <tests dir> <list file>: one line per problem.
 jq_list_problems() {
@@ -170,6 +172,30 @@ printf '%s\n' test_new_json.sh '!test_new_payload.sh' test_gone.sh > "$guard/lis
 assert_eq 'the guard names an unreasoned exclusion and a stale entry' \
     "$(printf '%s\n' 'listed suite does not exist: test_gone.sh' 'exclusion without a reason: test_new_payload.sh')" \
     "$(jq_list_problems "$guard" "$guard/list")"
+
+# Any JSON object literal counts, so a payload field the pattern never names
+# (effort, thinking, total_duration_ms, ...) still needs a listing.
+literal="$TEST_BASE/guard-literal"
+mkdir "$literal"
+printf '%s\n' '#!/bin/bash' "render normal '{\"effort\":{\"level\":\"high\"}}'" > "$literal/test_new_effort.sh"
+printf '%s\n' '#!/bin/bash' "render verbose '{\"thinking\":{\"enabled\":true},\"cost\":{\"total_duration_ms\":5}}'" \
+    > "$literal/test_new_thinking.sh"
+printf '%s\n' '#!/bin/bash' 'echo "{\"effort\":{}}" | cortado' > "$literal/test_new_escaped.sh"
+printf '%s\n' '#!/bin/bash' 'echo "{ plain braces }"' > "$literal/test_plain_braces.sh"
+: > "$literal/list"
+assert_eq 'the guard names a new suite that renders any JSON object' \
+    "$(printf 'unlisted JSON suite: %s\n' test_new_effort.sh test_new_escaped.sh test_new_thinking.sh)" \
+    "$(jq_list_problems "$literal" "$literal/list")"
+
+# run-jq-variants refuses a missing suite in every mode, before any filtering.
+for args in '--variant apple' '--variant path' '--list apple' '--list path'; do
+    status=0
+    # shellcheck disable=SC2086 # $args is two words on purpose.
+    output=$(/bin/bash "$VARIANTS" $args "$TEST_BASE/test_no_such_suite.sh" 2>&1) || status=$?
+    assert_eq "run-jq-variants $args refuses a missing suite" 2 "$status"
+    assert_contains "run-jq-variants $args names the missing suite" \
+        "no such suite: $TEST_BASE/test_no_such_suite.sh" "$output"
+done
 
 printf '\nResults: %s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

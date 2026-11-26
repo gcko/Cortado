@@ -55,9 +55,12 @@ start_no_docker_call() {
 }
 finish_no_docker_call() {
     local desc="$1" sb="$2" wait
-    wait=$(awk -v started="$(cat "$sb/started")" -v now="$(now)" \
-        'BEGIN { left = started + 1.6 - now; printf "%.3f\n", left > 0 ? left : 0 }')
-    sleep "$wait"
+    # The ternary is parenthesized: bare, BSD awk reads `>` as output redirection.
+    if ! wait=$(LC_NUMERIC=C awk -v started="$(cat "$sb/started")" -v now="$(now)" \
+            'BEGIN { left = started + 1.6 - now; printf "%.3f\n", (left > 0 ? left : 0) }') ||
+        ! sleep "$wait"; then
+        fail "$desc (refresh window wait failed)"
+    fi
     assert_eq "$desc (cold)" 'DOCKER: --' "$(cat "$sb/first")"
     assert_eq "$desc (after a refresh window)" 'DOCKER: --' "$(no_call_render "$sb")"
     assert_eq "$desc makes no Docker CLI call" '' "$(cat "$sb/docker.calls")"

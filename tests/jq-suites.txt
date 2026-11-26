@@ -2,8 +2,8 @@
 # pass (/usr/bin/jq) runs only these; every suite still runs with the jq on
 # PATH. tests/test_run_suites.sh fails when a suite calls jq, uses the JSON
 # helpers, loads a payload-reading module (payload, context, cost, model,
-# rate-limits) or feeds a payload field those modules read, and is neither
-# listed here nor excluded with a reason.
+# rate-limits), feeds a payload field those modules read or holds any JSON
+# object literal, and is neither listed here nor excluded with a reason.
 #
 # One suite per line. "!name reason" excludes a suite the guard would
 # otherwise demand; the reason is required.
@@ -46,3 +46,5 @@ test_update.sh
 !test_node.sh           names jq only in its restricted PATH; the node module never reads the payload
 !test_probe_refresh.sh  context_window payloads only prove that weather and network ignore the payload
 !test_run_suites.sh     tests the runner and this list with fake suites; it never parses JSON
+!test_brightness.sh     its {"min"=...} fixtures are ioreg text, not JSON; the brightness module never runs jq
+!test_docker.sh         its {"currentContext":...} fixtures are Docker config.json, which docker.sh reads with Perl JSON::PP, not jq
