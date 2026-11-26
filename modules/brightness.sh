@@ -91,7 +91,7 @@ module_brightness() {
     local os="${render_os-$(uname)}"
     cached_probe brightness 10 5 "${BASH_SOURCE[0]}" _brightness_probe "$os"
     local brightness_int="$REPLY"
-    if ! [[ "$brightness_int" =~ ^[0-9]{1,3}$ ]]; then
+    if ! [[ "$brightness_int" =~ ^[0-9]{1,3}$ ]] || (( 10#$brightness_int > 100 )); then
         printf '%s --\n' "$icon"
         return
     fi

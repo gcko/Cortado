@@ -38,6 +38,13 @@ cat > "$scratch/bin/curl" <<'STUB'
 #!/bin/bash
 printf '%s\n' "$*" >> "$CLAUDE_CONFIG_DIR/curl.calls"
 case "$TEST_SAMPLE" in
+    weather-http)
+        printf '%s\n' '☀️+72°F'
+        case " $* " in *" -f "*) exit 22 ;; esac ;;
+    weather-malformed) printf '%s\n' 'not weather' ;;
+    weather-partial) printf '%s\n' '☀️+72°F'; exit 7 ;;
+    oversized) printf '203.0.113.9%064d\n' 0 ;;
+    oversized-weather) printf '☀️%1013s+72°F' ' ' ;;
     slow)
         printf '%s\n' "$$" > "$CLAUDE_CONFIG_DIR/curl.pid"
         printf '%s\n' 'curl output'
@@ -56,7 +63,12 @@ case "$TEST_SAMPLE" in
                     last;
                 }
             }
-        ' "$CLAUDE_CONFIG_DIR/cortado-cache/weather-lock" > "$CLAUDE_CONFIG_DIR/curl.fd"
+        ' "$CLAUDE_CONFIG_DIR/cortado-cache/weather-default-u-lock" > "$CLAUDE_CONFIG_DIR/curl.fd"
+        perl -e '
+            print "6\n" if open(my $read_end, "<&", 6);
+            print "7\n" if open(my $write_end, ">&", 7);
+        ' > "$CLAUDE_CONFIG_DIR/curl-payload-fds"
+        printf 'ready\n' > "$CLAUDE_CONFIG_DIR/curl-fds-ready"
         exec sleep 25 ;;
     fail) exit 7 ;;
     http-error)
@@ -69,7 +81,15 @@ case "$TEST_SAMPLE" in
     malformed-v6) printf '%s\n' '1234:::abcd' ;;
     multiline) printf '%s\n' '2001:db8::1' '2001:db8::2' ;;
     nul) printf '203.0.113.9\000garbage' ;;
-    normal|delayed)
+    held|held-failure)
+        printf '%s\n' "$$" > "$CLAUDE_CONFIG_DIR/held.pid"
+        for ((i=0; i<80; i++)); do
+            [ ! -f "$CLAUDE_CONFIG_DIR/release" ] || break
+            sleep 0.05
+        done
+        [ "$TEST_SAMPLE" != held-failure ] || exit 7
+        printf '%s\n' '☀️+60°F' ;;
+    normal|delayed|broken-publication|held-publication)
         case "${!#}" in
             *wttr.in*) printf '%s\n' '☀️+72°F' ;;
             https://ifconfig.me|https://icanhazip.com) printf '%s\n' '203.0.113.9' ;;
@@ -80,7 +100,13 @@ esac
 STUB
 cat > "$scratch/bin/mv" <<'STUB'
 #!/bin/bash
-if [ "${TEST_SAMPLE:-}" = stalled-write ] && [[ "${!#}" == */weather-failed ]]; then
+case "${TEST_SAMPLE:-}:${!#}" in
+    broken-publication:*/weather-default-u) exit 1 ;;
+    held-publication:*/weather-default-u)
+        printf '%s\n' "$$" > "$CLAUDE_CONFIG_DIR/rename.pid"
+        sleep 0.5 ;;
+esac
+if [ "${TEST_SAMPLE:-}" = stalled-write ] && [[ "${!#}" == */weather-default-u-failed ]]; then
     printf '%s\n' "$$" > "$CLAUDE_CONFIG_DIR/writer.pid"
     exec sleep 25
 fi
@@ -165,7 +191,7 @@ process_exits() {
 }
 
 weather_failure() {
-    if wait_for_file "$CACHE_DIR/weather-failed"; then
+    if wait_for_file "$CACHE_DIR/weather-default-u-failed"; then
         pass "$1"
     else
         fail "$1"
@@ -179,7 +205,7 @@ if [[ "$section" = all || "$section" = lifecycle ]]; then
         primary=$(cat "$sb/supervisor.pid")
         assert_eq 'the supervisor starts its own session and process group' "$primary" \
             "$(perl -e 'print getpgrp($ARGV[0])' "$primary")"
-        if ! lock_is_free "$CACHE_DIR/weather-lock"; then
+        if ! lock_is_free "$CACHE_DIR/weather-default-u-lock"; then
             pass 'the refresh holds its lock while curl is running'
         else
             fail 'the refresh holds its lock while curl is running'
@@ -210,24 +236,24 @@ if [[ "$section" = all || "$section" = lifecycle ]]; then
     assert_eq 'renders during cooldown launch no worker' "$previous_supervisor" "$(cat "$sb/supervisor.pid")"
     assert_eq 'background curl stdout and stderr stay off the line' '' "$(cat "$sb/stderr")"
 
-    if [ -f "$CACHE_DIR/weather-failed" ]; then
-        touch -t 200001010000 "$CACHE_DIR/weather-failed"
+    if [ -f "$CACHE_DIR/weather-default-u-failed" ]; then
+        touch -t 200001010000 "$CACHE_DIR/weather-default-u-failed"
     fi
     render_is 'an expired failure renders absence while retrying' '--' normal
-    if wait_for_file "$CACHE_DIR/weather"; then
+    if wait_for_file "$CACHE_DIR/weather-default-u"; then
         render_is 'successful retry supplies fresh weather' '☀️ 72°F' normal
     fi
     assert_eq 'expiry allows a new request' 2 "$(calls)"
-    if [ -f "$CACHE_DIR/weather" ]; then
-        touch -t 200001010000 "$CACHE_DIR/weather"
+    if [ -f "$CACHE_DIR/weather-default-u" ]; then
+        touch -t 200001010000 "$CACHE_DIR/weather-default-u"
     fi
-    rm -f "$CACHE_DIR/weather-failed"
+    rm -f "$CACHE_DIR/weather-default-u-failed"
     render_is 'expired weather does not read as current' '--' fail
     weather_failure 'a failed refresh of stale weather records failure'
 
     sandbox weather
-    printf '%s\n' '☀️+72°F' > "$CACHE_DIR/weather"
-    perl -e 'my $future = time + 3600; utime $future, $future, $ARGV[0]' "$CACHE_DIR/weather"
+    printf '%s\n' '☀️+72°F' > "$CACHE_DIR/weather-default-u"
+    perl -e 'my $future = time + 3600; utime $future, $future, $ARGV[0]' "$CACHE_DIR/weather-default-u"
     render_is 'a future-dated cache entry does not read as current' '--' fail
     weather_failure 'a future-dated cache entry allows a refresh'
 fi
@@ -237,7 +263,7 @@ if [[ "$section" = all || "$section" = deadline ]]; then
     render_is 'a hung curl returns immediately on the cold render' '--' hang
     if wait_for_file "$sb/curl.pid"; then
         weather_failure 'the refresh deadline also records failure'
-        if wait_for_lock "$CACHE_DIR/weather-lock"; then
+        if wait_for_lock "$CACHE_DIR/weather-default-u-lock"; then
             pass 'the deadline releases the refresh lock'
         else
             fail 'the deadline releases the refresh lock'
@@ -254,7 +280,7 @@ if [[ "$section" = all || "$section" = deadline ]]; then
     sandbox weather
     render_is 'a stalled failure-cache writer does not delay the render' '--' stalled-write
     if wait_for_file "$sb/writer.pid" && process_exits "$(cat "$sb/writer.pid")" 45 &&
-        wait_for_lock "$CACHE_DIR/weather-lock"; then
+        wait_for_lock "$CACHE_DIR/weather-default-u-lock"; then
         pass 'the failure-cache writer has a separate deadline and releases the lock'
     else
         fail 'the failure-cache writer has a separate deadline and releases the lock'
@@ -267,7 +293,7 @@ if [[ "$section" = all || "$section" = locks ]]; then
     render_is 'a refresh with a delayed launch leaves the line available' '--' delayed
     if wait_for_file "$sb/delayed.pid"; then
         render_is 'another render can schedule a refresh before the delayed launch locks' '--' normal
-        if wait_for_file "$CACHE_DIR/weather" && wait_for_lock "$CACHE_DIR/weather-lock"; then
+        if wait_for_file "$CACHE_DIR/weather-default-u" && wait_for_lock "$CACHE_DIR/weather-default-u-lock"; then
             : > "$sb/release"
             if process_exits "$(cat "$sb/delayed.pid")"; then
                 assert_eq 'a delayed contender rechecks the cache after acquiring the lock' 1 "$(calls)"
@@ -282,21 +308,44 @@ if [[ "$section" = all || "$section" = locks ]]; then
     fi
 
     sandbox weather
+    render_is 'a stalled launch leaves room for a failing contender' '--' delayed
+    if wait_for_file "$sb/delayed.pid"; then
+        render_is 'the other render can publish a failure' '--' fail
+        if wait_for_file "$CACHE_DIR/weather-default-u-failed" && wait_for_lock "$CACHE_DIR/weather-default-u-lock"; then
+            : > "$sb/release"
+            if process_exits "$(cat "$sb/delayed.pid")"; then
+                assert_eq 'a delayed contender respects failure cooldown after taking the lock' 1 "$(calls)"
+            else
+                fail 'the contender exits during failure cooldown'
+            fi
+        else
+            fail 'the failing contender publishes a negative entry'
+        fi
+    else
+        fail 'the delayed launcher enters the failure scheduling window'
+    fi
+
+    sandbox weather
     render_is 'weather shows absence while a supervised probe hangs' '--' hang
     if wait_for_file "$sb/curl.pid" && wait_for_file "$sb/supervisor.pid"; then
         wait_for_file "$sb/curl.fd" || :
         assert_eq 'the probe itself inherits the lock descriptor through exec' 'inherited' "$(cat "$sb/curl.fd" 2>/dev/null)"
+        if wait_for_file "$sb/curl-fds-ready"; then
+            assert_eq 'detached probes close the renderer payload pipes' '' "$(cat "$sb/curl-payload-fds" 2>/dev/null)"
+        else
+            fail 'the probe inspects its payload pipe descriptors'
+        fi
     fi
     if [ -s "$sb/curl.pid" ] && [ -s "$sb/supervisor.pid" ] &&
         kill -KILL "$(cat "$sb/supervisor.pid")"; then
-        if lock_is_free "$CACHE_DIR/weather-lock"; then
+        if lock_is_free "$CACHE_DIR/weather-default-u-lock"; then
             fail 'the probe and watchdog inherit the lock from a killed supervisor'
         else
             pass 'the probe and watchdog inherit the lock from a killed supervisor'
         fi
         render_is 'rendering after supervisor death still shows absence' '--' hang
         assert_eq 'a killed supervisor cannot let a second curl start' 1 "$(calls)"
-        if process_exits "$(cat "$sb/curl.pid")" && wait_for_lock "$CACHE_DIR/weather-lock"; then
+        if process_exits "$(cat "$sb/curl.pid")" && wait_for_lock "$CACHE_DIR/weather-default-u-lock"; then
             pass 'the watchdog terminates the probe and releases the lock after supervisor death'
         else
             fail 'the watchdog terminates the probe and releases the lock after supervisor death'
@@ -307,8 +356,8 @@ if [[ "$section" = all || "$section" = locks ]]; then
 
     sandbox weather
     printf '%s\n' '☀️+72°F' > "$sb/outside"
-    ln -s "$sb/outside" "$CACHE_DIR/weather"
-    ln -s "$sb/outside" "$CACHE_DIR/weather-lock"
+    ln -s "$sb/outside" "$CACHE_DIR/weather-default-u"
+    ln -s "$sb/outside" "$CACHE_DIR/weather-default-u-lock"
     chmod 644 "$sb/outside"
     render_is 'a symlinked cache entry never becomes a reading' '--' normal
     if wait_for_file "$sb/supervisor.pid" && process_exits "$(cat "$sb/supervisor.pid")"; then
@@ -320,7 +369,7 @@ if [[ "$section" = all || "$section" = locks ]]; then
     sandbox weather
     printf 'sentinel\n' > "$sb/outside"
     chmod 644 "$sb/outside"
-    ln "$sb/outside" "$CACHE_DIR/weather-lock"
+    ln "$sb/outside" "$CACHE_DIR/weather-default-u-lock"
     render_is 'a hardlinked lock renders as absence' '--' normal
     if wait_for_file "$sb/supervisor.pid" && process_exits "$(cat "$sb/supervisor.pid")"; then
         assert_eq 'a hardlinked lock prevents the probe from running' 0 "$(calls)"
@@ -329,7 +378,7 @@ if [[ "$section" = all || "$section" = locks ]]; then
     fi
 
     sandbox weather
-    mkfifo -m 644 "$CACHE_DIR/weather-lock"
+    mkfifo -m 644 "$CACHE_DIR/weather-default-u-lock"
     render_is 'a FIFO lock leaves weather absent' '--' normal
     if wait_for_file "$sb/supervisor.pid" && process_exits "$(cat "$sb/supervisor.pid")" 15; then
         pass 'a FIFO lock without a reader cannot stall the supervisor'
@@ -337,25 +386,25 @@ if [[ "$section" = all || "$section" = locks ]]; then
         fail 'a FIFO lock without a reader cannot stall the supervisor'
         if [ -s "$sb/supervisor.pid" ]; then kill -KILL "$(cat "$sb/supervisor.pid")" 2>/dev/null || :; fi
     fi
-    exec 8<>"$CACHE_DIR/weather-lock"
+    exec 8<>"$CACHE_DIR/weather-default-u-lock"
     rm -f "$sb/supervisor.pid"
     render_is 'a FIFO lock with a reader also leaves weather absent' '--' normal
     if wait_for_file "$sb/supervisor.pid" && process_exits "$(cat "$sb/supervisor.pid")"; then
         assert_eq 'the refresh leaves a FIFO lock untouched' 644 \
-            "$(perl -e 'printf "%o", (stat($ARGV[0]))[2] & 0777' "$CACHE_DIR/weather-lock")"
+            "$(perl -e 'printf "%o", (stat($ARGV[0]))[2] & 0777' "$CACHE_DIR/weather-default-u-lock")"
     else
         fail 'a FIFO lock with a reader is rejected'
     fi
     exec 8>&-
 
     sandbox weather
-    : > "$CACHE_DIR/weather-lock"
-    chmod 644 "$CACHE_DIR/weather-lock"
+    : > "$CACHE_DIR/weather-default-u-lock"
+    chmod 644 "$CACHE_DIR/weather-default-u-lock"
     render_is 'an old regular lock can be used for a refresh' '--' normal
-    if wait_for_file "$CACHE_DIR/weather"; then
+    if wait_for_file "$CACHE_DIR/weather-default-u"; then
         assert_eq 'the cache, lock, and directory are owner-only' '700 600 600' \
             "$(perl -e 'printf "%o %o %o", map { (stat($_))[2] & 0777 } @ARGV' \
-                "$CACHE_DIR" "$CACHE_DIR/weather" "$CACHE_DIR/weather-lock")"
+                "$CACHE_DIR" "$CACHE_DIR/weather-default-u" "$CACHE_DIR/weather-default-u-lock")"
     else
         fail 'a refresh writes to a cache protected by the repaired lock'
     fi
@@ -370,7 +419,7 @@ if [[ "$section" = all || "$section" = locks ]]; then
 fi
 
 if [[ "$section" = all || "$section" = validation ]]; then
-    for sample in http-error http-error-ip malformed malformed-v6 multiline nul; do
+    for sample in http-error http-error-ip oversized malformed malformed-v6 multiline nul; do
         sandbox network
         render_is "WAN $sample is absent during lookup" 'NET: --' "$sample"
         if wait_for_file "$CACHE_DIR/network_wan-failed" 160 "$CACHE_DIR/network_wan"; then
@@ -384,8 +433,41 @@ if [[ "$section" = all || "$section" = validation ]]; then
     render_is 'cold WAN explicitly shows absence' 'NET: --' ipv6
     if wait_for_file "$CACHE_DIR/network_wan"; then
         render_is 'a measured IPv6 address is redacted on the line' 'NET: 2001:db8:xxxx:xxxx' ipv6
+        assert_eq 'WAN curl uses HTTPS with startup-file loading disabled' \
+            '-q -f -s --max-time 2 --proto =https --max-filesize 64 https://ifconfig.me' \
+            "$(head -1 "$sb/curl.calls")"
     else
         fail 'a valid IPv6 address is cached'
+    fi
+
+    for sample in weather-http weather-malformed weather-partial oversized-weather; do
+        sandbox weather
+        render_is "$sample is absent during lookup" '--' "$sample"
+        if wait_for_file "$CACHE_DIR/weather-default-u-failed" 100 "$CACHE_DIR/weather-default-u"; then
+            render_is "$sample stays absent during cooldown" '--' "$sample"
+            assert_eq "$sample triggers only one request" 1 "$(calls)"
+        else
+            fail "$sample creates only a negative cache marker"
+        fi
+        assert_eq "$sample uses the restricted weather curl invocation" \
+            '-q -f -s --globoff --max-time 3 --proto =https --max-filesize 1024 https://wttr.in/?format=%c%t&u' \
+            "$(head -1 "$sb/curl.calls" 2>/dev/null)"
+    done
+    sandbox weather
+    printf '%s\n' '☀️+2°C' > "$CACHE_DIR/weather"
+    render_is 'automatic US weather ignores an undifferentiated legacy entry' '--' normal
+    if wait_for_file "$CACHE_DIR/weather-default-u"; then
+        render_is 'automatic US weather only displays the new reading' '☀️ 72°F' normal
+    else
+        fail 'automatic US weather publishes a distinct entry'
+    fi
+    sandbox weather 'WEATHER_LOCATION=-33.87,151.21'
+    render_is 'signed coordinates start with cold absence' '--' normal
+    if wait_for_file "$sb/curl.calls" 30; then
+        assert_contains 'signed coordinates reach the intended URL' 'https://wttr.in/-33.87,151.21?' "$(cat "$sb/curl.calls")"
+        assert_eq 'signed coordinates make exactly one request' 1 "$(calls)"
+    else
+        fail 'signed coordinates schedule exactly one weather request'
     fi
 
     sandbox weather 'WEATHER_UNITS=m' 'WEATHER_LOCATION=Test'
@@ -408,8 +490,8 @@ if [[ "$section" = all || "$section" = validation ]]; then
     fi
 
     sandbox weather 'WEATHER_CACHE_TTL=0' 'date() { printf "%s\n" 946684800; }'
-    printf '%s\n' '☀️+72°F' > "$CACHE_DIR/weather"
-    perl -e 'utime 946684800, 946684800, $ARGV[0]' "$CACHE_DIR/weather"
+    printf '%s\n' '☀️+72°F' > "$CACHE_DIR/weather-default-u"
+    perl -e 'utime 946684800, 946684800, $ARGV[0]' "$CACHE_DIR/weather-default-u"
     render_is 'zero weather TTL still displays a reading from the current second' '☀️ 72°F' normal
 fi
 
@@ -475,8 +557,202 @@ STUB
     render_is 'a corrupt cached CPU count cannot imply healthy load' 'LOAD: --' normal
 
     sandbox weather 'date() { printf "%s\n" invalid; }'
-    printf '%s\n' '☀️+72°F' > "$CACHE_DIR/weather"
+    printf '%s\n' '☀️+72°F' > "$CACHE_DIR/weather-default-u"
     render_is 'an unusable clock cannot make cached weather look fresh' '--' normal
+fi
+
+
+if [[ "$section" = all || "$section" = resolution ]]; then
+    sandbox weather 'curl() { printf "%s\n" "☀️+72°F"; }'
+    render_is 'a trusted curl function starts cold' '--' fail
+    if wait_for_file "$CACHE_DIR/weather-default-u" 80 "$CACHE_DIR/weather-default-u-failed"; then
+        render_is 'the detached worker uses the trusted curl function' '☀️ 72°F' fail
+    else
+        fail 'the trusted curl function publishes a reading'
+    fi
+    assert_eq 'the external curl is not called when a trusted function exists' 0 "$(calls)"
+fi
+
+if [[ "$section" = all || "$section" = setup ]]; then
+    cat > "$scratch/bin/chmod" <<'STUB'
+#!/bin/bash
+if [ "${TEST_SAMPLE:-}" = stalled-setup ] && [[ "${!#}" == */cortado-cache ]]; then
+    printf '%s\n' "$$" >> "$CLAUDE_CONFIG_DIR/setup.pids"
+    exec sleep 25
+fi
+exec /bin/chmod "$@"
+STUB
+    /bin/chmod 700 "$scratch/bin/chmod"
+    sandbox weather
+    /bin/chmod 755 "$CACHE_DIR"
+    render_is 'a stalled directory setup leaves weather absent' '--' stalled-setup
+    render_is 'a second render stays available while setup is stalled' '--' stalled-setup
+    fast_render 'stalled directory setup stays off the foreground path'
+    if wait_for_file "$sb/setup.pids"; then
+        while IFS= read -r pid; do
+            if process_exits "$pid" 116; then
+                pass 'a setup child exits within the deadline'
+            else
+                fail 'a setup child exits within the deadline'
+                kill -KILL "$pid" 2>/dev/null || :
+            fi
+        done < "$sb/setup.pids"
+    else
+        fail 'the stalled directory setup reaches the fixture'
+    fi
+    assert_eq 'stalled setup starts no probe' 0 "$(calls)"
+fi
+
+if [[ "$section" = all || "$section" = clear ]]; then
+    for clear_key in '' weather-default-u; do
+        sandbox weather
+        render_is 'weather is absent during a held request' '--' held
+        if ! wait_for_file "$sb/held.pid"; then
+            fail 'the first request starts'
+            continue
+        fi
+        /bin/bash -c '. "$1/modules/utils.sh"; cache_clear "$2"' clear "$PROJECT_ROOT" "$clear_key"
+        render_is 'a cache clear keeps the held request off the line' '--' normal
+        sleep 0.2
+        assert_eq 'a clear cannot let two requests occupy one probe' 1 "$(calls)"
+        : > "$sb/release"
+        if wait_for_lock "$CACHE_DIR/weather-default-u-lock"; then
+            render_is 'a pre-clear request cannot repopulate the cache' '--' normal
+            if wait_for_file "$CACHE_DIR/weather-default-u"; then
+                render_is 'weather warms from a post-clear request' '☀️ 72°F' normal
+            else
+                fail 'the post-clear request publishes'
+            fi
+        else
+            fail 'the held request releases its lock'
+        fi
+    done
+fi
+
+if [[ "$section" = all || "$section" = publication ]]; then
+    sandbox weather
+    render_is 'a failed positive publication keeps the reading absent' '--' broken-publication
+    weather_failure 'a failed positive publication records cooldown through cache_set'
+    assert_eq 'a failed rename publishes no partial positive reading' '' "$(cat "$CACHE_DIR/weather-default-u" 2>/dev/null)"
+    assert_eq 'a failed rename removes its staging file' '' "$(find "$CACHE_DIR" -name 'weather-default-u.*' -print)"
+
+    sandbox weather
+    render_is 'a failed request is absent while waiting for a clear' '--' held-failure
+    if wait_for_file "$sb/held.pid"; then
+        /bin/bash -c '. "$1/modules/utils.sh"; cache_clear "$2"' clear "$PROJECT_ROOT" weather-default-u
+        : > "$sb/release"
+        if wait_for_lock "$CACHE_DIR/weather-default-u-lock"; then
+            assert_eq 'a clear also invalidates an in-flight failure entry' '' "$(cat "$CACHE_DIR/weather-default-u-failed" 2>/dev/null)"
+            render_is 'a new refresh can run without the discarded cooldown' '--' normal
+            if wait_for_file "$CACHE_DIR/weather-default-u"; then
+                render_is 'weather recovers with a post-clear reading' '☀️ 72°F' normal
+            else
+                fail 'the post-clear refresh publishes'
+            fi
+        else
+            fail 'the invalidated failure releases its lock'
+        fi
+    else
+        fail 'the request starts before the clear'
+    fi
+
+    sandbox weather
+    render_is 'a held rename keeps the foreground available' '--' held-publication
+    if wait_for_file "$sb/rename.pid"; then
+        if lock_is_free "$CACHE_DIR/.probe-clear-lock"; then
+            fail 'publication holds the clear lock through the rename'
+        else
+            pass 'publication holds the clear lock through the rename'
+        fi
+        /bin/bash -c '. "$1/modules/utils.sh"; cache_clear "$2"' clear "$PROJECT_ROOT" weather-default-u
+        if wait_for_lock "$CACHE_DIR/weather-default-u-lock"; then
+            assert_eq 'a clear racing publication returns with no reading' '' "$(cat "$CACHE_DIR/weather-default-u" 2>/dev/null)"
+        else
+            fail 'the racing publication releases its probe lock'
+        fi
+    else
+        fail 'publication reaches the rename fixture'
+    fi
+    sandbox weather
+    pending="$CACHE_DIR/.weather-default-u-pending"
+    : > "$pending"
+    # Hold the clear lock until the worker clears its old marker. A new
+    # marker unexpectedly occupying that name must never start a probe.
+    perl -MFcntl=:flock -e '
+        my $holder = fork();
+        exit 1 unless defined $holder;
+        exit 0 if $holder;
+        my ($lock, $ready, $release) = @ARGV;
+        alarm 4;
+        umask 077;
+        open(my $handle, ">>", $lock) or exit 1;
+        flock($handle, LOCK_EX) or exit 1;
+        open(my $signal, ">", $ready) or exit 1;
+        print {$signal} "ready\n";
+        close($signal);
+        select(undef, undef, undef, 0.02) until -e $release;
+    ' "$CACHE_DIR/.probe-clear-lock" "$sb/clear-ready" "$sb/clear-release"
+    if wait_for_file "$sb/clear-ready" 40; then
+        render_is 'an occupied pending-marker destination starts with absence' '--' normal
+        for ((i=0; i<40; i++)); do
+            [ -e "$pending" ] || break
+            sleep 0.05
+        done
+        if [ ! -e "$pending" ]; then
+            : > "$pending"
+            : > "$sb/clear-release"
+            if wait_for_lock "$CACHE_DIR/weather-default-u-lock"; then
+                assert_eq 'a preexisting pending marker cannot start a request' 0 "$(calls)"
+            else
+                fail 'the worker with an occupied marker releases its probe lock'
+            fi
+        else
+            : > "$sb/clear-release"
+            fail 'the worker prepares its pending marker under the probe lock'
+        fi
+    else
+        : > "$sb/clear-release"
+        fail 'the clear-lock fixture is ready'
+    fi
+fi
+
+if [[ "$section" = all || "$section" = keys ]]; then
+    sandbox weather
+    for key in '' 'weather invalid'; do
+        output=$(
+            TEST_SAMPLE=normal /bin/bash -c '
+                . "$1/modules/utils.sh"
+                REPLY=old
+                cached_probe "$2" 10 5 "$1/modules/weather.sh" _weather_probe https://wttr.in
+                printf "%s" "$REPLY"
+            ' guard "$PROJECT_ROOT" "$key"
+        )
+        assert_eq "an invalid probe key [$key] clears the reply" '' "$output"
+    done
+    sleep 0.2
+    assert_eq 'invalid probe keys start no worker' '' "$(cat "$sb/supervisor.pid" 2>/dev/null)"
+fi
+
+if [[ "$section" = all || "$section" = privacy ]]; then
+    for entry in weather-default-u weather-default-u-failed; do
+        sandbox weather
+        case "$entry" in weather-default-u) value='☀️+72°F'; expected='☀️ 72°F' ;; *) value=--; expected=-- ;; esac
+        (umask 077; printf '%s\n' "$value" > "$CACHE_DIR/$entry")
+        chmod 755 "$CACHE_DIR"
+        render normal
+        mode=$(perl -e 'printf "%o", (stat($ARGV[0]))[2] & 0777' "$CACHE_DIR")
+        if [ "$(cat "$sb/output")" = '☀️ 72°F' ]; then
+            assert_eq 'a warm reading is displayed only from a private cache directory' 700 "$mode"
+        fi
+        for ((i=0; i<40; i++)); do
+            mode=$(perl -e 'printf "%o", (stat($ARGV[0]))[2] & 0777' "$CACHE_DIR")
+            [ "$mode" != 700 ] || break
+            sleep 0.05
+        done
+        assert_eq 'a cache hit repairs the directory mode' 700 "$mode"
+        render_is 'a private cache retains the existing entry' "$expected" normal
+        assert_eq 'permission repair does not repeat a probe for a valid entry' 0 "$(calls)"
+    done
 fi
 
 printf 'Results: %s passed, %s failed\n' "$PASS" "$FAIL"

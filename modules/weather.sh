@@ -30,16 +30,16 @@ _weather_fields() {
 
 _weather_probe() (
     set -o pipefail
-    local data
+    local data LC_ALL=C
     data=$(curl -q -f -s --globoff --max-time 3 --proto =https --max-filesize 1024 "$1" |
-        head -c 1025) && _weather_fields "$data" || return 1
+        head -c 1025) && [ "${#data}" -le 1024 ] && _weather_fields "$data" || return 1
     printf '%s\n' "$data"
 )
 
 module_weather() {
     local location="${WEATHER_LOCATION:-}" units="${WEATHER_UNITS:-u}"
     local show_temp="${WEATHER_SHOW_TEMP:-true}" show_cond="${WEATHER_SHOW_COND:-true}"
-    local cache_ttl="${WEATHER_CACHE_TTL:-1800}" key=weather
+    local cache_ttl="${WEATHER_CACHE_TTL:-1800}" key=weather-default-u
     [ "$show_temp" = true ] || [ "$show_cond" = true ] || return 0
 
     case "$units" in m|u|M) ;; *) units=u ;; esac
@@ -56,7 +56,7 @@ module_weather() {
     esac
     if [ -n "$location" ] || [ "$units" != u ]; then
         local request_hash
-        if ! request_hash=$(perl -MDigest::SHA=sha256_hex -e 'print sha256_hex(join "\0", @ARGV)' "$location" "$units"); then
+        if ! request_hash=$(perl -MDigest::SHA=sha256_hex -e 'print sha256_hex(join "\0", @ARGV)' -- "$location" "$units"); then
             printf '%s\n' --
             return
         fi

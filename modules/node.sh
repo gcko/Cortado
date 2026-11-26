@@ -30,21 +30,24 @@ _node_version_probe() {
 }
 
 _cached_node_version() {
-    local tool="$1" executable identity digest
+    local tool="$1" executable identity="" digest=""
     REPLY=
-    if declare -F "$tool" >/dev/null; then
-        # Trusted config can supply a shell function instead of an executable.
-        identity=$(declare -f "$tool")
-        export -f "${tool?}"
-        executable=$tool
-    else
-        executable=$(type -P "$tool") || return 0
-        [ -n "$executable" ] || return 0
+    case "$tool" in
+        node) digest=${_probe_node_digest:-}; executable=${_probe_node_runtime:-} ;;
+        npm) digest=${_probe_npm_digest:-}; executable=${_probe_npm_runtime:-} ;;
+    esac
+    if [ -z "$digest" ]; then
+        if declare -F "$tool" >/dev/null; then
+            identity=$(declare -f "$tool")
+            executable=$tool
+        else
+            executable=$(type -P "$tool") || return 0
+            [ -n "$executable" ] || return 0
+        fi
+        # Runtime shims also depend on PATH and the working directory.
+        digest=$(perl -MDigest::SHA=sha256_hex -e 'print sha256_hex(join "\0", @ARGV)' -- \
+            "$executable" "$identity" "$PWD" "$PATH") || return 0
     fi
-    # Runtime shims can resolve a different version when PATH or the working
-    # directory changes, even if the selected executable has the same path.
-    digest=$(perl -MDigest::SHA=sha256_hex -e 'print sha256_hex(join "\0", @ARGV)' \
-        "$executable" "$identity" "$PWD" "$PATH") || return 0
     cached_probe "$tool-$digest" 30 5 "${BASH_SOURCE[0]}" _node_version_probe "$executable" "$tool"
 }
 

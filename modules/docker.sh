@@ -23,8 +23,56 @@
 #   DOCKER_COMPACT         - Compact mode (default: false)
 # =============================================================================
 
+# Return the selected context and a digest of the inputs that select it.
+# config.json is needed only when there is no environment override.
+# shellcheck disable=SC2016
+_docker_selection_source='
+    sub docker_selection {
+        my $config = $ENV{DOCKER_CONFIG} || "$ENV{HOME}/.docker";
+        my $context = $ENV{DOCKER_CONTEXT} // "";
+        my $host = $ENV{DOCKER_HOST} // "";
+        my $selected = "";
+        if (length $context) {
+            $host = "";
+        } elsif (!length $host) {
+            my $path = "$config/config.json";
+            if (-f $path) {
+                require JSON::PP;
+                if (open(my $file, "<", $path)) {
+                    local $/;
+                    my $settings = eval { JSON::PP::decode_json(<$file>) };
+                    if (ref($settings) eq "HASH" && !ref($settings->{currentContext})) {
+                        $selected = $settings->{currentContext} // "";
+                    }
+                }
+            }
+            $selected ||= "default";
+            return unless $selected =~ /\A[0-9A-Za-z_.-]+\z/;
+        }
+        require Digest::SHA;
+        return (Digest::SHA::sha256_hex(join "\0", $config, $context, $host, $selected), $selected);
+    }
+'
+
+_docker_selection() {
+    if [ -n "${_probe_docker_selection:-}" ]; then
+        REPLY=$_probe_docker_selection
+    else
+        REPLY=$(perl -e "$_docker_selection_source" -e '
+            my ($digest, $selected) = docker_selection();
+            exit 1 unless defined $digest;
+            print "$digest $selected";
+        ') || return 1
+    fi
+}
+
 _docker_probe() {
-    local need_running="$1" need_total="$2" running=-- total=-- ids count
+    local need_running="$1" need_total="$2" selected="$3" running=-- total=-- ids count
+    # Hold the on-disk selection sampled by the renderer across both reads.
+    if [ -n "$selected" ]; then
+        local DOCKER_CONTEXT="$selected"
+        export DOCKER_CONTEXT
+    fi
     if [ "$need_running" = true ]; then
         if ids=$(docker ps -q) &&
            count=$(awk 'NF {count++} END {print count+0}' <<< "$ids") &&
@@ -59,20 +107,19 @@ module_docker() {
     local need_running=false need_total=false
     if [ "$show_running" = true ] || [ "$show_status" = true ]; then need_running=true; fi
     if [ "$show_total" = true ]; then need_total=true; fi
-    local key="docker-$need_running-$need_total" context_hash
-    if [ -n "${DOCKER_HOST:-}${DOCKER_CONTEXT:-}${DOCKER_CONFIG:-}" ]; then
-        if ! context_hash=$(perl -MDigest::SHA=sha256_hex -e '
-                print sha256_hex(join "\0", map { $ENV{$_} // "" } qw(DOCKER_HOST DOCKER_CONTEXT DOCKER_CONFIG))
-            '); then
-            printf '%s --\n' "$icon"
-            return
-        fi
-        key="$key-$context_hash"
+    if ! _docker_selection; then
+        printf '%s --\n' "$icon"
+        return
     fi
-    cached_probe "$key" 15 5 "${BASH_SOURCE[0]}" _docker_probe "$need_running" "$need_total"
+    local context_hash selected
+    IFS=' ' read -r context_hash selected <<< "$REPLY"
+    cached_probe "docker-v2-$need_running-$need_total-$context_hash" 15 5 "${BASH_SOURCE[0]}" \
+        _docker_probe "$need_running" "$need_total" "$selected"
     local running total
     IFS=' ' read -r running total <<< "$REPLY"
-    if ! [[ "$running" =~ ^([0-9]+|--)$ && "$total" =~ ^([0-9]+|--)$ ]]; then
+    if ! [[ "$running" =~ ^([0-9]{1,18}|--)$ && "$total" =~ ^([0-9]{1,18}|--)$ ]] ||
+        { [ "$running" = -- ] && { [ "$need_total" = false ] || [ "$total" = -- ]; }; } ||
+        { [ "$total" = -- ] && [ "$need_running" = false ]; }; then
         printf '%s --\n' "$icon"
         return
     fi

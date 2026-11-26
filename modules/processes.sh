@@ -72,7 +72,7 @@ _processes_probe() {
         local snapshot counts
         snapshot=$(LC_ALL=C ps -A -o state=) || return 1
         counts=$(LC_ALL=C awk '
-            NF == 1 && $1 ~ /^[DIRSTUWXZt][+<>AELNSsVWX]*$/ {
+            NF == 1 && $1 ~ /^[?DIRSTUWXZt][+<>AELNSsVWX]*$/ {
                 total++; if ($1 ~ /^R/) running++
             }
             END { if (total) print total, running+0 }

@@ -45,6 +45,15 @@ _load_probe() {
     printf '%s %s %s %s\n' "$num_cpus" "$load1" "$load5" "$load15"
 }
 
+# The former integer percentage rounded the threshold down by its remainder
+# modulo the CPU count. Compare in hundredths without multiplying large loads.
+_load_reaches_threshold() {
+    local whole="$1" fraction="$2" threshold="$3" cpus="$4"
+    [ "$whole" -lt "$threshold" ] || return 0
+    local gap=$((threshold - whole))
+    (( gap <= 10000 && gap * 100 - fraction <= ((threshold % cpus) * 100) % cpus ))
+}
+
 module_load() {
     get_icon_reply "${LOAD_ICON:-📊}" "LOAD:"
     local icon="$REPLY"
@@ -66,20 +75,24 @@ module_load() {
     fi
 
     if [ "${LOAD_SHOW_STATUS:-true}" = true ]; then
-        local warn_thresh crit_thresh percent int='-?[0-9]+'
-        local percentages="^($int)"$'\n'"($int)"$'\n'"($int)$"
-        safe_int_reply "${LOAD_WARNING_THRESHOLD:-$num_cpus}" "$num_cpus"
-        warn_thresh=$REPLY
-        safe_int_reply "${LOAD_CRITICAL_THRESHOLD:-$((num_cpus * 2))}" "$((num_cpus * 2))"
-        crit_thresh=$REPLY
-        if percent=$(bc -l 2>/dev/null <<EOF
-scale=0
-$load1 * 100 / $num_cpus
-$warn_thresh * 100 / $num_cpus
-$crit_thresh * 100 / $num_cpus
-EOF
-        ) && [[ "$percent" =~ $percentages ]]; then
-            get_status_reply "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}"
+        local warn_thresh crit_thresh whole fraction level=0
+        # Only hundredths can affect the integer percentage bucket.
+        whole=${load1%%.*}
+        if [ "$whole" -ge 0 ] 2>/dev/null; then
+            whole=$((10#$whole))
+            fraction=00
+            if [[ "$load1" == *.* ]]; then fraction=${load1#*.}00; fi
+            fraction=$((10#${fraction:0:2}))
+            decimal_int_reply "${LOAD_WARNING_THRESHOLD:-$num_cpus}" "$num_cpus"
+            warn_thresh=$REPLY
+            decimal_int_reply "${LOAD_CRITICAL_THRESHOLD:-$((num_cpus * 2))}" "$((num_cpus * 2))"
+            crit_thresh=$REPLY
+            if _load_reaches_threshold "$whole" "$fraction" "$crit_thresh" "$num_cpus"; then
+                level=2
+            elif _load_reaches_threshold "$whole" "$fraction" "$warn_thresh" "$num_cpus"; then
+                level=1
+            fi
+            get_status_reply "$level" 1 2
             result="$result$REPLY"
         fi
     fi

@@ -23,6 +23,7 @@ case "$TEST_PS" in
     partial) printf '%s\n' R; exit 1 ;;
     header) printf '%s\n' STATE ;;
     sleeping) printf '%s\n' S ;;
+    unclassified) printf '%s\n' '?+' R S ;;
     present) printf '%s\n' R S ;;
 esac
 STUB
@@ -64,7 +65,7 @@ CONFIG
     export CLAUDE_CONFIG_DIR="$sb" CACHE_DIR="$sb/cortado-cache"
     render_sample >/dev/null || return 1
     for ((i=0; i<60; i++)); do
-        [ ! -s "$CACHE_DIR/processes-running" ] && [ ! -s "$CACHE_DIR/processes-running-failed" ] || break
+        if [ -s "$CACHE_DIR/processes-running" ] || [ -s "$CACHE_DIR/processes-running-failed" ]; then break; fi
         sleep 0.05
     done
     [ "$i" -lt 60 ] || return 1
@@ -117,5 +118,6 @@ check "a vanished PID status makes the Linux running count unknown" "PROC: --/2 
 printf 'State:\tS (sleeping)\n' > "$TEST_BASE/proc/2/status"
 check "a later arrival cannot replace an unreadable PID in the snapshot" "PROC: --/2 [OK]" newcomer Linux
 
+check 'a Darwin process with an unclassified state still contributes to total' 'PROC: 1/3 [OK]' unclassified
 printf 'Results: %s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

@@ -27,14 +27,32 @@
 # public IP address. Valid readings are cached for 5 minutes.
 # =============================================================================
 
+# IPv4 is the common warm path. Keep its validation in the shell.
+_network_ip() {
+    local address="$1" octet
+    if [[ "$address" =~ ^(0|[1-9][0-9]{0,2})[.](0|[1-9][0-9]{0,2})[.](0|[1-9][0-9]{0,2})[.](0|[1-9][0-9]{0,2})$ ]]; then
+        for octet in "${BASH_REMATCH[@]:1}"; do
+            [ "$octet" -le 255 ] || return 1
+        done
+        return 0
+    fi
+    [[ "$address" =~ ^[0-9a-fA-F:.]{2,45}$ && "$address" = *:* ]] || return 1
+    perl -MSocket=AF_INET6,inet_pton -e 'exit !inet_pton(AF_INET6, $ARGV[0])' -- "$address"
+}
+
 _wan_ip_probe() (
     set -o pipefail
     local url address
     for url in https://ifconfig.me https://icanhazip.com; do
         if address=$(curl -q -f -s --max-time 2 --proto =https --max-filesize 64 "$url" |
             perl -MSocket=AF_INET,AF_INET6,inet_pton -e '
-                my $size = read(STDIN, my $ip, 65);
-                exit 1 unless $size && $size <= 64;
+                my $ip = "";
+                while (length($ip) < 65) {
+                    defined(my $size = sysread(STDIN, my $chunk, 65 - length($ip))) or exit 1;
+                    last unless $size;
+                    $ip .= $chunk;
+                }
+                exit 1 unless length($ip) && length($ip) <= 64;
                 $ip =~ s/\r?\n\z//;
                 exit 1 if $ip =~ /[\x00\r\n]/;
                 exit 1 unless inet_pton(AF_INET, $ip) || inet_pton(AF_INET6, $ip);
@@ -48,11 +66,11 @@ _wan_ip_probe() (
 )
 
 _network_local_probe() {
-    local os="$1" show_lan="$2" show_ssid="$3" parts=""
+    local os="$1" show_lan="$2" show_ssid="$3" lan_ip="" ssid=""
 
     # Get LAN IP
     if [ "$show_lan" = "true" ]; then
-        local lan_ip addresses
+        local addresses
         if [ "$os" = Darwin ]; then
             lan_ip=$(ipconfig getifaddr en0 2>/dev/null) ||
                 lan_ip=$(ipconfig getifaddr en1 2>/dev/null) || lan_ip=""
@@ -63,16 +81,14 @@ _network_local_probe() {
                 done <<< "$addresses"
             fi
         fi
-        if [ -n "${lan_ip:-}" ]; then
-            parts="$lan_ip"
-        fi
+        _network_ip "$lan_ip" || lan_ip=""
     fi
 
     # Get WiFi SSID (macOS). The legacy `airport` CLI was removed in Sonoma+;
     # prefer networksetup / ipconfig getsummary, fall back to airport if present.
     # Capture the full SSID (spaces allowed) — never awk $2 only.
     if [ "$show_ssid" = "true" ] && [ "$os" = Darwin ]; then
-        local ssid="" wifi_dev line airport
+        local wifi_dev line airport
         wifi_dev=$(networksetup -listallhardwareports 2>/dev/null | awk '/Wi-Fi|AirPort/{getline; print $2; exit}')
         wifi_dev="${wifi_dev:-en0}"
 
@@ -103,17 +119,15 @@ _network_local_probe() {
             done
         fi
 
-        if [ -n "$ssid" ]; then
-            if [ -n "$parts" ]; then
-                parts="$parts ($ssid)"
-            else
-                parts="$ssid"
-            fi
-        fi
+        case "$ssid" in *[[:cntrl:]]*) ssid="" ;; esac
     fi
 
-    [ -n "$parts" ] || return 1
-    printf '%s\n' "$parts"
+    [ -n "$lan_ip$ssid" ] || return 1
+    if [ "$show_lan" = true ] && [ "$show_ssid" = true ]; then
+        printf '%s|%s\n' "$lan_ip" "$ssid"
+    else
+        printf '%s\n' "$lan_ip$ssid"
+    fi
 }
 
 module_network() {
@@ -134,9 +148,24 @@ module_network() {
         [ "$show_lan" = true ] || show_lan=false
         if [ "$show_ssid" != true ] || [ "$os" != Darwin ]; then show_ssid=false; fi
         if [ "$show_lan" = true ] || [ "$show_ssid" = true ]; then
-            cached_probe "network-local-$show_lan-$show_ssid" 10 5 "${BASH_SOURCE[0]}" \
-                _network_local_probe "$os" "$show_lan" "$show_ssid"
-            parts="$REPLY"
+            local key="network-local-$show_lan-$show_ssid" lan ssid
+            if [ "$show_lan" = true ] && [ "$show_ssid" = true ]; then
+                key=network-local-v2-true-true
+            fi
+            cached_probe "$key" 10 5 "${BASH_SOURCE[0]}" _network_local_probe "$os" "$show_lan" "$show_ssid"
+            if [ "$show_lan" = true ]; then
+                lan="$REPLY"
+                if [ "$show_ssid" = true ]; then lan=${lan%%|*}; fi
+                if _network_ip "$lan"; then parts="$lan"; fi
+                if [ "$show_ssid" = true ] && [[ "$REPLY" = *'|'* ]]; then
+                    ssid=${REPLY#*|}
+                    if [ -n "$ssid" ] && [[ "$ssid" != *[[:cntrl:]]* ]]; then
+                        if [ -n "$parts" ]; then parts="$parts ($ssid)"; else parts="$ssid"; fi
+                    fi
+                fi
+            elif [[ "$REPLY" != *[[:cntrl:]]* ]]; then
+                parts="$REPLY"
+            fi
         fi
     fi
 
@@ -144,8 +173,10 @@ module_network() {
     if [ "$show_wan" = "true" ] && ! is_compact "$compact"; then
         attempted=true
         cached_probe network_wan 300 15 "${BASH_SOURCE[0]}" _wan_ip_probe
-        local wan_ip="${REPLY:---}" first rest
-        if [ "$wan_redact" = true ]; then
+        local wan_ip="$REPLY" first rest
+        if ! _network_ip "$wan_ip"; then
+            wan_ip=--
+        elif [ "$wan_redact" = true ]; then
             case "$wan_ip" in
                 *:*)
                     first=${wan_ip%%:*}

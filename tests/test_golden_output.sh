@@ -8,6 +8,9 @@ PROJECT_ROOT="$(cd "$TEST_DIR/.." && pwd)"
 GOLDEN="$TEST_DIR/golden"
 TEST_BASE=$(mktemp -d) || exit 1
 trap 'rm -rf "$TEST_BASE"' EXIT
+unset DOCKER_HOST DOCKER_CONTEXT
+export DOCKER_CONFIG="$TEST_BASE/docker-config"
+mkdir "$DOCKER_CONFIG"
 
 host_uname=$(command -v uname)
 mkdir -p "$TEST_BASE/bin" "$TEST_BASE/home" "$TEST_BASE/workspace"
@@ -53,7 +56,7 @@ render() {
     local sb="$1"
     shift
     printf '%s' "$payload" | env -i PATH="$PATH" HOME="$TEST_BASE/home" TMPDIR="$sb" \
-        LC_ALL=C.UTF-8 TZ=UTC CORTADO_GOLDEN_UNAME="$host_uname" \
+        LC_ALL=C.UTF-8 TZ=UTC DOCKER_CONFIG="$DOCKER_CONFIG" CORTADO_GOLDEN_UNAME="$host_uname" \
         CLAUDE_CONFIG_DIR="$sb" CACHE_DIR="$sb/cortado-cache" "$@" \
         /bin/bash "$PROJECT_ROOT/cortado.sh" > "$sb/actual" 2> "$sb/stderr"
 }
@@ -104,7 +107,7 @@ assert_render() {
     # Expand the fixture's version and ANSI markers for a raw stdout comparison.
     sed -e "s/@VERSION@/$version/" -e $'s/@ESC@/\033/g' "$GOLDEN/$fixture.out" > "$sb/expected"
     if [ "$fixture" = all-modules ]; then
-        warm_probes "$sb" 'cpu brightness processes-total docker-true-false weather network-local-true-true load node-*' || exit 1
+        warm_probes "$sb" 'cpu brightness processes-total docker-v2-true-false* weather-default-u network-local-v2-true-true load node-*' || exit 1
     fi
     assert_output "$fixture renders the golden stdout" "$sb"
 }

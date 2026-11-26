@@ -37,5 +37,17 @@ check_node 'node shows the probed runtime version' 'NODE: 22.14.0' normal
 check_node 'node shows absence when its version probe fails' 'NODE: --' failed
 check_node 'node ignores version output from a failed probe' 'NODE: --' partial
 
+for bash_bin in /bin/bash "$(command -v bash)"; do
+    sb=$(mktemp -d "$TEST_BASE/nounset.XXXXXX") || exit 1
+    output=
+    for ((i=0; i<45; i++)); do
+        # shellcheck disable=SC2016
+        output=$(CLAUDE_CONFIG_DIR="$sb" PATH="$TEST_BASE/bin:$PATH" TEST_SAMPLE=normal \
+            "$bash_bin" -uc '. "$1/modules/utils.sh"; . "$1/modules/node.sh"; USE_ICONS=false; module_node' node "$PROJECT_ROOT" 2>&1)
+        [ "$output" = 'NODE: --' ] || break
+        sleep 0.05
+    done
+    assert_eq "an external Node version warms under nounset ($bash_bin)" 'NODE: 22.14.0' "$output"
+done
 printf '\nResults: %s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

@@ -38,7 +38,7 @@ check_load() {
         return
     }
     for ((i=0; i<60; i++)); do
-        [ ! -s "$sb/cortado-cache/load" ] && [ ! -s "$sb/cortado-cache/load-failed" ] || break
+        if [ -s "$sb/cortado-cache/load" ] || [ -s "$sb/cortado-cache/load-failed" ]; then break; fi
         sleep 0.05
     done
     [ "$i" -lt 60 ] || { fail "$desc (probe did not publish)"; return; }
@@ -54,10 +54,22 @@ check_load 'load shows absence for each missing average' 'LOAD: 1.25 -- -- [OK]'
 # POSIX is always available. The fixture uses commas for any caller locale other than C.
 check_load 'load reads dot decimals independently of the caller locale' 'LOAD: 1.25 0.75 0.50 [OK]' \
     normal '' 'LOAD_SHOW_ALL=true' 'export LC_ALL=POSIX'
-check_load 'load keeps the measured average when the status calculation fails' 'LOAD: 16.00' \
+check_load 'load reports high status without bc' 'LOAD: 16.00 [CRIT]' \
     high '' 'bc() { return 1; }'
-check_load 'load omits status when bc succeeds without a usable number' 'LOAD: 16.00' \
+check_load 'load ignores malformed output from the unused bc' 'LOAD: 16.00 [CRIT]' \
     high '' 'bc() { printf "%s\n" unavailable; }'
+
+sb=$(mktemp -d "$TEST_BASE/rounding.XXXXXX") || exit 1
+mkdir -m 700 "$sb/cortado-cache"
+(umask 077; printf '%s\n' '8 2.9599 -- --' > "$sb/cortado-cache/load")
+check_render 'load just below the rounded threshold stays healthy' 'LOAD: 2.9599 [OK]' normal '' \
+    "CLAUDE_CONFIG_DIR='$sb'" 'LOAD_WARNING_THRESHOLD=3 LOAD_CRITICAL_THRESHOLD=5'
+(umask 077; printf '%s\n' '8 2.9600 -- --' > "$sb/cortado-cache/load")
+check_render 'load at the rounded threshold warns' 'LOAD: 2.9600 [WARN]' normal '' \
+    "CLAUDE_CONFIG_DIR='$sb'" 'LOAD_WARNING_THRESHOLD=3 LOAD_CRITICAL_THRESHOLD=5'
+(umask 077; printf '%s\n' '8 2.97 -- --' > "$sb/cortado-cache/load")
+check_render 'load in the same percentage bucket as the warning threshold warns' 'LOAD: 2.97 [WARN]' normal '' \
+    "CLAUDE_CONFIG_DIR='$sb'" 'LOAD_WARNING_THRESHOLD=3 LOAD_CRITICAL_THRESHOLD=5'
 
 printf '\nResults: %s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

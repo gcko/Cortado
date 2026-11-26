@@ -20,6 +20,11 @@ printf '%s\n' 'cpu' 'us sy id' '50 25 25'
 case "$TEST_SAMPLE" in
     missing) exit 0 ;;
     invalid) printf '%s\n' '-- -- --' ;;
+    zero-interval) printf '%s\n' '0 0 0' ;;
+    invalid-busy) printf '%s\n' '101 0 0' ;;
+    excess-total) printf '%s\n' '1 1 100' ;;
+    invalid-idle) printf '%s\n' '0 0 101' ;;
+    rounded) printf '%s\n' '12 5 82' ;;
     normal) printf '%s\n' '13 5 82' ;;
     zero|partial) printf '%s\n' '0 0 100' ;;
 esac
@@ -75,12 +80,16 @@ CONFIG
     export PATH="$TEST_BASE/bin:$PATH" TEST_OS="$1" TEST_SAMPLE="$2"
     export CLAUDE_CONFIG_DIR="$sb" CACHE_DIR="$sb/cortado-cache"
     local i
+    if [ "$2" = corrupt ]; then (umask 077; printf '999\n' > "$CACHE_DIR/cpu"); fi
     render_sample >/dev/null || return 1
     for ((i=0; i<60; i++)); do
-        [ ! -s "$CACHE_DIR/cpu" ] && [ ! -s "$CACHE_DIR/cpu-failed" ] || break
+        if [ -s "$CACHE_DIR/cpu" ] || [ -s "$CACHE_DIR/cpu-failed" ]; then break; fi
         sleep 0.05
     done
     [ "$i" -lt 60 ] || return 1
+    if [ "$2" = invalid-busy ] && [ -s "$CACHE_DIR/cpu" ]; then
+        cp "$CACHE_DIR/cpu" "$TEST_BASE/invalid-busy.cache"
+    fi
     render_sample
 )
 
@@ -122,5 +131,12 @@ check "a truncated second Linux sample shows absence" "CPU: --" Linux linux-trun
 check "a counter reset does not produce a reassuring zero" "CPU: --" Linux linux-backwards
 check "no change in Linux counters shows absence" "CPU: --" Linux linux-no-delta
 
+check 'unaccounted iostat CPU time does not report a healthy zero' 'CPU: --' Darwin zero-interval
+check 'an out of range busy total invalidates the interval' 'CPU: --' Darwin invalid-busy
+assert_eq 'an out of range busy total cannot populate the cache' '' "$(cat "$TEST_BASE/invalid-busy.cache" 2>/dev/null)"
+check 'an excessive sum invalidates the interval' 'CPU: --' Darwin excess-total
+check 'an out of range idle column invalidates the interval' 'CPU: --' Darwin invalid-idle
+check 'integer rounding in an iostat interval preserves the reading' 'CPU: 17% [OK]' Darwin rounded
+check 'a corrupt cached CPU percentage does not display' 'CPU: --' Darwin corrupt
 printf 'Results: %s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

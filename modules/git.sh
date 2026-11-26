@@ -32,24 +32,39 @@
 #                           .git/index is newer than the cache entry (issue #26).
 # =============================================================================
 
-# Hash a path into a cache-key-safe token (no / or ..). Prefer sha256, fall back.
+# The key, age, and Git metadata can be read in one process on a warm render.
+_git_cache_snapshot() {
+    perl -MCwd=abs_path -MDigest::SHA=sha256_hex -e '
+        my ($gitdir, $dir, $ttl) = @ARGV;
+        $gitdir = abs_path($gitdir) // $gitdir;
+        my $key = "git_" . substr(sha256_hex($gitdir), 0, 16);
+        print "$key\n";
+        exit 0 unless defined $ttl;
+        my $cache = "$dir/$key";
+        if (!-f $cache || !open(my $file, "<", $cache)) {
+            print "miss\n";
+            exit 0;
+        } else {
+            my $stamp = (stat($file))[9];
+            if (!defined $stamp || time - $stamp > $ttl) {
+                print "miss\n";
+                exit 0;
+            }
+            for my $name (qw(HEAD index)) {
+                my @entry = stat("$gitdir/$name");
+                if (@entry && $entry[9] > $stamp) {
+                    print "stale\n";
+                    exit 0;
+                }
+            }
+            print "hit\n";
+            print while <$file>;
+        }
+    ' -- "$@" 2>/dev/null
+}
+
 _git_cache_key_for_dir() {
-    local path="$1"
-    local h=""
-    if command -v shasum >/dev/null 2>&1; then
-        h=$(printf '%s' "$path" | shasum -a 256 2>/dev/null | cut -c1-16)
-    elif command -v sha256sum >/dev/null 2>&1; then
-        h=$(printf '%s' "$path" | sha256sum 2>/dev/null | cut -c1-16)
-    elif command -v md5 >/dev/null 2>&1; then
-        h=$(printf '%s' "$path" | md5 -q 2>/dev/null | cut -c1-16)
-    elif command -v md5sum >/dev/null 2>&1; then
-        h=$(printf '%s' "$path" | md5sum 2>/dev/null | cut -c1-16)
-    else
-        # Portable last resort: cksum + length (collision-resistant enough for local TTL)
-        h=$(printf '%s' "$path" | cksum 2>/dev/null | tr -d ' ')
-    fi
-    [ -n "$h" ] || h="default"
-    echo "git_${h}"
+    _git_cache_snapshot "$1"
 }
 
 module_git() {
@@ -87,20 +102,10 @@ module_git() {
     }
 
     # A workspace outside a repository has no Git segment to format.
-    icon=$(get_icon "${GIT_ICON:-🌿}" "GIT:")
+    get_icon_reply "${GIT_ICON:-🌿}" "GIT:"; icon=$REPLY
     if [ "$show_file_count" = "true" ]; then
-        file_icon=$(get_icon "${GIT_FILE_ICON:-📝}" "")
+        get_icon_reply "${GIT_FILE_ICON:-📝}" ""; file_icon=$REPLY
     fi
-
-    # Resolve absolute git dir for stable cache keys + mtime targets
-    local abs_git_dir
-    if [ -d "$git_dir" ]; then
-        abs_git_dir=$(cd "$git_dir" 2>/dev/null && pwd -P)
-    fi
-    [ -n "$abs_git_dir" ] || abs_git_dir="$git_dir"
-
-    local head_file="$abs_git_dir/HEAD"
-    local index_file="$abs_git_dir/index"
     local cache_key=""
     local use_cache=false
     local git_branch=""
@@ -115,36 +120,26 @@ module_git() {
         ''|*[!0-9]*) git_ttl=0 ;;
     esac
     if [ "$git_ttl" -gt 0 ] 2>/dev/null; then
-        use_cache=true
-        cache_key=$(_git_cache_key_for_dir "$abs_git_dir")
-    fi
-
-    if [ "$use_cache" = "true" ]; then
-        local cached=""
-        cached=$(cache_get "$cache_key" "$git_ttl" 2>/dev/null) || cached=""
-        if [ -n "$cached" ]; then
-            # Bust if HEAD or index changed after the cache write
-            local cache_file="$CACHE_DIR/${cache_key}"
-            local cache_mtime head_mtime index_mtime
-            cache_mtime=$(_file_mtime "$cache_file")
-            head_mtime=$(_file_mtime "$head_file")
-            index_mtime=$(_file_mtime "$index_file")
-            if [ "$head_mtime" -gt "$cache_mtime" ] 2>/dev/null \
-                || [ "$index_mtime" -gt "$cache_mtime" ] 2>/dev/null; then
-                cache_clear "$cache_key"
-                cached=""
-            fi
-        fi
-        if [ -n "$cached" ]; then
-            # Format: first line = branch; remainder after sentinel = porcelain
-            git_branch=$(printf '%s\n' "$cached" | head -n 1)
-            git_porcelain=$(printf '%s\n' "$cached" | sed '1,/^---CORTADO_GIT---$/d')
-            # Empty branch line means corrupt entry — recompute
-            if [ -n "$git_branch" ]; then
-                from_cache=true
-            else
-                git_porcelain=""
-            fi
+        local snapshot cached
+        if snapshot=$(_git_cache_snapshot "$git_dir" "$CACHE_DIR" "$git_ttl"); then
+            use_cache=true
+            cache_key=${snapshot%%$'\n'*}
+            cached=${snapshot#*$'\n'}
+            case "$cached" in
+                stale)
+                    # Git owns this namespace. Its invalidation does not
+                    # wait for an unrelated probe to publish a reading.
+                    rm -f -- "$CACHE_DIR/$cache_key" 2>/dev/null ;;
+                hit$'\n'*)
+                    cached=${cached#*$'\n'}
+                    git_branch=${cached%%$'\n'*}
+                    if [ -n "$git_branch" ]; then
+                        from_cache=true
+                        if [[ "$cached" == *$'\n---CORTADO_GIT---\n'* ]]; then
+                            git_porcelain=${cached#*$'\n---CORTADO_GIT---\n'}
+                        fi
+                    fi ;;
+            esac
         fi
     fi
 
@@ -244,10 +239,12 @@ ${git_porcelain}"
         # File count (skip in compact mode)
         if [ "$show_file_count" = "true" ]; then
             local count_display=""
-            if [ "$from_cache" = "true" ] && [ -n "$git_porcelain" ] \
-                && ! status_count=$(printf '%s\n' "$git_porcelain" | grep -c '^' 2>/dev/null); then
-                count_display="--"
-            elif [ "$status_count" -gt 0 ] 2>/dev/null; then
+            if [ "$from_cache" = "true" ] && [ -n "$git_porcelain" ]; then
+                while IFS= read -r line; do
+                    status_count=$((status_count + 1))
+                done <<< "$git_porcelain"
+            fi
+            if [ "$status_count" -gt 0 ] 2>/dev/null; then
                 count_display="$status_count"
                 # A full cached sample may have been truncated.
                 if [ "$from_cache" = "true" ] && [ "$status_count" -ge "$max_lines" ]; then

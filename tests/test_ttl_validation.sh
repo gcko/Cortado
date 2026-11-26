@@ -55,9 +55,8 @@ assert_eq "cache_get old entry with numeric max_age is a miss" "" "$out"
 
 # -----------------------------------------------------------------------------
 # weather.sh: WEATHER_CACHE_TTL is coerced to a safe default when non-numeric.
-# We verify by calling module_weather with a bad TTL and a valid location that
-# will hit the "no curl / no network" path (cache miss -> curl fails -> empty).
-# The key assertion: the module must not emit a bash arithmetic error.
+# A seeded automatic-US reading exercises the cache age comparison offline.
+# The module should emit no arithmetic error and accept a valid TTL.
 # -----------------------------------------------------------------------------
 echo "=== weather.sh WEATHER_CACHE_TTL validation ==="
 
@@ -65,21 +64,18 @@ echo "=== weather.sh WEATHER_CACHE_TTL validation ==="
 # shellcheck source=/dev/null
 . "$SCRIPT_DIR/modules/weather.sh"
 
-# Create a fake cache file so we exercise the mtime comparison path
-WEATHER_CACHE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/cortado-cache"
-mkdir -p "$WEATHER_CACHE_DIR" 2>/dev/null
-printf '☀️+72°F' > "$WEATHER_CACHE_DIR/weather"
+cache_set weather-default-u '☀️+72°F' || exit 1
 
 # Non-numeric TTL should not produce stderr (the case guard resets it to 1800)
-stderr=$(WEATHER_CACHE_TTL="abc" WEATHER_LOCATION="" module_weather 2>&1 1>/dev/null)
+stderr=$(WEATHER_CACHE_TTL="abc" WEATHER_LOCATION="" WEATHER_UNITS=u module_weather 2>&1 1>/dev/null)
 assert_eq "weather module with non-numeric TTL produces no stderr" "" "$stderr"
 
 # Empty TTL same treatment
-stderr=$(WEATHER_CACHE_TTL="" WEATHER_LOCATION="" module_weather 2>&1 1>/dev/null)
+stderr=$(WEATHER_CACHE_TTL="" WEATHER_LOCATION="" WEATHER_UNITS=u module_weather 2>&1 1>/dev/null)
 assert_eq "weather module with empty TTL produces no stderr" "" "$stderr"
 
 # Valid numeric TTL still works normally (cache hit -> returns weather data)
-out=$(WEATHER_CACHE_TTL="99999" WEATHER_LOCATION="" module_weather)
+out=$(WEATHER_CACHE_TTL="99999" WEATHER_LOCATION="" WEATHER_UNITS=u module_weather)
 assert_eq "weather module with valid TTL returns cached data" "☀️ 72°F" "$out"
 
 # -----------------------------------------------------------------------------

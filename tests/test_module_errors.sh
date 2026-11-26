@@ -16,7 +16,7 @@ without_tool() {
     local links=()
     mkdir "$dest"
     for tool in "$(command -v jq)" "$(command -v bc)" /bin/* /usr/bin/* /sbin/* /usr/sbin/*; do
-        [ -f "$tool" ] && [ -x "$tool" ] || continue
+        if [ ! -f "$tool" ] || [ ! -x "$tool" ]; then continue; fi
         name="${tool##*/}"
         [ "$name" != "$omit" ] || continue
         case "$names" in *":$name:"*) continue ;; esac
@@ -380,5 +380,9 @@ assert_contains 'A missing utils file leaves memory usage visible' '🧠 25%' "$
 assert_eq 'A missing utils file keeps process stderr quiet' '' "$err"
 assert_not_contains 'The shared helpers resolve in the incomplete install' 'command not found' "$log"
 
+render "$INCOMPLETE_TREE" "$PATH" clean 'MODULE_ORDER=network,cpu,weather' 'DEBUG_MODE=true' \
+    'MODULE_NETWORK=true MODULE_CPU=true MODULE_WEATHER=true NETWORK_SHOW_WAN=true'
+assert_eq 'A missing utils file still shows one absence for each probe module' '🌐 -- | 💻 -- | --' "$out"
+assert_not_contains 'An incomplete install has a cached probe fallback' 'command not found' "$log"
 printf '\nResults: %s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

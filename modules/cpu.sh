@@ -36,7 +36,10 @@ _cpu_probe() {
                 if ($i == "us" && $(i+1) == "sy" && $(i+2) == "id") cpu = i
             }
             cpu && $cpu ~ /^[0-9]+$/ && $(cpu+1) ~ /^[0-9]+$/ && $(cpu+2) ~ /^[0-9]+$/ {
-                if (++samples == 2 && $cpu + $(cpu+1) <= 100) print $cpu + $(cpu+1)
+                busy = $cpu + $(cpu+1)
+                accounted = busy + $(cpu+2)
+                if (++samples == 2 && busy <= 100 && $(cpu+2) <= 100 &&
+                    accounted >= 99 && accounted <= 101) print busy
             }
         ' <<< "$samples"
         return
@@ -70,7 +73,7 @@ module_cpu() {
     local os="${render_os-$(uname)}"
     cached_probe cpu 5 5 "${BASH_SOURCE[0]}" _cpu_probe "$os"
     local cpu_int="$REPLY"
-    if ! [[ "$cpu_int" =~ ^[0-9]{1,3}$ ]]; then
+    if ! [[ "$cpu_int" =~ ^[0-9]{1,3}$ ]] || (( 10#$cpu_int > 100 )); then
         printf '%s --\n' "$icon"
         return
     fi

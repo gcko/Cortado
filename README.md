@@ -156,8 +156,8 @@ DIR: myproject | CTX: ####---- 50%[OK] | GIT: main      # ASCII mode
 - **Claude Code CLI** - [Installation Guide](https://docs.anthropic.com/en/docs/claude-code)
 - **Bash 3.2+** - Works with macOS default bash
 - **jq** - JSON processor (required)
-- **bc** - Basic calculator used by the opt-in load and temperature modules (usually pre-installed)
-- **Perl** - Runs background probes (pre-installed on macOS)
+- **bc** - Basic calculator used by the opt-in temperature module (usually pre-installed)
+- **Perl** - Runs background probes and handles Git and session cache metadata (pre-installed on macOS)
 - The battery module requires macOS. Rate-limit tracking works on macOS and Linux.
 - Windows: not supported
 
@@ -435,7 +435,7 @@ DEBUG_MODE="false"           # Debug logging to $CLAUDE_CONFIG_DIR/cortado.log (
 
 Per-module settings (icons, thresholds, formats, and TTLs such as `GIT_CACHE_TTL`, `RATE_CACHE_TTL`, `WEATHER_CACHE_TTL`, `VERSION_SHOW_DURATION`, and `UPDATE_CHECK_INTERVAL`) are documented inline in the shipped `cortado.conf`.
 
-Weather, network, CPU, load, brightness, processes, Docker, and Node.js use background refreshes. A cold or expired reading shows `--` until a refresh succeeds. Weather uses `WEATHER_CACHE_TTL` with a minimum of one second. Public IP uses five minutes. CPU uses five seconds. Local network, load, brightness, and processes use ten seconds. Docker uses fifteen seconds, and Node.js and npm versions use thirty seconds. After a failed request, weather and public IP retry on the next render after fifteen seconds. Other probes retry after five seconds.
+Weather, network, CPU, load, brightness, processes, Docker, and Node.js use background refreshes. A cold or expired reading shows `--` until a refresh succeeds. Weather uses `WEATHER_CACHE_TTL` with a minimum of one second. Public IP uses five minutes. CPU uses five seconds. Local network, load, brightness, and processes use ten seconds. Docker uses fifteen seconds, and Node.js and npm versions use thirty seconds. After a failed request, weather and public IP retry on the next render after fifteen seconds. Other probes retry after five seconds. Refreshes keep one lock per reading. Clearing the cache discards readings and invalidates pending refresh results while retaining the locks. The watchdog allows up to five seconds for directory setup, the probe and publication, plus one second for recording a failure.
 
 `UPDATE_CHECK_INTERVAL` sets how long a successful release check is cached (86,400 seconds by default). After an unavailable check, Cortado shows `⬆ --` or `UPD: --` and retries on the next render after half the configured interval, capped at one hour.
 

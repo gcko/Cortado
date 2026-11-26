@@ -149,5 +149,22 @@ check "the first overlapping session expires on time" "" "$a" 110
 check "the second overlapping session remains visible while in its window" "$version" "$b" 111
 check "the second overlapping session expires on time" "" "$b" 112
 
+REAL_JQ=$(command -v jq) || exit 1
+export REAL_JQ
+export JQ_CALLS="$TEST_BASE/jq.calls"
+cat > "$TEST_BASE/bin/jq" <<'STUB'
+#!/bin/bash
+printf '%s\n' jq >> "$JQ_CALLS"
+exec "$REAL_JQ" "$@"
+STUB
+chmod 700 "$TEST_BASE/bin/jq"
+new_sandbox 10
+check 'a fresh Unicode session shows its version' "$version" "$(session_payload '☕ café')" 0
+assert_eq 'a new session uses only the payload jq process' 1 "$(wc -l < "$JQ_CALLS" | tr -d ' ')"
+: > "$JQ_CALLS"
+check 'a Unicode session keeps its window' "$version" "$(session_payload '☕ café')" 9
+assert_eq 'a warm session uses only the payload jq process' 1 "$(wc -l < "$JQ_CALLS" | tr -d ' ')"
+check 'a Unicode session expires at its original deadline' "" "$(session_payload '☕ café')" 10
+
 printf 'Results: %s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
