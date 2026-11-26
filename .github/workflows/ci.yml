@@ -55,7 +55,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           missing=()
-          for tool in jq bc shellcheck; do
+          for tool in jq bc; do
             if ! command -v "$tool" >/dev/null; then missing+=("$tool"); fi
           done
           if [ "${#missing[@]}" -gt 0 ]; then
@@ -72,6 +72,7 @@ jobs:
           if [ "$RUNNER_OS" = macOS ]; then
             /bin/bash -c '[[ $BASH_VERSION == 3.2.* ]]'
             /usr/bin/jq --version
+            shellcheck --version | sed -n 2p
           fi
 
       - name: Check shell syntax
@@ -82,8 +83,13 @@ jobs:
           done
           exit "$failed"
 
+      # One job, one ShellCheck version: Homebrew's, the same one a developer Mac
+      # runs for the Pre-PR check. Lint results don't depend on the OS, and
+      # Ubuntu's packaged ShellCheck is older: it reports indirectly called
+      # functions (stubs, traps) as SC2317 and ignores the SC2329 disables, so
+      # comparing counts there failed PRs that were clean everywhere else.
       - name: Compare ShellCheck findings with the merge base
-        if: ${{ !cancelled() && steps.tools.outcome == 'success' && matrix.jq != 'apple' }}
+        if: ${{ !cancelled() && steps.tools.outcome == 'success' && runner.os == 'macOS' && matrix.jq == 'path' }}
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
