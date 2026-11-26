@@ -882,6 +882,201 @@ run_git_update
 assert_eq "INT during the restore after a TERM keeps the TERM status" 143 "$git_update_status"
 assert_old_runtime "INT during the restore after a TERM"
 
+# --- a SIGKILL between the renames, which no trap can catch, and the next update ---
+# shellcheck disable=SC2016 # The stub body expands when the stub runs.
+kill_between='case "$last" in */.cortado-previous.*/runtime) /bin/mv "$@" || exit $?; kill -KILL "$INSTALLER_PID"; exit 0 ;; esac'
+lock_path() {
+    printf '%s/.cortado-update.lock\n' "$(CDPATH='' cd -- "$cfg" && pwd -P)"
+}
+
+swap_case kill-between
+printf '%s\n' 'user notes' > "$active/notes.txt"
+cp -p "$active/notes.txt" "${cfg%/config}/notes.before"
+mv_stub "$kill_between"
+run_git_update
+killed_prev=$(find "$cfg" -maxdepth 1 -name '.cortado-previous.*')
+assert_eq "SIGKILL between the renames kills the update" 137 "$git_update_status"
+assert_rc "SIGKILL between the renames leaves no runtime at the managed path" 1 test -e "$active"
+assert_rc "SIGKILL between the renames leaves its update lock behind" 0 test -L "$(lock_path)"
+assert_rc "SIGKILL between the renames leaves the config in one .cortado-previous directory" 0 \
+    cmp "${cfg%/config}/conf.before" "$killed_prev/runtime/cortado.conf"
+rm -f "$case_bin/mv"
+run_git_update
+assert_new_runtime "an update after a SIGKILL between the renames"
+assert_rc "an update after a SIGKILL between the renames keeps cortado.conf byte-identical" 0 \
+    cmp "${cfg%/config}/conf.before" "$active/cortado.conf"
+assert_rc "an update after a SIGKILL between the renames keeps the user's other files" 0 \
+    cmp "${cfg%/config}/notes.before" "$active/notes.txt"
+assert_contains "an update after a SIGKILL between the renames names the directory it recovered from" \
+    "${killed_prev##*/}/runtime" "$git_update_output"
+
+swap_case kill-between-two-leftovers
+# An earlier interruption's runtime: older, and holding a different config.
+older_prev="$cfg/.cortado-previous.earlier"
+mkdir -p "$older_prev/runtime"
+printf '%s\n' 'earlier config' > "$older_prev/runtime/cortado.conf"
+touch -t 202001010000 "$older_prev"
+mv_stub "$kill_between"
+run_git_update
+rm -f "$case_bin/mv"
+run_git_update
+assert_eq "two leftovers: the update exits 0" 0 "$git_update_status"
+assert_eq "two leftovers: the update renders the release" released "$active_output"
+assert_rc "two leftovers: the newest runtime's config is carried" 0 \
+    cmp "${cfg%/config}/conf.before" "$active/cortado.conf"
+assert_eq "two leftovers: the older runtime is kept unchanged" 'earlier config' \
+    "$(cat "$older_prev/runtime/cortado.conf" 2>/dev/null)"
+assert_contains "two leftovers: the older runtime is named" ".cortado-previous.earlier/runtime" "$git_update_output"
+assert_eq "two leftovers: only the older runtime remains" "$older_prev" "$(swap_leaks "$cfg")"
+
+swap_case leftovers-beside-runtime
+mkdir -p "$cfg/.cortado-previous.kept/runtime" "$cfg/.cortado-previous.empty" "$cfg/.cortado-runtime.stale/lib"
+printf '%s\n' 'earlier config' > "$cfg/.cortado-previous.kept/runtime/cortado.conf"
+run_git_update
+assert_eq "a leftover beside a working runtime: the update exits 0" 0 "$git_update_status"
+assert_eq "a leftover beside a working runtime: the release is published" released "$active_output"
+assert_rc "a leftover beside a working runtime: the working config is carried" 0 \
+    cmp "${cfg%/config}/conf.before" "$active/cortado.conf"
+assert_eq "a leftover beside a working runtime is kept unchanged" 'earlier config' \
+    "$(cat "$cfg/.cortado-previous.kept/runtime/cortado.conf" 2>/dev/null)"
+assert_contains "a leftover beside a working runtime is named" ".cortado-previous.kept/runtime" "$git_update_output"
+assert_eq "a leftover beside a working runtime: stale staging and empty leftovers are removed" \
+    "$cfg/.cortado-previous.kept" "$(swap_leaks "$cfg")"
+
+swap_case symlinked-leftover
+rm -rf "$active"
+mkdir -p "$cfg/.cortado-previous.linked" "${cfg%/config}/elsewhere"
+printf '%s\n' 'not a runtime' > "${cfg%/config}/elsewhere/cortado.conf"
+ln -s "${cfg%/config}/elsewhere" "$cfg/.cortado-previous.linked/runtime"
+mkdir -p "${cfg%/config}/outside/runtime"
+printf '%s\n' 'outside config' > "${cfg%/config}/outside/runtime/cortado.conf"
+ln -s "${cfg%/config}/outside" "$cfg/.cortado-previous.outside"
+run_git_update
+assert_eq "a symlinked leftover runtime is not restored" released "$active_output"
+assert_rc "a symlinked leftover runtime is not moved to the managed path" 1 test -L "$active"
+assert_rc "a symlinked leftover runtime publishes no config it does not own" 1 test -e "$active/cortado.conf"
+assert_rc "a symlinked leftover runtime stays in place" 0 test -L "$cfg/.cortado-previous.linked/runtime"
+assert_rc "a symlinked leftover runtime's target is untouched" 0 test -f "${cfg%/config}/elsewhere/cortado.conf"
+assert_rc "a symlinked leftover directory stays in place" 0 test -L "$cfg/.cortado-previous.outside"
+assert_eq "a symlinked leftover directory's runtime is untouched" 'outside config' \
+    "$(cat "${cfg%/config}/outside/runtime/cortado.conf" 2>/dev/null)"
+assert_not_contains "a symlinked leftover directory is not reported as a runtime" \
+    ".cortado-previous.outside" "$git_update_output"
+
+# --- one update at a time ---
+swap_case live-lock
+ln -s "$$" "$(lock_path)"
+run_git_update
+assert_eq "an update while another holds the lock fails" 1 "$git_update_status"
+assert_contains "an update while another holds the lock names the other process" "process $$" "$git_update_output"
+assert_contains "an update while another holds the lock names the lock" ".cortado-update.lock" "$git_update_output"
+assert_eq "an update while another holds the lock leaves the lock" "$$" "$(readlink "$(lock_path)")"
+rm -f "$(lock_path)"
+assert_old_runtime "an update while another holds the lock"
+
+for lock_shape in directory file garbage zero; do
+    swap_case "lock-$lock_shape"
+    case "$lock_shape" in
+        directory) mkdir "$(lock_path)"; lock_says="$(lock_path) is not a Cortado update lock" ;;
+        file) printf '%s\n' "$$" > "$(lock_path)"; lock_says="$(lock_path) is not a Cortado update lock" ;;
+        garbage) ln -s 'not-a-pid' "$(lock_path)"; lock_says="$(lock_path) does not name an installer process" ;;
+        zero) ln -s 0 "$(lock_path)"; lock_says="$(lock_path) does not name an installer process" ;;
+    esac
+    run_git_update
+    assert_eq "a $lock_shape at the lock path fails the update" 1 "$git_update_status"
+    assert_contains "a $lock_shape at the lock path is named and explained" "$lock_says" "$git_update_output"
+    assert_empty "a $lock_shape at the lock path gains nothing inside" \
+        "$(find "$(lock_path)" -mindepth 1 2>/dev/null)"
+    rm -rf "$(lock_path)"
+    assert_old_runtime "a $lock_shape at the lock path"
+done
+
+lock_root=$(mktemp -d "$CLAUDE_CONFIG_DIR/lock.XXXXXX") || exit 1
+ln -s "$$" "$lock_root/.cortado-update.lock"
+_update_break_stale_lock "$lock_root/.cortado-update.lock" 999999999
+assert_eq "breaking a stale lock that a live update has since taken hands it back" "$$" \
+    "$(readlink "$lock_root/.cortado-update.lock")"
+assert_eq "breaking a stale lock that a live update has since taken leaves nothing else" \
+    .cortado-update.lock "$(LC_ALL=C ls -A "$lock_root")"
+rm -f "$lock_root/.cortado-update.lock"
+ln -s 999999999 "$lock_root/.cortado-update.lock"
+_update_break_stale_lock "$lock_root/.cortado-update.lock" 999999999
+assert_empty "breaking a stale lock removes it and leaves nothing else" "$(LC_ALL=C ls -A "$lock_root")"
+
+# ln_stub <body>: run <body> before the real ln; $last is the link path.
+ln_stub() {
+    { printf '#!/bin/bash\nfor last in "$@"; do :; done\n'
+      printf '%s\n' "$1"
+      printf 'exec /bin/ln "$@"\n'; } > "$case_bin/ln"
+    chmod 755 "$case_bin/ln"
+}
+
+swap_case term-while-locking
+# shellcheck disable=SC2016 # The stub body expands when the stub runs.
+ln_stub 'case "$last" in */.cortado-update.lock) /bin/ln "$@" || exit $?; kill -TERM "$INSTALLER_PID"; exit 0 ;; esac'
+run_git_update
+assert_eq "TERM just after taking the lock exits 143" 143 "$git_update_status"
+assert_old_runtime "TERM just after taking the lock"
+
+swap_case lock-freed-before-check
+# The first attempt loses to an update that finishes before the lock is read.
+# shellcheck disable=SC2016 # The stub body expands when the stub runs.
+ln_stub 'case "$last" in */.cortado-update.lock)
+    [ -e "$last.tried" ] || { : > "$last.tried"; exit 1; }
+    rm -f "$last.tried" ;; esac'
+run_git_update
+assert_new_runtime "an update whose first lock attempt loses to a finished update"
+
+swap_case lock-never-created
+# shellcheck disable=SC2016 # The stub body expands when the stub runs.
+ln_stub 'case "$last" in */.cortado-update.lock) exit 1 ;; esac'
+run_git_update
+assert_eq "an update that cannot create its lock fails" 1 "$git_update_status"
+assert_contains "an update that cannot create its lock says so" "Could not take the update lock at $(lock_path)" "$git_update_output"
+assert_old_runtime "an update that cannot create its lock"
+
+swap_case restore-leftover-fails
+manual_prev="$cfg/.cortado-previous.manual"
+mkdir "$manual_prev" && mv "$active" "$manual_prev/runtime" || exit 1
+# shellcheck disable=SC2016 # The stub body expands when the stub runs.
+mv_stub 'case "$2" in */.cortado-previous.*/runtime) echo "simulated restore failure" >&2; exit 1 ;; esac'
+run_git_update
+assert_eq "a failed restore of a leftover runtime fails the update" 1 "$git_update_status"
+assert_contains "a failed restore of a leftover runtime names it" ".cortado-previous.manual/runtime" "$git_update_output"
+assert_rc "a failed restore of a leftover runtime publishes nothing without its config" 1 test -e "$active"
+assert_rc "a failed restore of a leftover runtime keeps its config byte-identical" 0 \
+    cmp "${cfg%/config}/conf.before" "$manual_prev/runtime/cortado.conf"
+assert_rc "a failed restore of a leftover runtime releases the lock" 1 test -L "$(lock_path)"
+
+# Cleanup releases only a lock that still names this installer.
+lock_root=$(mktemp -d "$CLAUDE_CONFIG_DIR/lock.XXXXXX") || exit 1
+ln -s 999999999 "$lock_root/.cortado-update.lock"
+_UPD_LOCK="$lock_root/.cortado-update.lock"
+_update_cleanup
+assert_eq "cleanup leaves a lock that names another installer" 999999999 \
+    "$(readlink "$lock_root/.cortado-update.lock")"
+assert_eq "cleanup forgets a lock it does not hold" "" "$_UPD_LOCK"
+
+swap_case concurrent
+# The second update runs while the first sits between its renames.
+second="${cfg%/config}/second"
+# shellcheck disable=SC2016 # The stub body expands when the stub runs.
+{ printf '#!/bin/bash\nfor last in "$@"; do :; done\n'
+  printf 'case "$last" in */.cortado-previous.*/runtime)\n'
+  printf '    /bin/mv "$@" || exit $?\n'
+  printf '    PATH="${PATH#*:}" /bin/bash %q --update --no-color --no-emoji > %q 2>&1\n' "$src/install.sh" "$second.out"
+  printf '    echo $? > %q\n' "$second.rc"
+  printf '    exit 0 ;;\nesac\nexec /bin/mv "$@"\n'; } > "$case_bin/mv"
+chmod 755 "$case_bin/mv"
+run_git_update
+assert_eq "two updates at once: the second is refused" 1 "$(cat "$second.rc" 2>/dev/null)"
+assert_contains "two updates at once: the second says another update is running" \
+    "Another Cortado update" "$(cat "$second.out" 2>/dev/null)"
+assert_empty "two updates at once: nothing is nested inside the runtime" "$(find "$active" -name '.cortado-*')"
+assert_new_runtime "two updates at once: the first"
+assert_rc "two updates at once keep cortado.conf byte-identical" 0 \
+    cmp "${cfg%/config}/conf.before" "$active/cortado.conf"
+
 swap_case unreadable-runtime
 chmod 600 "$active"
 run_git_update
