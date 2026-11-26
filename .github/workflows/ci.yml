@@ -141,3 +141,8 @@ jobs:
         env:
           CORTADO_RENDER_P95_LIMIT_MS: ${{ runner.os == 'macOS' && '250' || '0' }}
         run: /bin/bash tests/render_timing.sh 60
+
+      - name: Record warm all-modules render p50 and p95
+        if: ${{ !cancelled() && steps.tools.outcome == 'success' }}
+        continue-on-error: true
+        run: /bin/bash tests/all_modules_timing.sh

@@ -241,9 +241,31 @@ cache_set "update_check" "v1"
 cache_clear "update_check"
 assert_eq "cache_clear removes the named key"          ""           "$(cache_get update_check 999)"
 
+# cache_clear never removes a lock by name: locks outlive every clear
+cache_set "foo" "v1"
+: > "$CACHE_DIR/foo-lock"
+cache_clear "foo-lock"
+assert_eq "cache_clear refuses a lock key"             "1"          "$?"
+assert_eq "a refused lock key keeps its file"          "1"          "$([ -f "$CACHE_DIR/foo-lock" ] && echo 1 || echo 0)"
+
 # cache_clear refuses to operate on an empty CACHE_DIR (never rm an unset path)
 ( CACHE_DIR=""; cache_clear )
 assert_eq "cache_clear refuses an empty CACHE_DIR"     "1"          "$?"
+
+# cache_clear refuses a symlinked or shared cache directory and leaves it intact
+mkdir -m 700 "$TEST_BASE/outside"
+printf 'keep\n' > "$TEST_BASE/outside/keep"
+ln -s "$TEST_BASE/outside" "$TEST_BASE/linked"
+mkdir -m 755 "$TEST_BASE/shared"
+printf 'keep\n' > "$TEST_BASE/shared/keep"
+for dir in linked shared; do
+    CACHE_DIR="$TEST_BASE/$dir" cache_clear
+    assert_eq "cache_clear refuses a $dir cache dir"     "1"          "$?"
+    CACHE_DIR="$TEST_BASE/$dir" cache_clear keep
+    assert_eq "cache_clear refuses a key in a $dir cache dir" "1"     "$?"
+    assert_eq "a refused $dir cache dir keeps its entry" "keep"       "$(cat "$TEST_BASE/$dir/keep" 2>/dev/null)"
+done
+assert_eq "a refused shared cache dir keeps its mode"   "drwxr-xr-x" "$(ls -ld "$TEST_BASE/shared" | cut -c1-10)"
 
 rm -rf "$TEST_BASE"
 

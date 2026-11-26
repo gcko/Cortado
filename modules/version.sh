@@ -20,37 +20,51 @@
 #   VERSION_ICON            - Icon to display (default: coffee emoji)
 # =============================================================================
 
-_version_session_start() (
-    local session_id="$1" now="$2"
-    local cache_key=version_sessions
-    umask 077
-    init_cache || return 1
+_version_session_start() {
+    # The lock covers the read, LRU update, and atomic cache_set publication.
+    # shellcheck disable=SC2016
+    local cache_action='
+        . "$1" || exit 1
+        CACHE_DIR=$2
+        if [ "$#" -eq 2 ]; then init_cache; else cache_set version_sessions "$3"; fi
+    '
+    perl -MFcntl=:DEFAULT,:flock,:mode -MJSON::PP -e "${_probe_lock_source:-}" -e '
+        my ($dir, $id, $now, $action, $utils) = @ARGV;
+        utf8::decode($id) or exit 1;
+        umask 077;
+        unless (private_dir($dir)) {
+            exit 1 if -l $dir || (-e $dir && (!-d $dir || !-O $dir));
+            system("/bin/bash", "-c", $action, "version-cache", $utils, $dir) == 0
+                && private_dir($dir) or exit 1;
+        }
+        my $lock = cache_lock("$dir/version_sessions-lock") or exit 1;
+        alarm 5;
+        flock($lock, LOCK_EX) or exit 1;
+        alarm 0;
 
-    # Lock the read and publish together. The lock file stays in place so
-    # later renders wait on the same inode even after the cache is replaced.
-    exec 9>>"$CACHE_DIR/$cache_key-lock" || return 1
-    if command -v flock >/dev/null 2>&1; then
-        flock -w 5 9
-    else
-        # macOS can lock the inherited descriptor with its bundled Perl.
-        perl -MFcntl=:flock -e 'open(my $lock, ">&=9") or exit 1; alarm 5; exit(!flock($lock, LOCK_EX))'
-    fi || return 1
-
-    local sessions updated session_start
-    sessions=$(cache_get "$cache_key" 2147483647)
-    # Move the current ID to the front without changing its first-seen time.
-    updated=$(jq -Rsc --arg id "$session_id" --argjson now "$now" '
-        (try fromjson catch [])
-        | if type == "array" then map(objects) else [] end
-        | ([.[] | select(.id == $id)][0] // {id: $id, first_seen: $now}) as $session
-        | ([$session] + [.[] | select(.id != $id)])[:32]
-        | .[0].first_seen, .
-    ' <<< "$sessions") || return 1
-    session_start="${updated%%$'\n'*}"
-    updated="${updated#*$'\n'}"
-    [ "$sessions" = "$updated" ] || cache_set "$cache_key" "$updated" || return 1
-    printf '%s\n' "$session_start"
-) 2>/dev/null
+        my $sessions;
+        my $path = "$dir/version_sessions";
+        my $file;
+        if (sysopen($file, $path, O_RDONLY|O_NOFOLLOW|O_NONBLOCK) &&
+            S_ISREG((stat($file))[2])) {
+            local $/;
+            $sessions = eval { JSON::PP::decode_json(<$file>) };
+        }
+        $sessions = [] unless ref($sessions) eq "ARRAY";
+        my @records = grep { ref($_) eq "HASH" } @$sessions;
+        my $matches = sub { defined $_[0]->{id} && !ref($_[0]->{id}) && $_[0]->{id} eq $id };
+        my ($session) = grep { $matches->($_) } @records;
+        $session ||= { id => $id, first_seen => 0 + $now };
+        my @updated = ($session, grep { !$matches->($_) } @records);
+        splice(@updated, 32) if @updated > 32;
+        if (@updated != @$sessions || $updated[0] != $sessions->[0]) {
+            fcntl($lock, F_SETFD, 0) or exit 1;
+            system("/bin/bash", "-c", $action, "version-cache", $utils, $dir,
+                JSON::PP::encode_json(\@updated)) == 0 or exit 1;
+        }
+        print $session->{first_seen} // "";
+    ' -- "$CACHE_DIR" "$1" "$2" "$cache_action" "${BASH_SOURCE[0]%version.sh}utils.sh" 2>/dev/null
+}
 
 module_version() {
     local show_duration="${VERSION_SHOW_DURATION:-120}"
@@ -79,7 +93,8 @@ module_version() {
     local version=""
     local version_file="$SCRIPT_DIR/VERSION"
     if [ -f "$version_file" ]; then
-        version=$(cat "$version_file" 2>/dev/null | tr -d '[:space:]')
+        version=$(< "$version_file")
+        version=${version//[[:space:]]/}
     fi
 
     if [ -z "$version" ]; then

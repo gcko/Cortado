@@ -8,23 +8,43 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TEST_BASE=$(mktemp -d)
 trap 'rm -rf "$TEST_BASE"' EXIT
 mkdir "$TEST_BASE/bin"
-cat > "$TEST_BASE/bin/top" <<'STUB'
+cat > "$TEST_BASE/bin/iostat" <<'STUB'
 #!/bin/bash
+[ "$*" = '-d -C -n 0 -c 2 -w 1' ] || exit 2
 case "$TEST_SAMPLE" in
     failed) exit 1 ;;
-    missing) echo 'CPU usage:' ;;
-    invalid) echo 'CPU usage: -- user, -- sys, -- idle' ;;
-    fractional) echo 'CPU usage: 12.34% user, 5.20% sys, 82.46% idle' ;;
-    zero|partial) echo 'CPU usage: 0.00% user, 0.00% sys, 100.00% idle' ;;
+    empty) exit 0 ;;
+esac
+# The since-boot reading is deliberately different from the live reading.
+printf '%s\n' 'cpu' 'us sy id' '50 25 25'
+case "$TEST_SAMPLE" in
+    missing) exit 0 ;;
+    invalid) printf '%s\n' '-- -- --' ;;
+    zero-interval) printf '%s\n' '0 0 0' ;;
+    invalid-busy) printf '%s\n' '101 0 0' ;;
+    excess-total) printf '%s\n' '1 1 100' ;;
+    invalid-idle) printf '%s\n' '0 0 101' ;;
+    rounded) printf '%s\n' '12 5 82' ;;
+    normal) printf '%s\n' '13 5 82' ;;
+    zero|partial) printf '%s\n' '0 0 100' ;;
 esac
 [ "$TEST_SAMPLE" != partial ]
 STUB
 cat > "$TEST_BASE/bin/grep" <<'STUB'
 #!/bin/bash
 if [ "${2:-}" = /proc/stat ]; then
-    exec /usr/bin/grep "$1" "$TEST_PROC_STAT"
+    if [ -f "$CLAUDE_CONFIG_DIR/first-read" ]; then
+        exec /usr/bin/grep "$1" "$CLAUDE_CONFIG_DIR/stat-after"
+    fi
+    : > "$CLAUDE_CONFIG_DIR/first-read"
+    exec /usr/bin/grep "$1" "$CLAUDE_CONFIG_DIR/stat-before"
 fi
 exec /usr/bin/grep "$@"
+STUB
+cat > "$TEST_BASE/bin/sleep" <<'STUB'
+#!/bin/bash
+if [ "${TEST_OS:-}" = Linux ] && [ "$*" = 1 ]; then exit 0; fi
+exec /bin/sleep "$@"
 STUB
 chmod +x "$TEST_BASE/bin/"*
 
@@ -46,29 +66,31 @@ uname() {
 }
 CONFIG
     chmod 600 "$sb/cortado.conf" || exit 1
-    : > "$sb/proc-stat"
     case "$2" in
-        linux-first|linux-zero|linux-empty-baseline|linux-truncated-baseline)
-            printf 'cpu 10 0 4 30\n' > "$sb/proc-stat"
-            ;;
-        linux-truncated-current) printf 'cpu 20\n' > "$sb/proc-stat" ;;
+        linux-empty) : > "$sb/stat-before" ;;
+        linux-truncated-first) printf 'cpu 1 0\n' > "$sb/stat-before" ;;
+        *) printf 'cpu 10 0 4 20\n' > "$sb/stat-before" ;;
     esac
     case "$2" in
-        linux-zero) printf 'cpu 10 0 4 20\n' > "$sb/cortado-cache/cpu_stat" ;;
-        linux-empty-baseline) : > "$sb/cortado-cache/cpu_stat" ;;
-        linux-truncated-baseline) printf 'cpu 1 0\n' > "$sb/cortado-cache/cpu_stat" ;;
-        linux-truncated-current) printf 'cpu 10 0 4 0\n' > "$sb/cortado-cache/cpu_stat" ;;
+        linux-truncated-second) printf 'cpu 1 0\n' > "$sb/stat-after" ;;
+        linux-backwards) printf 'cpu 9 0 6 40\n' > "$sb/stat-after" ;;
+        linux-no-delta) cp "$sb/stat-before" "$sb/stat-after" ;;
+        *) printf 'cpu 10 0 4 40\n' > "$sb/stat-after" ;;
     esac
     export PATH="$TEST_BASE/bin:$PATH" TEST_OS="$1" TEST_SAMPLE="$2"
-    export TEST_PROC_STAT="$sb/proc-stat" CLAUDE_CONFIG_DIR="$sb"
-    export CACHE_DIR="$sb/cortado-cache"
+    export CLAUDE_CONFIG_DIR="$sb" CACHE_DIR="$sb/cortado-cache"
+    local i
+    if [ "$2" = corrupt ]; then (umask 077; printf '999\n' > "$CACHE_DIR/cpu"); fi
+    render_sample >/dev/null || return 1
+    for ((i=0; i<60; i++)); do
+        if [ -s "$CACHE_DIR/cpu" ] || [ -s "$CACHE_DIR/cpu-failed" ]; then break; fi
+        sleep 0.05
+    done
+    [ "$i" -lt 60 ] || return 1
+    if [ "$2" = invalid-busy ] && [ -s "$CACHE_DIR/cpu" ]; then
+        cp "$CACHE_DIR/cpu" "$TEST_BASE/invalid-busy.cache"
+    fi
     render_sample
-    case "$2" in
-        linux-*-baseline|linux-truncated-current)
-            printf 'cpu 10 0 4 40\n' > "$sb/proc-stat"
-            render_sample
-            ;;
-    esac
 )
 
 render_sample() {
@@ -77,17 +99,17 @@ render_sample() {
 
 check() {
     local desc="$1" expected="$2" actual
-    actual=$(render "$3" "$4" "${5:-monochrome}")
+    actual=$(render "$3" "$4" "${5:-monochrome}") || { fail "$desc (refresh failed)"; return; }
     assert_eq "$desc" "$expected" "$actual"
 }
 
-check "failing top shows absence" "CPU: --" Darwin failed
-check "empty top output shows absence" "CPU: --" Darwin empty
-check "a partial sample from failing top shows absence" "CPU: --" Darwin partial
+check "failing iostat shows absence" "CPU: --" Darwin failed
+check "empty iostat output shows absence" "CPU: --" Darwin empty
+check "a partial sample from failing iostat shows absence" "CPU: --" Darwin partial
 check "a CPU line with missing numbers shows absence" "CPU: --" Darwin missing
 check "non-numeric CPU readings show themed absence" "💻 --" Darwin invalid default
-check "a measured zero from top stays zero" "CPU: 0% [OK]" Darwin zero
-LC_ALL=C check "fractional top readings round in the C locale" "CPU: 18% [OK]" Darwin fractional
+check "a measured zero from iostat stays zero" "CPU: 0% [OK]" Darwin zero
+LC_ALL=C check "the interval sample is used in the C locale" "CPU: 18% [OK]" Darwin normal
 comma_locale=$(
     locale -a | while IFS= read -r candidate; do
         if [ "$(LC_ALL="$candidate" locale decimal_point 2>/dev/null)" = "," ]; then
@@ -97,18 +119,24 @@ comma_locale=$(
     done
 )
 if [ -n "$comma_locale" ]; then
-    LC_ALL="$comma_locale" check "fractional top readings round in a comma-decimal locale" \
-        "CPU: 18% [OK]" Darwin fractional
+    LC_ALL="$comma_locale" check "the interval sample is used in a comma-decimal locale" \
+        "CPU: 18% [OK]" Darwin normal
 else
     printf 'SKIP: no installed comma-decimal locale\n'
 fi
 check "empty Linux procfs shows absence" "CPU: --" Linux linux-empty
-check "the first Linux CPU sample shows absence" "CPU: --" Linux linux-first
 check "a measured zero Linux CPU delta stays zero" "CPU: 0% [OK]" Linux linux-zero
-recovered=$'CPU: --\nCPU: 0% [OK]'
-check "an empty baseline shows absence then a measured zero" "$recovered" Linux linux-empty-baseline
-check "a truncated baseline shows absence then a measured zero" "$recovered" Linux linux-truncated-baseline
-check "a truncated current sample shows absence and preserves the baseline" "$recovered" Linux linux-truncated-current
+check "a truncated first Linux sample shows absence" "CPU: --" Linux linux-truncated-first
+check "a truncated second Linux sample shows absence" "CPU: --" Linux linux-truncated-second
+check "a counter reset does not produce a reassuring zero" "CPU: --" Linux linux-backwards
+check "no change in Linux counters shows absence" "CPU: --" Linux linux-no-delta
 
+check 'unaccounted iostat CPU time does not report a healthy zero' 'CPU: --' Darwin zero-interval
+check 'an out of range busy total invalidates the interval' 'CPU: --' Darwin invalid-busy
+assert_eq 'an out of range busy total cannot populate the cache' '' "$(cat "$TEST_BASE/invalid-busy.cache" 2>/dev/null)"
+check 'an excessive sum invalidates the interval' 'CPU: --' Darwin excess-total
+check 'an out of range idle column invalidates the interval' 'CPU: --' Darwin invalid-idle
+check 'integer rounding in an iostat interval preserves the reading' 'CPU: 17% [OK]' Darwin rounded
+check 'a corrupt cached CPU percentage does not display' 'CPU: --' Darwin corrupt
 printf 'Results: %s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

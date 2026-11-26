@@ -24,7 +24,7 @@
 _file_stat() {
     local fmt_bsd="$1" fmt_gnu="$2" f="$3"
     [ -e "$f" ] || { echo 0; return; }
-    if [[ "$OSTYPE" == "darwin"* ]]; then
+    if [[ "${BASH_VERSINFO[5]}" == *-darwin* ]]; then
         /usr/bin/stat -f "$fmt_bsd" "$f" 2>/dev/null || echo 0
     else
         stat -c "$fmt_gnu" "$f" 2>/dev/null || echo 0
@@ -51,7 +51,6 @@ init_cache() {
     # pre-existing world-readable ~/.claude/cortado-cache (older install or
     # permissive umask) was never repaired. Cache key names (weather, wan_ip,
     # rate_limits_usage, update_check…) must not leak to other local users.
-    # Matches network.sh / weather.sh which re-chmod every call.
     if [ -d "$CACHE_DIR" ]; then
         chmod 700 "$CACHE_DIR" 2>/dev/null
     fi
@@ -148,25 +147,339 @@ cache_set() {
     _atomic_write_file "$cache_file" printf '%s\n' "$value"
 }
 
-# Clear specific cache key or all cache
+# Render from a fresh reading, or return with an empty REPLY and start a
+# refresh. A failed probe has its own short TTL and leaves no reading behind.
+# cached_probe <key> <ttl> <failure-ttl> <module-file> <probe> [args...]
+_probe_entry_exists() {
+    [ -f "$1" ] && [ ! -L "$1" ] && [ -s "$1" ]
+}
+
+# Modules run in separate subshells. Share the directory check, clock and
+# timestamp snapshot across enabled probes in a render.
+_probe_clock='' _probe_clock_seconds='' _probe_mtimes='' _probe_directory=''
+_probe_node_runtime='' _probe_npm_runtime='' _probe_node_digest='' _probe_npm_digest=''
+_probe_docker_selection=''
+_snapshot_probe_cache() {
+    [ -d "$CACHE_DIR" ] && [ ! -L "$CACHE_DIR" ] || return 0
+    local snapshot before=$SECONDS node_identity="" npm_identity=""
+    if [ "${MODULE_NODE:-false}" = true ]; then
+        if [ "${NODE_SHOW_VERSION:-true}" = true ]; then
+            if declare -F node >/dev/null; then
+                _probe_node_runtime=node
+                node_identity=$(declare -f node)
+            else
+                _probe_node_runtime=$(type -P node) || _probe_node_runtime=
+            fi
+        fi
+        if [ "${NODE_SHOW_NPM:-false}" = true ]; then
+            if declare -F npm >/dev/null; then
+                _probe_npm_runtime=npm
+                npm_identity=$(declare -f npm)
+            else
+                _probe_npm_runtime=$(type -P npm) || _probe_npm_runtime=
+            fi
+        fi
+    fi
+    snapshot=$(perl -MFcntl=:mode -e "${_docker_selection_source:-}" -e '
+        my ($path, $docker, $node, $node_fn, $npm, $npm_fn, $pwd, $path_env) = @ARGV;
+        my @dir = lstat($path);
+        if (!@dir || !S_ISDIR($dir[2]) || $dir[4] != $> || ($dir[2] & 07777) != 0700) {
+            print "repair";
+            exit 0;
+        }
+        print "private\n";
+        # Metadata lines start with "@", which no cache name below can.
+        if ($node ne "" || $npm ne "") {
+            require Digest::SHA;
+            print "\@node ", Digest::SHA::sha256_hex(join("\0", $node, $node_fn, $pwd, $path_env)), "\n"
+                if $node ne "";
+            print "\@npm ", Digest::SHA::sha256_hex(join("\0", $npm, $npm_fn, $pwd, $path_env)), "\n"
+                if $npm ne "";
+        }
+        if ($docker eq "true" && defined &docker_selection) {
+            my ($digest, $selected) = docker_selection();
+            print "\@docker $digest $selected\n" if defined $digest;
+        }
+        opendir(my $dir, $path) or exit 1;
+        for (my $i=0; $i < 128 && defined(my $name = readdir($dir)); $i++) {
+            next unless $name =~ /\A[a-zA-Z0-9_-]+\z/;
+            my @entry = lstat("$path/$name");
+            print "$name $entry[9]\n" if @entry && S_ISREG($entry[2]) && $entry[7];
+        }
+    ' -- "$CACHE_DIR" "${MODULE_DOCKER:-false}" "$_probe_node_runtime" "$node_identity" \
+        "$_probe_npm_runtime" "$npm_identity" "$PWD" "$PATH" 2>/dev/null) || return 0
+    if [ "$snapshot" = repair ]; then
+        _probe_directory=repair
+        return 0
+    fi
+
+    _probe_directory=private
+    _probe_clock=$(date +%s) || _probe_clock=
+    _probe_clock_seconds=$SECONDS
+    local entries=$'\n'"$snapshot"$'\n'
+    local marker
+    for marker in node npm docker; do
+        if [[ "$entries" == *$'\n'"@$marker "* ]]; then
+            local value=${entries#*$'\n'"@$marker "}
+            value=${value%%$'\n'*}
+            case "$marker" in
+                node) _probe_node_digest=$value ;;
+                npm) _probe_npm_digest=$value ;;
+                docker) _probe_docker_selection=$value ;;
+            esac
+        fi
+    done
+    # Fall back to exact reads if the sample straddled a seconds boundary.
+    if [ "$before" -ne "$_probe_clock_seconds" ]; then
+        _probe_clock=
+        return 0
+    fi
+    _probe_mtimes="$entries"
+}
+
+_probe_dir_private() {
+    local mode
+    [ -d "$CACHE_DIR" ] && [ -O "$CACHE_DIR" ] && [ ! -L "$CACHE_DIR" ] || return 1
+    mode=$(_file_stat %Lp %a "$CACHE_DIR")
+    [ "$mode" = 700 ]
+}
+
+_probe_entry_fresh() {
+    local file="$1" now="$2" ttl="$3" stamp marker=$'\n'"${1##*/} "
+    _probe_entry_exists "$file" || return 1
+    # Entries published since the snapshot and standalone callers can read
+    # the mtime directly.
+    if [[ "$_probe_mtimes" == *"$marker"* ]]; then
+        stamp=${_probe_mtimes#*"$marker"}
+        stamp=${stamp%%$'\n'*}
+    elif [[ "${BASH_VERSINFO[5]}" == *-darwin* ]]; then
+        stamp=$(/usr/bin/stat -f %m "$file" 2>/dev/null) || return 1
+    else
+        stamp=$(stat -c %Y "$file" 2>/dev/null) || return 1
+    fi
+    [[ "$stamp" =~ ^[1-9][0-9]{0,10}$ && "$now" =~ ^[1-9][0-9]{0,10}$ ]] &&
+        [ "$now" -ge "$stamp" ] && [ "$((now - stamp))" -lt "$ttl" ]
+}
+
+cached_probe() {
+    local key="$1" ttl="$2" failure_ttl="$3" module_file="$4"
+    shift 4
+    REPLY=
+    case "$key" in ''|*[!a-zA-Z0-9_-]*) return ;; esac
+    [ ! -L "$CACHE_DIR" ] || return 0
+
+    local file="$CACHE_DIR/$key" now
+    if { _probe_entry_exists "$file" || _probe_entry_exists "$file-failed"; } &&
+       { [ "$_probe_directory" = private ] ||
+         { [ -z "$_probe_directory" ] && _probe_dir_private; }; }; then
+        if [[ "$_probe_clock" =~ ^[1-9][0-9]{0,10}$ ]]; then
+            now=$((_probe_clock + SECONDS - _probe_clock_seconds))
+        else
+            now=$(date +%s) || now=
+        fi
+        if _probe_entry_fresh "$file" "$now" "$ttl"; then
+            # Older caches may have no trailing newline.
+            IFS= read -r REPLY < "$file" || :
+            [ -z "$REPLY" ] || return 0
+        fi
+        _probe_entry_fresh "$file-failed" "$now" "$failure_ttl" && return 0
+    fi
+
+    # The worker imports trusted tool overrides, but does not re-source config.
+    # shellcheck disable=SC2016
+    local probe_script='
+        module=$1
+        shift
+        . "$module" || exit 1
+        "$@"
+    '
+    # shellcheck disable=SC2016
+    local write_script='
+        . "$1" || exit 1
+        CACHE_DIR=$2
+        cache_set "$3" "$4"
+    '
+    (
+        umask 077
+        local tool
+        for tool in awk brightness curl docker grep head hostname ioreg iostat ipconfig \
+            networksetup node npm nproc ps sed sleep sysctl uptime xbacklight; do
+            if declare -F "$tool" >/dev/null; then export -f "${tool?}"; fi
+        done
+        exec perl -MFcntl=:DEFAULT,:flock,:mode -MPOSIX=setsid,setpgid,_exit \
+            -MTime::HiRes=alarm,clock_gettime,CLOCK_MONOTONIC -e "$_probe_lock_source" -e '
+            use strict;
+            use warnings;
+            my ($dir, $key, $ttl, $failure_ttl, $run, $write, $utils, $module, @probe) = @ARGV;
+            defined(setsid()) or exit 1;
+
+            # Each command and its descendants run in the watchdog group.
+            # The watchdog keeps all inherited locks until the group is killed.
+            sub bounded {
+                my ($seconds, $task) = @_;
+                return 1 if $seconds <= 0;
+                # Below one microsecond, alarm() sets a zero timer, which disarms it.
+                $seconds = 0.001 if $seconds < 0.001;
+                pipe(my $stop, my $notify) or return 1;
+                my $worker = fork();
+                defined($worker) or return 1;
+                if (!$worker) {
+                    close $notify;
+                    defined(setpgid(0, 0)) or _exit(1);
+                    my $group = $$;
+                    my $watchdog = fork();
+                    defined($watchdog) or _exit(1);
+                    if (!$watchdog) {
+                        my $terminate = sub { kill "KILL", -$group; _exit(1) };
+                        $SIG{ALRM} = $terminate;
+                        alarm $seconds;
+                        # EOF means the supervisor died. The alarm still applies.
+                        sleep($seconds + 1) unless sysread($stop, my $byte, 1);
+                        $terminate->();
+                    }
+                    close $stop;
+                    _exit($task->());
+                }
+                close $stop;
+                my $status = waitpid($worker, 0) == $worker ? $? : 1;
+                local $SIG{PIPE} = "IGNORE";
+                syswrite($notify, ".");
+                return $status;
+            }
+
+            my $deadline = clock_gettime(CLOCK_MONOTONIC) + 5;
+            local $SIG{ALRM} = sub { _exit(1) };
+            alarm 5;
+            my $needs_setup = !private_dir($dir);
+            alarm 0;
+            if ($needs_setup) {
+                bounded($deadline - clock_gettime(CLOCK_MONOTONIC), sub {
+                    my @entry = lstat($dir);
+                    if (!@entry) {
+                        require File::Path;
+                        eval { File::Path::make_path($dir, { mode => 0700 }); };
+                    } else {
+                        return 1 unless S_ISDIR($entry[2]) && $entry[4] == $>;
+                        return 1 if system("chmod", "700", $dir);
+                    }
+                    return !private_dir($dir);
+                }) == 0 or exit 1;
+            }
+
+            my $remaining = $deadline - clock_gettime(CLOCK_MONOTONIC);
+            exit 1 if $remaining <= 0;
+            alarm $remaining;
+            my $lock = cache_lock("$dir/$key-lock") or exit 1;
+            flock($lock, LOCK_EX|LOCK_NB) or exit 0;
+            # Keep the descriptor even after an exec or supervisor death.
+            fcntl($lock, F_SETFD, 0) or exit 1;
+
+            sub fresh {
+                my ($path, $ttl) = @_;
+                my @stat = lstat($path);
+                return 0 unless @stat && S_ISREG($stat[2]) && $stat[7];
+                my $age = time - $stat[9];
+                return $age >= 0 && $age < $ttl;
+            }
+            exit 0 if fresh("$dir/$key", $ttl) || fresh("$dir/$key-failed", $failure_ttl);
+
+            # Clearing removes the pending marker while holding the same lock
+            # used for publication. The probe lock keeps the marker unique to
+            # this refresh even when a clear invalidates it mid-request.
+            my $pending = "$dir/.$key-pending";
+            unlink($pending) or !lstat($pending) or exit 1;
+            my $transaction = "$dir/.probe-clear-lock";
+            my $publish = sub {
+                my ($target, $value) = @_;
+                my $guard = cache_lock($transaction) or return 1;
+                flock($guard, LOCK_EX) or return 1;
+                return 0 unless -f $pending;
+                fcntl($guard, F_SETFD, 0) or return 1;
+                exec "/bin/bash", "-c", $write, "publish", $utils, $dir, $target, $value;
+                return 1;
+            };
+
+            alarm 0;
+            if (bounded($deadline - clock_gettime(CLOCK_MONOTONIC), sub {
+                {
+                    my $guard = cache_lock($transaction) or return 1;
+                    flock($guard, LOCK_EX) or return 1;
+                    sysopen(my $marker, $pending, O_WRONLY|O_CREAT|O_EXCL, 0600) or return 1;
+                }
+                open(my $result, "-|", "/bin/bash", "-c", $run, "probe", $module, @probe)
+                    or return 1;
+                local $/;
+                my $value = <$result>;
+                close($result) or return 1;
+                return 1 unless defined($value);
+                $value =~ s/\n+\z//;
+                return length($value) ? $publish->($key, $value) : 1;
+            })) {
+                bounded(1, sub { $publish->("$key-failed", "--") });
+            }
+        ' -- "$CACHE_DIR" "$key" "$ttl" "$failure_ttl" "$probe_script" "$write_script" \
+            "${BASH_SOURCE[0]}" "$module_file" "$@"
+    # Do not keep the render's jq request and response pipes open.
+    ) 6<&- 7>&- </dev/null >/dev/null 2>&1 &
+    return 0
+}
+
+# Shared by refresh and clear. Descriptor metadata checks precede chmod so
+# a cache pathname cannot redirect a lock or chmod to another file.
+# shellcheck disable=SC2016
+_probe_lock_source='
+    sub private_dir {
+        my @entry = lstat($_[0]);
+        return @entry && S_ISDIR($entry[2]) && $entry[4] == $> && ($entry[2] & 07777) == 0700;
+    }
+    sub cache_lock {
+        sysopen(my $lock, $_[0], O_WRONLY|O_CREAT|O_NOFOLLOW|O_NONBLOCK, 0600) or return;
+        my @entry = stat($lock);
+        return unless @entry && S_ISREG($entry[2]) && $entry[3] == 1 && $entry[4] == $>;
+        return unless ($entry[2] & 07777) == 0600 || chmod(0600, $lock);
+        return $lock;
+    }
+'
+
+# Clear a named entry or all readings while retaining the lock inodes.
 # Usage: cache_clear [key]
 cache_clear() {
-    local key="$1"
+    local key="${1:-}"
+    case "$CACHE_DIR" in ''|/) return 1 ;; esac
+    case "$key" in *..*|*-lock) return 1 ;; esac
+    [ ! -L "$CACHE_DIR" ] || return 1
+    [ -d "$CACHE_DIR" ] || return 0
 
-    # Guard against empty or root paths
-    if [ -z "$CACHE_DIR" ] || [ "$CACHE_DIR" = "/" ]; then
-        return 1
-    fi
+    # shellcheck disable=SC2016
+    perl -MFcntl=:DEFAULT,:flock,:mode -MFile::Path=remove_tree \
+        -e "$_probe_lock_source" -e '
+        my ($dir, $key) = @ARGV;
+        private_dir($dir) or exit 1;
+        umask 077;
+        my $guard = cache_lock("$dir/.probe-clear-lock") or exit 1;
+        alarm 2;
+        flock($guard, LOCK_EX) or exit 1;
+        if (length $key) {
+            my $pending = $key;
+            $pending =~ s/-failed\z//;
+            if ($pending =~ /\A[a-zA-Z0-9_-]+\z/) {
+                unlink("$dir/.$pending-pending") or !lstat("$dir/.$pending-pending") or exit 1;
+            }
+            exit !(unlink("$dir/$key") || !lstat("$dir/$key"));
+        }
 
-    if [ -n "$key" ]; then
-        # Reject keys that attempt path traversal ("..")
-        case "$key" in
-            *..*) return 1 ;;
-        esac
-        rm -f "$CACHE_DIR/${key}" 2>/dev/null
-    else
-        rm -rf "$CACHE_DIR" 2>/dev/null
-    fi
+        opendir(my $cache, $dir) or exit 1;
+        while (defined(my $entry = readdir($cache))) {
+            next if $entry eq "." || $entry eq ".." || $entry =~ /-lock\z/;
+            my $path = "$dir/$entry";
+            if (-d $path && !-l $path) {
+                remove_tree($path, { safe => 1, error => \my $errors });
+                exit 1 if @$errors;
+            } else {
+                unlink($path) or !lstat($path) or exit 1;
+            }
+        }
+    ' -- "$CACHE_DIR" "$key" 2>/dev/null
 }
 
 # =============================================================================

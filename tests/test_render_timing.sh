@@ -31,6 +31,13 @@ out=$(report_percentiles 1 "$fixture/samples" 150 2>&1)
 assert_eq "the p95 gate blocks at 151 ms" 1 "$?"
 assert_contains "the p95 gate reports the exceeded limit" 'p95 exceeds 150 ms' "$out"
 
+printf '%s\n' 0.251 > "$fixture/samples"
+out=$(report_percentiles 1 "$fixture/samples" 250 'Stalled weather render' 2>&1)
+assert_eq "a labelled series uses the same p95 gate" 1 "$?"
+assert_contains "a labelled series names itself in its report" \
+    'Stalled weather render (n=1): p50=0.251s p95=0.251s' "$out"
+assert_contains "a labelled series names itself in its gate" 'Stalled weather render p95 exceeds 250 ms' "$out"
+
 printf '%s\n' '0.020' 'bad reading' > "$fixture/samples"
 out=$(report_percentiles 2 "$fixture/samples" 2>&1)
 assert_eq "a malformed measurement fails the report" 1 "$?"

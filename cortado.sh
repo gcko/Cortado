@@ -298,6 +298,8 @@ load_modules() {
         CACHE_DIR="$CLAUDE_CONFIG_DIR/cortado-cache"
         cache_get() { return 1; }
         cache_set() { :; }
+        cached_probe() { REPLY=; }
+        _snapshot_probe_cache() { :; }
         init_cache() { return 1; }
         _file_mtime() { printf '0\n'; }
         is_compact() { [[ "${DISPLAY_MODE:-normal}" == compact || "${1:-}" == true ]]; }
@@ -979,7 +981,7 @@ render_statusline() {
     # every read-based split inside them (each status indicator printed all of
     # its glyphs at once). The array also keeps a "*" in MODULE_ORDER from
     # glob-expanding.
-    local modules module
+    local modules module probe_snapshot=false
     IFS=',' read -r -a modules <<< "$module_order"
     for module in "${modules[@]}"; do
         remove_render_spaces module
@@ -989,6 +991,11 @@ render_statusline() {
 
         # Check if module is enabled
         if is_module_enabled "$module"; then
+            case "$module:$probe_snapshot" in
+                brightness:false|cpu:false|docker:false|load:false|network:false|node:false|processes:false|weather:false)
+                    _snapshot_probe_cache
+                    probe_snapshot=true ;;
+            esac
             # Wrap module execution in a subshell with error handling.
             # This prevents a single module crash from killing the entire statusline.
             local output

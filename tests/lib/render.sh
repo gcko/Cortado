@@ -51,16 +51,3 @@ check_render() {
         fail "$desc (render failed: [$actual])"
     fi
 }
-
-# Allow only the observed output for a known product defect.
-check_render_gap() {
-    local desc="$1" expected="$2" known="$3" actual
-    shift 3
-    if ! actual=$(render "$@"); then
-        fail "$desc (render failed: [$actual])"
-    elif [ "$actual" = "$known" ]; then
-        printf 'KNOWN-GAP: %s (expected [%s] got [%s])\n' "$desc" "$expected" "$actual"
-    else
-        assert_eq "$desc" "$expected" "$actual"
-    fi
-}

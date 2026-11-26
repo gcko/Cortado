@@ -24,45 +24,71 @@
 #
 # Privacy note: When NETWORK_SHOW_WAN is enabled, this module contacts
 # external services (ifconfig.me / icanhazip.com) to determine your
-# public IP address. Results are cached for 5 minutes in cortado-cache/wan_ip.
+# public IP address. Valid readings are cached for 5 minutes.
 # =============================================================================
 
-module_network() {
-    local icon=$(get_icon "${NETWORK_ICON:-🌐}" "NET:")
-    local show_lan="${NETWORK_SHOW_LAN:-true}"
-    local show_wan="${NETWORK_SHOW_WAN:-false}"
-    local wan_redact="${NETWORK_WAN_REDACT:-true}"
-    local show_ssid="${NETWORK_SHOW_SSID:-false}"
-    local compact="${NETWORK_COMPACT:-false}"
+# IPv4 is the common warm path. Keep its validation in the shell.
+_network_ip() {
+    local address="$1" octet
+    if [[ "$address" =~ ^(0|[1-9][0-9]{0,2})[.](0|[1-9][0-9]{0,2})[.](0|[1-9][0-9]{0,2})[.](0|[1-9][0-9]{0,2})$ ]]; then
+        for octet in "${BASH_REMATCH[@]:1}"; do
+            [ "$octet" -le 255 ] || return 1
+        done
+        return 0
+    fi
+    [[ "$address" =~ ^[0-9a-fA-F:.]{2,45}$ && "$address" = *:* ]] || return 1
+    perl -MSocket=AF_INET6,inet_pton -e 'exit !inet_pton(AF_INET6, $ARGV[0])' -- "$address"
+}
 
-    local parts=""
-    local attempted=false
+_wan_ip_probe() (
+    set -o pipefail
+    local url address
+    for url in https://ifconfig.me https://icanhazip.com; do
+        if address=$(curl -q -f -s --max-time 2 --proto =https --max-filesize 64 "$url" |
+            perl -MSocket=AF_INET,AF_INET6,inet_pton -e '
+                my $ip = "";
+                while (length($ip) < 65) {
+                    defined(my $size = sysread(STDIN, my $chunk, 65 - length($ip))) or exit 1;
+                    last unless $size;
+                    $ip .= $chunk;
+                }
+                exit 1 unless length($ip) && length($ip) <= 64;
+                $ip =~ s/\r?\n\z//;
+                exit 1 if $ip =~ /[\x00\r\n]/;
+                exit 1 unless inet_pton(AF_INET, $ip) || inet_pton(AF_INET6, $ip);
+                print $ip;
+            '); then
+            printf '%s\n' "$address"
+            return 0
+        fi
+    done
+    return 1
+)
+
+_network_local_probe() {
+    local os="$1" show_lan="$2" show_ssid="$3" lan_ip="" ssid=""
 
     # Get LAN IP
     if [ "$show_lan" = "true" ]; then
-        attempted=true
-        local lan_ip addresses
-        if [ "${render_os-$(uname)}" = Darwin ]; then
+        local addresses
+        if [ "$os" = Darwin ]; then
             lan_ip=$(ipconfig getifaddr en0 2>/dev/null) ||
                 lan_ip=$(ipconfig getifaddr en1 2>/dev/null) || lan_ip=""
         else
             if addresses=$(hostname -I 2>/dev/null); then
-                lan_ip=$(printf '%s\n' "$addresses" | awk 'NF {print $1; exit}')
+                while IFS=$' \t' read -r lan_ip _; do
+                    [ -z "$lan_ip" ] || break
+                done <<< "$addresses"
             fi
         fi
-        if [ -n "${lan_ip:-}" ]; then
-            parts="$lan_ip"
-        fi
+        _network_ip "$lan_ip" || lan_ip=""
     fi
 
     # Get WiFi SSID (macOS). The legacy `airport` CLI was removed in Sonoma+;
     # prefer networksetup / ipconfig getsummary, fall back to airport if present.
     # Capture the full SSID (spaces allowed) — never awk $2 only.
-    if [ "$show_ssid" = "true" ]; then
-        attempted=true
-    fi
-    if [ "$show_ssid" = "true" ] && [ "${render_os-$(uname)}" = Darwin ]; then
-        local ssid="" wifi_dev line airport
+    if [ "$show_ssid" = "true" ] && [ "$os" = Darwin ]; then
+        local wifi_dev line airport
         wifi_dev=$(networksetup -listallhardwareports 2>/dev/null | awk '/Wi-Fi|AirPort/{getline; print $2; exit}')
         wifi_dev="${wifi_dev:-en0}"
 
@@ -93,65 +119,79 @@ module_network() {
             done
         fi
 
-        if [ -n "$ssid" ]; then
-            if [ -n "$parts" ]; then
-                parts="$parts ($ssid)"
-            else
-                parts="$ssid"
+        case "$ssid" in *[[:cntrl:]]*) ssid="" ;; esac
+    fi
+
+    [ -n "$lan_ip$ssid" ] || return 1
+    if [ "$show_lan" = true ] && [ "$show_ssid" = true ]; then
+        printf '%s|%s\n' "$lan_ip" "$ssid"
+    else
+        printf '%s\n' "$lan_ip$ssid"
+    fi
+}
+
+module_network() {
+    get_icon_reply "${NETWORK_ICON:-🌐}" "NET:"
+    local icon="$REPLY"
+    local show_lan="${NETWORK_SHOW_LAN:-true}"
+    local show_wan="${NETWORK_SHOW_WAN:-false}"
+    local wan_redact="${NETWORK_WAN_REDACT:-true}"
+    local show_ssid="${NETWORK_SHOW_SSID:-false}"
+    local compact="${NETWORK_COMPACT:-false}"
+
+    local parts=""
+    local attempted=false
+
+    if [ "$show_lan" = true ] || [ "$show_ssid" = true ]; then
+        attempted=true
+        local os="${render_os-$(uname)}"
+        [ "$show_lan" = true ] || show_lan=false
+        if [ "$show_ssid" != true ] || [ "$os" != Darwin ]; then show_ssid=false; fi
+        if [ "$show_lan" = true ] || [ "$show_ssid" = true ]; then
+            local key="network-local-$show_lan-$show_ssid" lan ssid
+            if [ "$show_lan" = true ] && [ "$show_ssid" = true ]; then
+                key=network-local-v2-true-true
+            fi
+            cached_probe "$key" 10 5 "${BASH_SOURCE[0]}" _network_local_probe "$os" "$show_lan" "$show_ssid"
+            if [ "$show_lan" = true ]; then
+                lan="$REPLY"
+                if [ "$show_ssid" = true ]; then lan=${lan%%|*}; fi
+                if _network_ip "$lan"; then parts="$lan"; fi
+                if [ "$show_ssid" = true ] && [[ "$REPLY" = *'|'* ]]; then
+                    ssid=${REPLY#*|}
+                    if [ -n "$ssid" ] && [[ "$ssid" != *[[:cntrl:]]* ]]; then
+                        if [ -n "$parts" ]; then parts="$parts ($ssid)"; else parts="$ssid"; fi
+                    fi
+                fi
+            elif [[ "$REPLY" != *[[:cntrl:]]* ]]; then
+                parts="$REPLY"
             fi
         fi
     fi
 
-    # Get WAN IP (slow - cached)
-    # NETWORK_SHOW_WAN defaults to "false" (opt-in) to avoid leaking the
-    # public IP to third-party lookup services without explicit consent.
+    # WAN lookup is opt-in because it contacts a third-party service.
     if [ "$show_wan" = "true" ] && ! is_compact "$compact"; then
         attempted=true
-        # Cache in user-private directory instead of world-readable /tmp
-        local wan_cache_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/cortado-cache"
-        mkdir -p "$wan_cache_dir" 2>/dev/null
-        chmod 700 "$wan_cache_dir" 2>/dev/null
-        local wan_cache="$wan_cache_dir/wan_ip"
-        local wan_ip=""
-
-        if [ -f "$wan_cache" ]; then
-            local cache_age=$(( $(date +%s) - $(_file_mtime "$wan_cache") ))
-            if [ "$cache_age" -lt 300 ]; then
-                wan_ip=$(cat "$wan_cache")
-            fi
+        cached_probe network_wan 300 15 "${BASH_SOURCE[0]}" _wan_ip_probe
+        local wan_ip="$REPLY" first rest
+        if ! _network_ip "$wan_ip"; then
+            wan_ip=--
+        elif [ "$wan_redact" = true ]; then
+            case "$wan_ip" in
+                *:*)
+                    first=${wan_ip%%:*}
+                    rest=${wan_ip#*:}
+                    wan_ip="$first:${rest%%:*}:xxxx:xxxx" ;;
+                *.*)
+                    first=${wan_ip%%.*}
+                    rest=${wan_ip#*.}
+                    wan_ip="$first.${rest%%.*}.xxx.xxx" ;;
+            esac
         fi
-
-        if [ -z "$wan_ip" ]; then
-            wan_ip=$(curl -s --max-time 2 --proto =https https://ifconfig.me 2>/dev/null) || \
-                wan_ip=$(curl -s --max-time 2 --proto =https https://icanhazip.com 2>/dev/null) || wan_ip=""
-            # Validate response looks like an IP address (v4 or v6) before caching
-            if echo "$wan_ip" | grep -qE '^[0-9a-fA-F.:]+$'; then
-                printf '%s' "$wan_ip" > "$wan_cache"
-                chmod 600 "$wan_cache" 2>/dev/null
-            else
-                wan_ip=""
-            fi
-        fi
-
-        if [ -n "$wan_ip" ]; then
-            # Redact WAN IP for privacy by default (e.g., "203.0.xxx.xxx")
-            if [ "$wan_redact" = "true" ]; then
-                # Handle IPv4: keep first two octets, replace rest with xxx
-                if echo "$wan_ip" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
-                    local octet1 octet2
-                    octet1=$(echo "$wan_ip" | cut -d. -f1)
-                    octet2=$(echo "$wan_ip" | cut -d. -f2)
-                    wan_ip="${octet1}.${octet2}.xxx.xxx"
-                else
-                    # IPv6 or other: show first segment, redact rest
-                    wan_ip=$(echo "$wan_ip" | cut -d: -f1-2):xxxx:xxxx
-                fi
-            fi
-            if [ -n "$parts" ]; then
-                parts="$parts | $wan_ip"
-            else
-                parts="$wan_ip"
-            fi
+        if [ -n "$parts" ]; then
+            parts="$parts | $wan_ip"
+        else
+            parts="$wan_ip"
         fi
     fi
 

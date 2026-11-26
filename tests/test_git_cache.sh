@@ -226,7 +226,7 @@ out=$(render_git "$payload")
 assert_eq "after parser recovery the next render shows the dirty file" "🌿 fixture [+] 📝 1" "$out"
 assert_eq "after parser recovery the next render reruns git status" "2" "$(status_calls)"
 
-# A failed cached count leaves the known dirty status visible.
+# An unavailable grep leaves the cached count and known dirty status visible.
 new_render_config
 out=$(render_git "$payload")
 assert_eq "the cache is warmed with one untracked file" "🌿 fixture [+] 📝 1" "$out"
@@ -242,7 +242,7 @@ exec "$REAL_GREP" "$@"
 EOF
 chmod +x "$TEST_BASE/bin/grep" || exit 1
 out=$(REAL_GREP="$real_grep" render_git "$payload")
-assert_eq "a failed cached count retains dirty status without a diagnostic" "🌿 fixture [+] 📝 --" "$out"
+assert_eq "a cached count needs no grep subprocess" "🌿 fixture [+] 📝 1" "$out"
 assert_eq "a failed cached count still reuses the single git status" "1" "$(status_calls)"
 
 echo ""

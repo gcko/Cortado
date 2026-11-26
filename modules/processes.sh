@@ -25,18 +25,12 @@
 #   PROC_SHOW_STATUS       - Show status indicator (default: false)
 # =============================================================================
 
-module_processes() {
-    local icon=$(get_icon "${PROC_ICON:-🔄}" "PROC:")
-    local show_total="${PROC_SHOW_TOTAL:-true}"
-    local show_running="${PROC_SHOW_RUNNING:-false}"
-    local warn_thresh="${PROC_WARNING_THRESHOLD:-300}"
-    local crit_thresh="${PROC_CRITICAL_THRESHOLD:-500}"
-    local show_status="${PROC_SHOW_STATUS:-false}"
-
+_processes_probe() {
+    local os="$1" show_running="$2"
     local total_procs=""
     local running_procs=""
 
-    if [ "$(uname)" != "Darwin" ] && [ -d /proc ]; then
+    if [ "$os" != Darwin ] && [ -d /proc ]; then
         local pid_dir restore_noglob=false restore_failglob=false
         local pid_dirs=() status_paths=()
         # Snapshot in this shell so counting does not create transient PIDs.
@@ -76,21 +70,40 @@ module_processes() {
         fi
     else
         local snapshot counts
-        if ! snapshot=$(ps aux 2>/dev/null) || [ -z "$snapshot" ]; then
-            echo "$icon --"
-            return
-        fi
-
-        # Count both readings from the same snapshot, skipping the header.
-        counts=$(printf '%s\n' "$snapshot" | awk '
-            NF && ++lines > 1 { total++; if ($8 ~ /R/) running++ }
+        snapshot=$(LC_ALL=C ps -A -o state=) || return 1
+        counts=$(LC_ALL=C awk '
+            NF == 1 && $1 ~ /^[?DIRSTUWXZt][+<>AELNSsVWX]*$/ {
+                total++; if ($1 ~ /^R/) running++
+            }
             END { if (total) print total, running+0 }
-        ')
+        ' <<< "$snapshot") || return 1
         IFS=' ' read -r total_procs running_procs <<< "$counts"
     fi
+    [ "${total_procs:-0}" -gt 0 ] || return 1
+    printf '%s %s\n' "$total_procs" "${running_procs:---}"
+}
 
-    if [ "${total_procs:-0}" -le 0 ]; then
-        echo "$icon --"
+module_processes() {
+    get_icon_reply "${PROC_ICON:-🔄}" "PROC:"
+    local icon="$REPLY"
+    local show_total="${PROC_SHOW_TOTAL:-true}"
+    local show_running="${PROC_SHOW_RUNNING:-false}"
+    local warn_thresh="${PROC_WARNING_THRESHOLD:-300}"
+    local crit_thresh="${PROC_CRITICAL_THRESHOLD:-500}"
+    local show_status="${PROC_SHOW_STATUS:-false}"
+
+    local os="${render_os-$(uname)}" mode=total
+    if [ "$show_running" = true ]; then mode=running; fi
+    cached_probe "processes-$mode" 10 5 "${BASH_SOURCE[0]}" _processes_probe "$os" "$show_running"
+
+    local total_procs running_procs
+    IFS=' ' read -r total_procs running_procs <<< "$REPLY"
+    # Accept only what the probe can publish: a positive total, and a running
+    # count no larger than it. Ten digits keep the arithmetic in range.
+    if ! [[ "$total_procs" =~ ^[1-9][0-9]{0,9}$ && "$running_procs" =~ ^(0|[1-9][0-9]{0,9}|--)$ ]] ||
+        { [ "$running_procs" != -- ] && [ "$running_procs" -gt "$total_procs" ]; } ||
+        { [ "$show_total" != true ] && [ "$show_running" = true ] && [ "$running_procs" = -- ]; }; then
+        printf '%s --\n' "$icon"
         return
     fi
 
@@ -105,8 +118,8 @@ module_processes() {
     fi
 
     if [ "$show_status" = "true" ] && { [ "$show_total" = "true" ] || [ "$running_procs" != "--" ]; }; then
-        local status_ind=$(get_status "$total_procs" "$warn_thresh" "$crit_thresh")
-        result="$result${status_ind}"
+        get_status_reply "$total_procs" "$warn_thresh" "$crit_thresh"
+        result="$result$REPLY"
     fi
 
     echo "$result"

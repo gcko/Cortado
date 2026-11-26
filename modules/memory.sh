@@ -25,8 +25,32 @@
 #   MEMORY_SHOW_STATUS       - Show status indicator (default: true)
 # =============================================================================
 
+_memory_darwin_reading() {
+    local vm_output pages_active pages_wired page_size total_mem
+    local free='Pages free:[[:blank:]]+[0-9]+[.]'
+    local active='Pages active:[[:blank:]]+([0-9]{1,12})[.]'
+    local wired='Pages wired down:[[:blank:]]+([0-9]{1,12})[.]'
+    local page='page size of ([0-9]{1,8}) bytes'
+    vm_output=$(vm_stat 2>/dev/null) || return 1
+    [[ "$vm_output" =~ $free && "$vm_output" =~ $active ]] || return 1
+    pages_active=${BASH_REMATCH[1]}
+    [[ "$vm_output" =~ $wired ]] || return 1
+    pages_wired=${BASH_REMATCH[1]}
+    if [[ "$vm_output" =~ $page ]]; then
+        page_size=${BASH_REMATCH[1]}
+    else
+        page_size=$(sysctl -n hw.pagesize 2>/dev/null) || return 1
+    fi
+    total_mem=$(sysctl -n hw.memsize 2>/dev/null) || return 1
+    [[ "$page_size" =~ ^[1-9][0-9]{0,7}$ && "$total_mem" =~ ^[1-9][0-9]{0,15}$ ]] || return 1
+    local used_pages=$((10#$pages_active + 10#$pages_wired))
+    [ "$used_pages" -le "$((total_mem / page_size))" ] || return 1
+    REPLY="$((used_pages * page_size)) $total_mem"
+}
+
 module_memory() {
-    local icon=$(get_icon "${MEMORY_ICON:-🧠}" "MEM:")
+    get_icon_reply "${MEMORY_ICON:-🧠}" "MEM:"
+    local icon="$REPLY"
     local show_pct="${MEMORY_SHOW_PERCENTAGE:-true}"
     local show_used="${MEMORY_SHOW_USED:-false}"
     local warn_thresh="${MEMORY_WARNING_THRESHOLD:-70}"
@@ -38,32 +62,16 @@ module_memory() {
     local mem_total=""
 
     if [ "${render_os-$(uname)}" = Darwin ]; then
-        # macOS: call vm_stat once and parse all values from the cached output
-        local vm_output
-        vm_output=$(vm_stat 2>/dev/null)
-        local pages_free
-        pages_free=$(echo "$vm_output" | grep "Pages free" | awk '{print $3}' | tr -d '.')
-        local pages_active
-        pages_active=$(echo "$vm_output" | grep "Pages active" | awk '{print $3}' | tr -d '.')
-        local pages_wired
-        pages_wired=$(echo "$vm_output" | grep "Pages wired down" | awk '{print $4}' | tr -d '.')
-
-        if [ -n "$pages_free" ] && [ -n "$pages_active" ]; then
-            local page_size=$(sysctl -n hw.pagesize 2>/dev/null || echo 4096)
-            local total_mem=$(sysctl -n hw.memsize 2>/dev/null)
-            # Empty or zero total (sysctl failure) would crash the raw divisions below
-            if [ "$(safe_int "$total_mem" 0)" -eq 0 ]; then
-                return
-            fi
-            local used_pages=$((pages_active + pages_wired))
-            local used_bytes=$((used_pages * page_size))
-            local total_gb=$((total_mem / 1073741824))
-            local used_gb=$((used_bytes / 1073741824))
-
-            mem_pct=$(safe_percent "$used_bytes" "$total_mem")
-            mem_used="${used_gb}G"
-            mem_total="${total_gb}G"
+        local used_bytes total_mem
+        if ! _memory_darwin_reading; then
+            printf '%s --\n' "$icon"
+            return
         fi
+        IFS=' ' read -r used_bytes total_mem <<< "$REPLY"
+        safe_percent_reply "$used_bytes" "$total_mem"
+        mem_pct=$REPLY
+        mem_used="$((used_bytes / 1073741824))G"
+        mem_total="$((total_mem / 1073741824))G"
     else
         # Linux: use /proc/meminfo
         local total=$(grep MemTotal /proc/meminfo 2>/dev/null | awk '{print $2}')
@@ -71,11 +79,13 @@ module_memory() {
 
         if [ -n "$total" ] && [ -n "$avail" ]; then
             # Empty or zero MemTotal would crash the raw divisions below
-            if [ "$(safe_int "$total" 0)" -eq 0 ]; then
+            safe_int_reply "$total" 0
+            if [ "$REPLY" -eq 0 ]; then
                 return
             fi
             local used=$((total - avail))
-            mem_pct=$(safe_percent "$used" "$total")
+            safe_percent_reply "$used" "$total"
+            mem_pct=$REPLY
             mem_used="$((used / 1048576))G"
             mem_total="$((total / 1048576))G"
         fi
@@ -94,8 +104,8 @@ module_memory() {
     fi
 
     if [ "$show_status" = "true" ]; then
-        local status_ind=$(get_status "$mem_pct" "$warn_thresh" "$crit_thresh")
-        result="$result${status_ind}"
+        get_status_reply "$mem_pct" "$warn_thresh" "$crit_thresh"
+        result="$result$REPLY"
     fi
 
     echo "$result"

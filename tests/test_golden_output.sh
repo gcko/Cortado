@@ -8,14 +8,17 @@ PROJECT_ROOT="$(cd "$TEST_DIR/.." && pwd)"
 GOLDEN="$TEST_DIR/golden"
 TEST_BASE=$(mktemp -d) || exit 1
 trap 'rm -rf "$TEST_BASE"' EXIT
+unset DOCKER_HOST DOCKER_CONTEXT
+export DOCKER_CONFIG="$TEST_BASE/docker-config"
+mkdir "$DOCKER_CONFIG"
 
 host_uname=$(command -v uname)
 mkdir -p "$TEST_BASE/bin" "$TEST_BASE/home" "$TEST_BASE/workspace"
 printf '{"name":"golden-output"}\n' > "$TEST_BASE/workspace/package.json"
 cp "$GOLDEN/tool" "$TEST_BASE/bin/stub"
 chmod +x "$TEST_BASE/bin/stub"
-for tool in brightness curl date df docker git ipconfig networksetup node \
-    osx-cpu-temp pgrep pmset ps sysctl top uname uptime vm_stat; do
+for tool in brightness curl date df docker git iostat ipconfig networksetup node \
+    osx-cpu-temp pgrep pmset ps sysctl uname uptime vm_stat; do
     ln -s stub "$TEST_BASE/bin/$tool"
 done
 export PATH="$TEST_BASE/bin:$PATH"
@@ -53,7 +56,7 @@ render() {
     local sb="$1"
     shift
     printf '%s' "$payload" | env -i PATH="$PATH" HOME="$TEST_BASE/home" TMPDIR="$sb" \
-        LC_ALL=C.UTF-8 TZ=UTC CORTADO_GOLDEN_UNAME="$host_uname" \
+        LC_ALL=C.UTF-8 TZ=UTC DOCKER_CONFIG="$DOCKER_CONFIG" CORTADO_GOLDEN_UNAME="$host_uname" \
         CLAUDE_CONFIG_DIR="$sb" CACHE_DIR="$sb/cortado-cache" "$@" \
         /bin/bash "$PROJECT_ROOT/cortado.sh" > "$sb/actual" 2> "$sb/stderr"
 }
@@ -73,12 +76,39 @@ assert_output() {
     fi
 }
 
+# Prime the timed probes through the renderer, then align the fixture mtimes
+# with the frozen date used by the stdout comparison.
+warm_probes() {
+    local sb="$1" keys="$2" key file i
+    shift 2
+    render "$sb" "$@" || return 1
+    for key in $keys; do
+        for ((i=0; i<100; i++)); do
+            for file in "$sb/cortado-cache"/$key; do
+                case "${file##*/}" in *-lock|*-failed|*.*) continue ;; esac
+                if [ -s "$file" ]; then
+                    TZ=UTC touch -t 202602011200.00 "$file" || return 1
+                    break 2
+                fi
+            done
+            sleep 0.05
+        done
+        if [ "$i" -eq 100 ]; then
+            printf 'FAIL: golden probe %s did not publish\n' "$key"
+            return 1
+        fi
+    done
+}
+
 assert_render() {
     local fixture="$1" sb
     shift
     sb=$(make_sandbox "$@") || exit 1
     # Expand the fixture's version and ANSI markers for a raw stdout comparison.
     sed -e "s/@VERSION@/$version/" -e $'s/@ESC@/\033/g' "$GOLDEN/$fixture.out" > "$sb/expected"
+    if [ "$fixture" = all-modules ]; then
+        warm_probes "$sb" 'cpu brightness processes-total docker-v2-true-false* weather-default-u network-local-v2-true-true load node-*' || exit 1
+    fi
     assert_output "$fixture renders the golden stdout" "$sb"
 }
 
@@ -87,6 +117,7 @@ assert_mac_cpu_uptime() {
     shift
     sb=$(make_sandbox 'TERMINAL_WIDTH=200' 'MODULE_ORDER=cpu,uptime' 'MODULE_CPU=true' 'MODULE_UPTIME=true') || exit 1
     printf '%s\n' '💻 25% 🟢 | ⏱️ 1d 1h' > "$sb/expected"
+    warm_probes "$sb" cpu "$@" || exit 1
     assert_output "macOS renders CPU and uptime with $label" "$sb" "$@"
 }
 

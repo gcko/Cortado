@@ -106,6 +106,21 @@ check "an evicted session can open a fresh window" "$version" "$(session_payload
 # must wait for that snapshot before updating the shared cache.
 cat > "$TEST_BASE/bin/mv" <<'STUB'
 #!/bin/bash
+# Report whether this publishing process holds a descriptor for the session lock.
+if [ -n "${TEST_VERSION_LOCK_PROBE:-}" ] &&
+    [ "${!#}" = "$CLAUDE_CONFIG_DIR/cortado-cache/version_sessions" ]; then
+    perl -e '
+        my @target = stat($ARGV[0]) or exit;
+        for my $fd (3..32) {
+            open(my $fh, "<&", $fd) or open($fh, ">&", $fd) or next;
+            my @file = stat($fh);
+            if (@file && $file[0] == $target[0] && $file[1] == $target[1]) {
+                print "inherited\n";
+                last;
+            }
+        }
+    ' "$CLAUDE_CONFIG_DIR/cortado-cache/version_sessions-lock" > "$TEST_VERSION_LOCK_PROBE"
+fi
 if [ -n "${TEST_PAUSE_VERSION_WRITE:-}" ] &&
     [ "${!#}" = "$CLAUDE_CONFIG_DIR/cortado-cache/version_sessions" ]; then
     touch "$TEST_PAUSE_VERSION_WRITE/staged"
@@ -148,6 +163,48 @@ assert_eq "the second overlapping render shows its version" "$version" "$(cat "$
 check "the first overlapping session expires on time" "" "$a" 110
 check "the second overlapping session remains visible while in its window" "$version" "$b" 111
 check "the second overlapping session expires on time" "" "$b" 112
+
+new_sandbox 10
+TEST_VERSION_LOCK_PROBE="$TEST_BASE/lock.probe" render "$a" 0 > /dev/null
+assert_eq "the session list is published by a process holding its lock" inherited \
+    "$(cat "$TEST_BASE/lock.probe" 2>/dev/null)"
+
+# A symlinked cache directory is refused, whatever its target's mode.
+for target_mode in 755 700; do
+    new_sandbox 10
+    mkdir -m "$target_mode" "$sb/outside"
+    ln -s "$sb/outside" "$sb/cortado-cache"
+    check "a symlinked cache directory to a $target_mode target hides the notice" "" "$a" 0
+    assert_eq "a symlinked cache directory leaves its $target_mode target alone" "$target_mode:" \
+        "$(perl -e 'printf "%o", (stat($ARGV[0]))[2] & 0777' "$sb/outside"):$(ls -A "$sb/outside")"
+done
+
+# A symlinked session list is neither read nor written through. The planted
+# list says fixture-a started long ago, in the stored (base64 ID) form.
+new_sandbox 10
+mkdir -m 700 "$sb/cortado-cache"
+planted=$(jq -cn --arg id fixture-a --argjson seen "$((now - 1000))" '[{id: ($id | @base64), first_seen: $seen}]')
+printf '%s\n' "$planted" > "$TEST_BASE/planted-sessions"
+ln -s "$TEST_BASE/planted-sessions" "$sb/cortado-cache/version_sessions"
+check "a symlinked session list cannot end a new session's notice" "$version" "$a" 0
+assert_eq "a symlinked session list's target is unchanged" "$planted" "$(cat "$TEST_BASE/planted-sessions")"
+
+REAL_JQ=$(command -v jq) || exit 1
+export REAL_JQ
+export JQ_CALLS="$TEST_BASE/jq.calls"
+cat > "$TEST_BASE/bin/jq" <<'STUB'
+#!/bin/bash
+printf '%s\n' jq >> "$JQ_CALLS"
+exec "$REAL_JQ" "$@"
+STUB
+chmod 700 "$TEST_BASE/bin/jq"
+new_sandbox 10
+check 'a fresh Unicode session shows its version' "$version" "$(session_payload '☕ café')" 0
+assert_eq 'a new session uses only the payload jq process' 1 "$(wc -l < "$JQ_CALLS" | tr -d ' ')"
+: > "$JQ_CALLS"
+check 'a Unicode session keeps its window' "$version" "$(session_payload '☕ café')" 9
+assert_eq 'a warm session uses only the payload jq process' 1 "$(wc -l < "$JQ_CALLS" | tr -d ' ')"
+check 'a Unicode session expires at its original deadline' "" "$(session_payload '☕ café')" 10
 
 printf 'Results: %s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

@@ -18,87 +18,64 @@
 #   WEATHER_UNITS      - User config units: "m" (metric), "u" (US), "M" (metric wind) (default: u)
 #   WEATHER_SHOW_TEMP  - Show temperature (default: true)
 #   WEATHER_SHOW_COND  - Show condition icon (default: true)
-#   WEATHER_COMPACT    - Compact mode (default: false)
-#   WEATHER_CACHE_TTL  - User config cache duration in seconds (default: 1800)
+#   WEATHER_CACHE_TTL  - User config cache duration in seconds (default: 1800, minimum: 1)
 # Project config can set the display options above or set MODULE_WEATHER=false.
 # =============================================================================
 
+_weather_fields() {
+    local LC_ALL=C
+    local pattern='^([^[:alnum:][:space:][:cntrl:]+-]+)[[:blank:]]*([+-]?[0-9]{1,3}°[CF])$'
+    [[ "$1" =~ $pattern ]]
+}
+
+_weather_probe() (
+    set -o pipefail
+    local data LC_ALL=C
+    data=$(curl -q -f -s --globoff --max-time 3 --proto =https --max-filesize 1024 "$1" |
+        head -c 1025) && [ "${#data}" -le 1024 ] && _weather_fields "$data" || return 1
+    printf '%s\n' "$data"
+)
+
 module_weather() {
-    local location="${WEATHER_LOCATION:-}"
-    local units="${WEATHER_UNITS:-u}"
-    # Restrict to wttr.in's documented unit flags so a config value can't inject extra URL params
-    case "$units" in
-        m|u|M) ;;
-        *) units="u" ;;
+    local location="${WEATHER_LOCATION:-}" units="${WEATHER_UNITS:-u}"
+    local show_temp="${WEATHER_SHOW_TEMP:-true}" show_cond="${WEATHER_SHOW_COND:-true}"
+    local cache_ttl="${WEATHER_CACHE_TTL:-1800}" key=weather-default-u
+    [ "$show_temp" = true ] || [ "$show_cond" = true ] || return 0
+
+    case "$units" in m|u|M) ;; *) units=u ;; esac
+    if ! [[ "$cache_ttl" =~ ^[0-9]{1,10}$ ]]; then cache_ttl=1800; fi
+    cache_ttl=$((10#$cache_ttl))
+    if [ "$cache_ttl" -eq 0 ]; then cache_ttl=1; fi
+
+    # Prevent query injection and keep distinct requests in distinct caches.
+    case "$location" in
+        *\`*|*\$\(*|*\;*|*\|*|*\&*|*\>*|*\<*|*\'*|*\"*|*\\*|*'?'*|*'#'*|*' '*|*[[:cntrl:]]*)
+            log_debug "weather: rejected unsafe WEATHER_LOCATION value"
+            printf '%s\n' --
+            return ;;
     esac
-    local show_temp="${WEATHER_SHOW_TEMP:-true}"
-    local show_cond="${WEATHER_SHOW_COND:-true}"
-    local compact="${WEATHER_COMPACT:-false}"
-    local cache_ttl="${WEATHER_CACHE_TTL:-1800}"
-    # Use a numeric TTL for the cache age comparison.
-    case "$cache_ttl" in
-        ''|*[!0-9]*) cache_ttl=1800 ;;
-    esac
-
-    local weather_data=""
-
-    # Use private cache directory instead of world-readable /tmp
-    local weather_cache_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/cortado-cache"
-    mkdir -p "$weather_cache_dir" 2>/dev/null
-    chmod 700 "$weather_cache_dir" 2>/dev/null
-    local cache_file="$weather_cache_dir/weather"
-
-    # Check cache
-    if [ -f "$cache_file" ]; then
-        local cache_age=$(( $(date +%s) - $(_file_mtime "$cache_file") ))
-        if [ "$cache_age" -lt "$cache_ttl" ]; then
-            weather_data=$(cat "$cache_file")
+    if [ -n "$location" ] || [ "$units" != u ]; then
+        local request_hash
+        if ! request_hash=$(perl -MDigest::SHA=sha256_hex -e 'print sha256_hex(join "\0", @ARGV)' -- "$location" "$units"); then
+            printf '%s\n' --
+            return
         fi
+        key="weather-$request_hash"
     fi
 
-    # Fetch fresh data if needed
-    if [ -z "$weather_data" ]; then
-        # Keep metacharacters, whitespace and query delimiters out of the location.
-        case "$location" in
-            *\`*|*\$\(*|*\;*|*\|*|*\&*|*\>*|*\<*|*\'*|*\"*|*\\*|*'?'*|*'#'*|*' '*|*[[:cntrl:]]*)
-                log_debug "weather: rejected unsafe WEATHER_LOCATION value"
-                return
-                ;;
-        esac
-        local url="https://wttr.in/${location}?format=%c%t&${units}"
-        weather_data=$(curl -s --max-time 3 --proto =https --max-redirs 3 "$url" 2>/dev/null)
-        if [ -n "$weather_data" ] && [ "$weather_data" != "Unknown location" ]; then
-            printf '%s' "$weather_data" > "$cache_file" 2>/dev/null
-            chmod 600 "$cache_file" 2>/dev/null
-        else
-            weather_data=""
-        fi
-    fi
-
-    if [ -z "$weather_data" ]; then
+    cached_probe "$key" "$cache_ttl" 15 "${BASH_SOURCE[0]}" _weather_probe \
+        "https://wttr.in/${location}?format=%c%t&${units}"
+    if ! _weather_fields "$REPLY"; then
+        printf '%s\n' --
         return
     fi
 
-    # Parse weather data (format: icon+temp like "☀️+72°F")
-    local cond_icon=$(echo "$weather_data" | sed 's/[+].*//')
-    local temp=$(echo "$weather_data" | sed 's/.*[+]//')
-
-    local result=""
-
-    if [ "$show_cond" = "true" ] && [ -n "$cond_icon" ]; then
-        result="$cond_icon"
+    local cond="${BASH_REMATCH[1]}" temp="${BASH_REMATCH[2]#+}"
+    if [ "$show_temp" = true ] && [ "$show_cond" = true ]; then
+        printf '%s %s\n' "$cond" "$temp"
+    elif [ "$show_temp" = true ]; then
+        printf '%s\n' "$temp"
+    else
+        printf '%s\n' "$cond"
     fi
-
-    if [ "$show_temp" = "true" ] && [ -n "$temp" ]; then
-        if [ -n "$result" ]; then
-            result="${result} ${temp}"
-        else
-            result="${temp}"
-        fi
-    fi
-
-    # Trim whitespace
-    result=$(echo "$result" | sed 's/^ *//;s/ *$//')
-
-    echo "$result"
 }

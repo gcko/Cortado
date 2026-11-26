@@ -16,18 +16,24 @@ sed -e 's|"/proc"|"$TEST_PROC"|g' -e 's|/proc\([/ ]\)|"$TEST_PROC"\1|g' \
     "$PROJECT_ROOT/modules/processes.sh" > "$TEST_BASE/runtime/modules/processes.sh"
 cat > "$TEST_BASE/bin/ps" <<'STUB'
 #!/bin/bash
+[ "$*" = '-A -o state=' ] || exit 2
 case "$TEST_PS" in
     empty) exit 0 ;;
     failed) exit 1 ;;
+    partial) printf '%s\n' R; exit 1 ;;
+    header) printf '%s\n' STATE ;;
+    sleeping) printf '%s\n' S ;;
+    unclassified) printf '%s\n' '?+' R S ;;
+    present) printf '%s\n' R S ;;
 esac
-printf 'USER PID %%CPU %%MEM VSZ RSS TT STAT STARTED TIME COMMAND\n'
-case "$TEST_PS" in
-    partial) exit 1 ;;
-    sleeping) printf '%s\n' 'user 1 0 0 0 0 ?? S 0 0 mock' ;;
-    present)
-        printf '%s\n' 'user 1 0 0 0 0 ?? R 0 0 mock' 'user 2 0 0 0 0 ?? S 0 0 mock'
-        ;;
-esac
+STUB
+cat > "$TEST_BASE/bin/grep" <<'STUB'
+#!/bin/bash
+if [ "$TEST_PS" = newcomer ] && [ ! -d "$TEST_PROC/3" ]; then
+    mkdir "$TEST_PROC/3"
+    printf 'State:\tS (sleeping)\n' > "$TEST_PROC/3/status"
+fi
+exec /usr/bin/grep "$@"
 STUB
 chmod +x "$TEST_BASE/bin/"*
 
@@ -41,74 +47,47 @@ render() (
         'TERMINAL_WIDTH=200' > "$sb/cortado.conf"
     # Select the process probe without changing the platform for config loading.
     cat >> "$sb/cortado.conf" <<'CONFIG'
+OSTYPE=fixture
 uname() {
-    if [ "${FUNCNAME[1]:-}" = module_processes ]; then
+    if [ "${FUNCNAME[1]:-}" = main ] && [ "${1:-}" = -s ]; then
         printf '%s\n' "$TEST_OS"
     else
         command uname "$@"
     fi
 }
 CONFIG
-    if [ "$platform" = Linux ]; then
-        cat >> "$sb/cortado.conf" <<'CONFIG'
-ls() {
-    if [[ "${FUNCNAME[1]:-}" == module_processes && "$1" == -d ]]; then
-        case "$TEST_PS" in
-            transient)
-                mkdir "$TEST_PROC/2"
-                printf 'State:\tS (sleeping)\n' > "$TEST_PROC/2/status"
-                command ls "$@" "$TEST_PROC/2"
-                return ;;
-            newcomer)
-                command ls "$@"
-                add_newcomer
-                return ;;
-        esac
-    fi
-    command ls "$@"
-}
-
-wc() {
-    command wc "$@"
-    if [[ "${FUNCNAME[1]:-}" == module_processes && "$TEST_PS" == transient ]]; then
-        rm "$TEST_PROC/2/status"
-        rmdir "$TEST_PROC/2"
-    fi
-}
-
-add_newcomer() {
-    mkdir "$TEST_PROC/3"
-    printf 'State:\tS (sleeping)\n' > "$TEST_PROC/3/status"
-}
-
-grep() {
-    if [[ "${FUNCNAME[1]:-}" == module_processes && "$TEST_PS" == newcomer && ! -d "$TEST_PROC/3" ]]; then
-        add_newcomer
-    fi
-    command grep "$@"
-}
-CONFIG
-    fi
     if [ "${3:-}" = running-only ]; then
         printf '%s\n' 'PROC_SHOW_TOTAL="false"' >> "$sb/cortado.conf"
     fi
     chmod 600 "$sb/cortado.conf" || exit 1
-    printf '%s' '{"cwd":"/nonexistent"}' | PATH="$TEST_BASE/bin:$PATH" TEST_PS="$1" \
-        TEST_OS="$platform" TEST_PROC="$TEST_BASE/proc" \
-        CLAUDE_CONFIG_DIR="$sb" CACHE_DIR="$sb/cortado-cache" /bin/bash "$TEST_BASE/runtime/cortado.sh" 2>&1 \
-        | sed $'s/\x1b\[[0-9;]*m//g'
+    local i
+    export PATH="$TEST_BASE/bin:$PATH" TEST_PS="$1" TEST_OS="$platform" TEST_PROC="$TEST_BASE/proc"
+    export CLAUDE_CONFIG_DIR="$sb" CACHE_DIR="$sb/cortado-cache"
+    render_sample >/dev/null || return 1
+    for ((i=0; i<60; i++)); do
+        if [ -s "$CACHE_DIR/processes-running" ] || [ -s "$CACHE_DIR/processes-running-failed" ]; then break; fi
+        sleep 0.05
+    done
+    [ "$i" -lt 60 ] || return 1
+    render_sample
 )
+
+render_sample() {
+    set -o pipefail
+    printf '%s' '{"cwd":"/nonexistent"}' | /bin/bash "$TEST_BASE/runtime/cortado.sh" 2>&1 |
+        sed $'s/\x1b\\[[0-9;]*m//g'
+}
 
 check() {
     local desc="$1" expected="$2" platform="${4:-Darwin}" actual
-    actual=$(render "$3" "$platform" "${5:-}")
+    actual=$(render "$3" "$platform" "${5:-}") || { fail "$desc (refresh failed)"; return; }
     assert_eq "$desc" "$expected" "$actual"
 }
 
 check "failing ps shows absence" "PROC: --" failed
 check "successful but silent ps shows absence" "PROC: --" empty
 check "partial output from failing ps shows absence" "PROC: --" partial
-check "a header-only snapshot shows absence" "PROC: --" header
+check "a snapshot with no process states shows absence" "PROC: --" header
 check "a sleeping process is a measured zero running" "PROC: 0/1 [OK]" sleeping
 check "a measured process count still shows running and total" "PROC: 1/2 [OK]" present
 
@@ -139,5 +118,31 @@ check "a vanished PID status makes the Linux running count unknown" "PROC: --/2 
 printf 'State:\tS (sleeping)\n' > "$TEST_BASE/proc/2/status"
 check "a later arrival cannot replace an unreadable PID in the snapshot" "PROC: --/2 [OK]" newcomer Linux
 
+check 'a Darwin process with an unclassified state still contributes to total' 'PROC: 1/3 [OK]' unclassified
+# A cached reading is shown only if the probe could have published it: a
+# positive total of at most ten digits, and a running count no larger.
+render_cached() (
+    local sb
+    sb=$(mktemp -d "$TEST_BASE/cached.XXXXXX") || exit 1
+    mkdir -m 700 "$sb/cortado-cache" || exit 1
+    printf '%s\n' 'MODULE_ORDER="processes"' 'MODULE_PROCESSES="true"' \
+        'COLOR_THEME="monochrome"' 'PROC_SHOW_RUNNING="true"' 'PROC_SHOW_STATUS="true"' \
+        'TERMINAL_WIDTH=200' > "$sb/cortado.conf"
+    chmod 600 "$sb/cortado.conf" || exit 1
+    (umask 077; printf '%s\n' "$1" > "$sb/cortado-cache/processes-running")
+    # The seeded entry is fresh, so the render starts no probe.
+    CLAUDE_CONFIG_DIR="$sb" CACHE_DIR="$sb/cortado-cache" render_sample
+)
+
+check_cached() {
+    assert_eq "$1" "$2" "$(render_cached "$3")"
+}
+check_cached 'a valid cached reading is displayed' 'PROC: 3/12 [OK]' '12 3'
+check_cached 'a cached unknown running count beside a total is displayed' 'PROC: --/12 [OK]' '12 --'
+check_cached 'a cached zero total is absence' 'PROC: --' '0 --'
+check_cached 'a cached running count above the total is absence' 'PROC: --' '5 10'
+check_cached 'a cached total beyond ten digits is absence' 'PROC: --' '9999999999999999999999 1'
+check_cached 'a cached running count beyond ten digits is absence' 'PROC: --' '12 9999999999999999999999'
+check_cached 'a cached total with a leading zero is absence' 'PROC: --' '012 3'
 printf 'Results: %s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

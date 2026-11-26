@@ -84,7 +84,7 @@ Cortado/
 
 ### `modules/utils.sh` (Required Utilities)
 - **Theme system**: `apply_theme()` sets icons and indicators based on `COLOR_THEME`
-- **Cache system**: File-based caching for expensive operations
+- **Cache system**: File-based caching for expensive operations. Weather, network, CPU, load, brightness, processes, Docker, and Node.js read fresh cache entries and show `--` during a detached refresh. Warm reads share a clock and file timestamp snapshot per render. Workers repair the owner-only directory before supplying readings, hold a nonblocking descriptor lock per probe, and publish via `cache_set`. Clearing readings preserves the lock files and invalidates pending publications. A watchdog bounds setup, the probe and its publication to five seconds, with one more second for writing a failure marker. Failed probes cool down for fifteen seconds for weather and WAN IP or five seconds for other probes.
 - **Safe number handling**: `safe_int()`, `safe_divide()`, `safe_percent()`
 - **Status indicators**: `get_status()` (3-level), `get_status_4level()` (4-level for rate limits)
 - **Icon handling**: `get_icon()` respects `USE_ICONS` setting
@@ -200,7 +200,8 @@ Regression tests live in `tests/` and share the Bash assertions in `tests/lib/as
 /bin/bash tests/test_config_cli.sh      # cortado config CLI and Barista migration
 /bin/bash tests/test_install_update.sh  # installer update flags, runtime copy, migration
 /bin/bash tests/run-jq-variants.sh      # all suites with Homebrew and Apple jq on macOS
-/bin/bash tests/render_timing.sh        # p50 and p95 for default renders with fresh caches
+/bin/bash tests/render_timing.sh        # p50 and p95 for default renders with fresh caches, then while a weather request hangs
+/bin/bash tests/all_modules_timing.sh   # p50 and p95 with all modules enabled and warm probe caches
 ```
 
 Lint with `shellcheck`. `.shellcheckrc` disables SC2155, SC2034, SC2059, SC2001, SC2012, SC1090, SC2129, SC2086, and SC2002 project-wide. See upstream pstuart/Barista#21 for the original policy.
@@ -221,7 +222,7 @@ DEBUG_MODE="true"  # In config
 
 ## Pre-PR Checks
 
-[Cortado's GitHub Actions workflow](.github/workflows/ci.yml) runs on every pull request and on pushes to `main`. It checks macOS system Bash 3.2 with Homebrew and Apple jq, and Ubuntu. Each suite runs under a 300 s limit. On macOS the default-render timing (60 samples) blocks above p95 250 ms, a regression guard; the 150 ms target holds on a developer Mac, but GitHub's shared runner measures about 188 ms (#25). Ubuntu timing is informational. Windows is not supported (owner decision, 2026-11-25, on #24), so CI does not run it. Releases follow the `cortado-release` skill.
+[Cortado's GitHub Actions workflow](.github/workflows/ci.yml) runs on every pull request and on pushes to `main`. It checks macOS system Bash 3.2 with Homebrew and Apple jq, and Ubuntu. Each suite runs under a 300 s limit. On macOS the default-render timing (60 samples) blocks above p95 250 ms, a regression guard, and a second series of 60 renders while a weather request hangs is reported but does not gate; the 150 ms target holds on a developer Mac, but GitHub's shared runner measures about 188 ms (#25). Warm all-modules timing and Ubuntu default timing are informational. Windows is not supported (owner decision, 2026-11-25, on #24), so CI does not run it. Releases follow the `cortado-release` skill.
 
 Run the local checks below from the repository root before opening a pull request and again before merging. Paste their output into the pull request's `## Verification` section. This is the canonical local gate.
 
@@ -323,7 +324,7 @@ Development skills live in `.claude/skills/` (canonical). Each `.agents/skills/<
 
 ## Dependencies
 
-- **Required**: `jq` (JSON processor; without it the line reads `cortado: jq missing`). `bc` is used only by the opt-in brightness, load and temperature modules.
+- **Required**: `jq` (JSON processor; without it the line reads `cortado: jq missing`). `bc` is used by the opt-in temperature module. Perl runs the detached probes and handles Git and session cache metadata.
 - **Optional**: Various CLI tools for specific modules (docker, node, etc.)
 
 ## Custom Config Directory
