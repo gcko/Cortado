@@ -88,6 +88,21 @@ parse_case 'tilde expansion' 'DISK_PATH=~/x' 'unread:tilde expansion'
 parse_case 'tilde after a colon' 'DISK_PATH=/a:~/x' 'unread:tilde expansion'
 parse_case 'a tilde inside a word is literal' 'MODEL_ICON=a~b' 'set MODEL_ICON=a~b'
 parse_case 'a quoted tilde is literal' 'SEPARATOR="~"' 'set SEPARATOR=~'
+# Bash expands a tilde only in unquoted text, so a quoted ":~" stays literal.
+parse_case 'a quoted colon-tilde is literal' 'SEPARATOR="a:~"' 'set SEPARATOR=a:~'
+parse_case 'a quoted colon-tilde before a comment is literal' 'SEPARATOR="a:~" # c' 'set SEPARATOR=a:~'
+parse_case 'an exported quoted colon-tilde is literal' 'export SEPARATOR="a:~"' 'set SEPARATOR=a:~'
+parse_case 'a single-quoted colon-tilde is literal' "SEPARATOR=':~'" 'set SEPARATOR=:~'
+parse_case 'an unquoted colon-tilde expands' 'SEPARATOR=a:~' 'unread:tilde expansion'
+parse_case 'a bare tilde expands' 'SEPARATOR=~' 'unread:tilde expansion'
+parse_case 'an unquoted colon-tilde after a quoted part expands' 'DISK_PATH="/a":~/x' 'unread:tilde expansion'
+parse_case 'a tilde after an empty quoted part is literal' 'MODEL_ICON=""~' 'set MODEL_ICON=~'
+parse_case 'a tilde after a quoted word is literal' 'MODEL_ICON="a"~b' 'set MODEL_ICON=a~b'
+parse_case 'a tilde after a quoted colon is literal' 'MODEL_ICON="a:"~' 'set MODEL_ICON=a:~'
+parse_case 'a tilde after an escaped colon is literal' 'MODEL_ICON=a\:~' 'set MODEL_ICON=a:~'
+parse_case 'an escaped tilde after a colon is literal' 'MODEL_ICON=a:\~' 'set MODEL_ICON=a:~'
+parse_case 'a quote inside single quotes leaves one unterminated' "SEPARATOR='a'b'" 'unread:unterminated quote'
+parse_case 'an unbraced variable' 'DISK_PATH=$HOME' 'unread:variable expansion'
 parse_case 'array assignment' 'MODULE_ORDER=(a b)' 'unread:not a single KEY=VALUE'
 parse_case 'plain command' 'touch x' 'unread:shell command'
 parse_case 'unset command' 'unset MODEL_ICON' 'unread:shell command'
@@ -297,6 +312,19 @@ marker_absent 'config --show does not run the user config'
 assert_contains 'config --show names the unread line' 'line 5: command substitution' "$show"
 assert_contains 'config --show still reads the other settings' 'DISPLAY_MODE=compact' "$show"
 
+# A refused (world-writable) file is never sourced, so --show must not say it is.
+new_sandbox
+user_config "${base[@]}" 'MODEL_ICON="$(touch "$MARK")"'
+chmod 666 "$sb/cortado.conf"
+show=$(CORTADO_CONF_ALLOW_BASH=1 CLAUDE_CONFIG_DIR="$sb" MARK="$sb/marker" /bin/bash "$tree/cortado.sh" config --show 2>&1)
+marker_absent 'config --show under the opt-in does not run a refused file'
+assert_contains 'config --show says a refused file is inactive' 'inactive' "$show"
+assert_not_contains 'config --show does not call a refused file sourced' 'sourced as Bash' "$show"
+new_sandbox
+user_config "${base[@]}"
+show=$(CORTADO_CONF_ALLOW_BASH=1 CLAUDE_CONFIG_DIR="$sb" /bin/bash "$tree/cortado.sh" config --show 2>&1)
+assert_contains 'config --show names the opt-in for a trusted file' 'sourced as Bash' "$show"
+
 new_sandbox
 user_config "${base[@]}" 'MODEL_ICON="$(touch "$MARK")"' 'f() { touch "$MARK"; }' \
     'if true; then' 'DISPLAY_MODE=verbose' 'fi' "SEPARATOR=\$' | '" 'DISPLAY_MODE=normal \' \
@@ -319,6 +347,30 @@ assert_eq 'migrate --dry-run leaves the mtime and mode' "$ls_before" \
 assert_eq 'migrate --dry-run writes no backup or lock' '' \
     "$(find "$sb" -maxdepth 1 -name 'cortado.conf?*' -print)"
 marker_absent 'migrate --dry-run runs nothing'
+
+# The opt-in sources the file for the statusline, never for the dry-run.
+new_sandbox
+user_config "${base[@]}" 'MODEL_ICON="$(touch "$MARK")"'
+dry=$(CORTADO_CONF_ALLOW_BASH=1 CLAUDE_CONFIG_DIR="$sb" MARK="$sb/marker" /bin/bash "$tree/cortado.sh" config --migrate --dry-run 2>&1)
+marker_absent 'migrate --dry-run runs nothing under the opt-in'
+assert_contains 'migrate --dry-run under the opt-in still lists the line' 'line 5: command substitution' "$dry"
+
+# Before the first render, only barista.conf exists. The dry-run reads it in
+# place and copies nothing.
+new_sandbox
+printf '%s\n' 'MODEL_ICON="$(touch "$MARK")"' 'DISPLAY_MODE=compact' > "$sb/barista.conf"
+chmod 600 "$sb/barista.conf"
+dry=$(CORTADO_CONF_ALLOW_BASH=1 CLAUDE_CONFIG_DIR="$sb" MARK="$sb/marker" /bin/bash "$tree/cortado.sh" config --migrate --dry-run 2>&1)
+assert_rc 'migrate --dry-run does not copy barista.conf to cortado.conf' 1 test -e "$sb/cortado.conf"
+marker_absent 'migrate --dry-run does not run barista.conf'
+assert_contains 'migrate --dry-run names the legacy file it read' "Config file: $sb/barista.conf" "$dry"
+assert_contains 'migrate --dry-run lists the legacy line' 'line 1: command substitution' "$dry"
+assert_not_contains 'migrate --dry-run does not list the legacy setting' 'line 2:' "$dry"
+# The same holds when the directory refuses the copy.
+chmod 500 "$sb"
+dry=$(CLAUDE_CONFIG_DIR="$sb" /bin/bash "$tree/cortado.sh" config --migrate --dry-run 2>&1)
+chmod 700 "$sb"
+assert_contains 'migrate --dry-run reads barista.conf in a read-only directory' 'line 1: command substitution' "$dry"
 
 new_sandbox
 user_config "${base[@]}"
@@ -388,6 +440,24 @@ rc=0
 CLAUDE_CONFIG_DIR="$sb" /bin/bash "$tree/cortado.sh" config --set CACHE_DIR=/tmp/x > /dev/null 2>&1 || rc=$?
 assert_eq 'a reserved shell name is never a setting, even under the prefix' 2 "$rc"
 
+# One name from each reserved family, declared by a module whose prefix fits it.
+# The whole prefix is reserved, so toggling the module proves it was read.
+for pair in bash:BASH_ENV claude:CLAUDE_CONFIG_DIR ctx:CTX_MODEL_NAME cortado:CORTADO_CONF_ALLOW_BASH; do
+    id="${pair%%:*}" reserved="${pair#*:}"
+    new_sandbox
+    mkdir -m 700 "$sb/cortado-modules"
+    printf '%s\n' "# @cortado-module $id" '# @default false' "# @config $reserved:string" \
+        "module_$id() { printf '%s\n' x; }" > "$sb/cortado-modules/$id.sh"
+    chmod 600 "$sb/cortado-modules/$id.sh"
+    user_config "${base[@]}"
+    rc=0
+    CLAUDE_CONFIG_DIR="$sb" /bin/bash "$tree/cortado.sh" config --toggle "$id" > /dev/null 2>&1 || rc=$?
+    assert_eq "the $id user module is read" 0 "$rc"
+    rc=0
+    CLAUDE_CONFIG_DIR="$sb" /bin/bash "$tree/cortado.sh" config --set "$reserved=1" > /dev/null 2>&1 || rc=$?
+    assert_eq "the reserved name $reserved is never a setting, even under the prefix" 2 "$rc"
+done
+
 echo "=== project and legacy scopes ==="
 new_sandbox
 user_config "${base[@]}"
@@ -396,6 +466,21 @@ rc=0
     --set CONTEXT_WARNING_THRESHOLD=high > /dev/null 2>&1) || rc=$?
 assert_eq 'a project config refuses a value of the wrong type' 2 "$rc"
 assert_rc 'the refused project value is not written' 1 test -e "$project/.cortado.conf"
+rc=0
+(cd "$project" && CLAUDE_CONFIG_DIR="$sb" /bin/bash "$tree/cortado.sh" config --project \
+    --set TERMINAL_WIDTH=notanint > /dev/null 2>&1) || rc=$?
+assert_eq 'a project config refuses a mistyped core setting' 2 "$rc"
+assert_rc 'the refused core value is not written' 1 test -e "$project/.cortado.conf"
+printf '%s\n' 'PROGRESS_BAR_WIDTH=notanint' 'USE_ICONS=maybe' 'CONTEXT_WARNING_THRESHOLD=abc' \
+    'SEPARATOR=" / "' 'TERMINAL_WIDTH=120' > "$project/.cortado.conf"
+dry=$(cd "$project" && CLAUDE_CONFIG_DIR="$sb" /bin/bash "$tree/cortado.sh" config --project --migrate --dry-run 2>&1)
+assert_contains 'a project dry-run types a core int' 'line 1: PROGRESS_BAR_WIDTH expects a int value' "$dry"
+assert_contains 'a project dry-run types a core bool' 'line 2: USE_ICONS expects a bool value' "$dry"
+assert_contains 'a project dry-run names a mistyped module setting' \
+    'line 3: CONTEXT_WARNING_THRESHOLD expects a int value' "$dry"
+assert_not_contains 'a project dry-run reads a well-typed core string' 'line 4:' "$dry"
+assert_not_contains 'a project dry-run reads a well-typed core int' 'line 5:' "$dry"
+rm -f "$project/.cortado.conf"
 
 # A legacy barista.conf used in place (its copy failed) is data too.
 new_sandbox

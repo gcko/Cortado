@@ -81,30 +81,40 @@ load_config() {
 # Shared project allowlist for the renderer and config CLI.
 project_config_setting_allowed() {
     local key="$1" val="$2" REPLY
-    case "$val" in *[[:cntrl:]]*) return 1 ;; esac
-    # Allow a pipe for the default separator.
-    case "$val" in
-        *\`*|*\$*|*\;*|*\&*|*\>*|*\<*|*'*'*|*'?'*|*'['*) return 1 ;;
-    esac
     case "$key" in
         SEPARATOR|DISPLAY_MODE|COLOR_THEME|USE_ICONS|USE_STATUS_INDICATORS|STATUS_STYLE|\
         STATUS_GREEN|STATUS_YELLOW|STATUS_ORANGE|STATUS_RED|\
         LAYOUT_MODE|TERMINAL_WIDTH|RIGHT_SIDE_RESERVE|MODULE_ORDER|\
         PROGRESS_BAR_WIDTH|PROGRESS_BAR_FILLED|PROGRESS_BAR_EMPTY)
-            return 0
             ;;
         ''|*[!A-Z0-9_]*) return 1 ;;
         MODULE_*)
+            case "$_CORTADO_MODULE_FLAGS" in *" $key "*) ;; *) return 1 ;; esac
             [ "$val" = false ] || return 1
-            case "$_CORTADO_MODULE_FLAGS" in *" $key "*) return 0 ;; *) return 1 ;; esac
+            return 0
+            ;;
+        *)
+            case "$_CORTADO_PROJECT_KEYS" in
+                *" $key "*) ;;
+                *) return 1 ;;
+            esac
             ;;
     esac
-    case "$_CORTADO_PROJECT_KEYS" in
-        *" $key "*) ;;
-        *) return 1 ;;
+    # Allow a pipe for the default separator.
+    case "$val" in
+        *[[:cntrl:]]*|*\`*|*\$*|*\;*|*\&*|*\>*|*\<*|*'*'*|*'?'*|*'['*)
+            CONFIG_POLICY_REASON="$key has characters a project config may not use"
+            CONFIG_POLICY_KIND='type'
+            return 1
+            ;;
     esac
-    # Installed module settings carry the type their @config header declares.
-    config_key_type "$key" && config_value_fits_type "$REPLY" "$val"
+    # Core and installed module settings are typed as in the trusted configs.
+    config_key_type "$key" || return 1
+    if ! config_value_fits_type "$REPLY" "$val"; then
+        CONFIG_POLICY_REASON="$key expects a $REPLY value" CONFIG_POLICY_KIND=type
+        return 1
+    fi
+    return 0
 }
 
 # Match complete exported names, including names with empty values.
@@ -179,10 +189,23 @@ fi
 load_config "$CONFIG_FILE" packaged
 
 USER_CONFIG="$CLAUDE_CONFIG_DIR/cortado.conf"
+# `config --migrate` reads the user file itself, read-only: it must neither
+# copy barista.conf nor source the user config under the opt-in.
+_CORTADO_READ_USER_CONFIG=true
+case "${1:-}" in
+    config|--config)
+        for _cortado_arg in "$@"; do
+            [ "$_cortado_arg" != --migrate ] || _CORTADO_READ_USER_CONFIG=false
+        done
+        unset _cortado_arg
+        ;;
+esac
 # Carry over trusted Barista settings. Use the checked legacy path in place
 # if we cannot publish a usable copy.
 LEGACY_USER_CONFIG="$CLAUDE_CONFIG_DIR/barista.conf"
-if [[ ! -e "$USER_CONFIG" && ! -L "$USER_CONFIG" ]] &&
+if [ "$_CORTADO_READ_USER_CONFIG" != true ]; then
+    :
+elif [[ ! -e "$USER_CONFIG" && ! -L "$USER_CONFIG" ]] &&
    [[ -e "$LEGACY_USER_CONFIG" || -L "$LEGACY_USER_CONFIG" ]]; then
     if check_trusted_config "$LEGACY_USER_CONFIG"; then
         if copy_checked_legacy_config "$REPLY" "$USER_CONFIG" 2>/dev/null; then

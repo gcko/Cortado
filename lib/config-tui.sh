@@ -540,7 +540,9 @@ _cfg_show() {
     elif [[ ! -e "$path" && ! -L "$path" ]]; then
         echo "(file does not exist yet — defaults will be used until saved)"
     fi
-    if [ "$scope" = "global" ] && [ "${_CORTADO_CONF_ALLOW_BASH:-false}" = true ]; then
+    # A refused file is never sourced, opt-in or not.
+    if [ "$scope" = "global" ] && [ "${_CORTADO_CONF_ALLOW_BASH:-false}" = true ] &&
+        [ "$_CFG_GLOBAL_CONFIG_REFUSED" != true ]; then
         echo "CORTADO_CONF_ALLOW_BASH=1: this file is sourced as Bash."
     fi
     if [ "$scope" = "global" ] && [ "${CONFIG_UNREAD[0]+set}" ]; then
@@ -851,7 +853,10 @@ _cfg_migrate_dry_run() {
     local path="$1" scope="$2" policy=trusted_config_setting_allowed
     local _CFG_MIGRATE_LINES=()
     [ "$scope" = project ] && policy=project_config_setting_allowed
-    echo "Config file: $path"
+    case "$path" in
+        */barista.conf|*/.barista.conf) echo "Config file: $path (pre-rename Barista config, read in place)" ;;
+        *) echo "Config file: $path" ;;
+    esac
     if [ ! -f "$path" ]; then
         if [[ -e "$path" || -L "$path" ]]; then
             echo "config: not a regular file; nothing was read: $path" >&2
@@ -959,6 +964,13 @@ cortado_config_main() {
         fi
         if [ "$scope" = "project" ] && [ ! -f "$path" ] && [ -f "${PWD}/.barista.conf" ]; then
             path="${PWD}/.barista.conf"
+        fi
+        # Until the first render copies it, the statusline reads barista.conf.
+        # Inspect it in place rather than copying it.
+        local legacy="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/barista.conf"
+        if [ "$scope" = "global" ] && [[ ! -e "$path" && ! -L "$path" ]] &&
+            [[ -e "$legacy" || -L "$legacy" ]]; then
+            path="$legacy"
         fi
         _cfg_migrate_dry_run "$path" "$scope"
         return

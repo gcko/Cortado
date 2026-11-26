@@ -16,7 +16,7 @@ CONFIG_MAX_LINE_BYTES=4096
 # and CONFIG_VALUE for an assignment. Return 1 for a blank or comment line, 2
 # for a line the grammar refuses (CONFIG_REASON).
 config_parse_line() {
-    local line="$1" raw rest seg out c sq="'"
+    local line="$1" raw whole rest seg out c tilde sq="'"
     local bare='[^[:space:];&|<>()`"'\''\\$]'
     local single="'[^']*'" double='"([^"\\$`]|\\.)*"'
     local pattern="^[[:blank:]]*(export[[:blank:]]+)?([A-Za-z_][A-Za-z0-9_]*)=(($bare|\\\\.|$single|$double)*)([[:blank:]]+(#.*)?)?$"
@@ -39,14 +39,7 @@ config_parse_line() {
     fi
     CONFIG_KEY="${BASH_REMATCH[2]}"
     raw="${BASH_REMATCH[3]}"
-    # Bash expands a tilde at the start of a value or after a colon.
-    case "$raw" in
-        '~'*|*':~'*)
-            CONFIG_REASON='tilde expansion'
-            return 2
-            ;;
-    esac
-    out=
+    whole="$raw" out='' tilde=''
     while [ -n "$raw" ]; do
         case "$raw" in
             "$sq"*)
@@ -85,6 +78,17 @@ config_parse_line() {
             *)
                 # shellcheck disable=SC2295 # text_stop is a bracket pattern.
                 seg="${raw%%$text_stop*}"
+                # Bash expands an unquoted tilde at the start of the value or
+                # after an unquoted colon. Quoted text never expands.
+                case "$seg" in
+                    *':~'*) tilde=expands ;;
+                    '~'*) [ "$raw" != "$whole" ] || tilde=expands ;;
+                esac
+                if [ "$tilde" = expands ]; then
+                    CONFIG_KEY=''
+                    CONFIG_REASON='tilde expansion'
+                    return 2
+                fi
                 out="$out$seg"
                 raw="${raw#"$seg"}"
                 ;;
