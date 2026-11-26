@@ -1034,9 +1034,11 @@ PATH="$term_root/bin:$PATH" /bin/bash -c '
     export BREAK_PID=$$
     _update_begin
     _update_break_stale_lock "$2/.cortado-update.lock" 999999999
+    : > "$3"
     _update_end
-' _ "$INSTALL" "$term_root/cfg" >/dev/null 2>&1
+' _ "$INSTALL" "$term_root/cfg" "$term_root/ran-on" >/dev/null 2>&1
 assert_eq "TERM while breaking a stale lock still exits 143" 143 "$?"
+assert_rc "TERM while breaking a stale lock is delivered as the break ends" 1 test -e "$term_root/ran-on"
 assert_eq "TERM while breaking a stale lock still hands a live lock back" "$$" \
     "$(readlink "$term_root/cfg/.cortado-update.lock")"
 assert_eq "TERM while breaking a stale lock leaves nothing set aside" .cortado-update.lock \
