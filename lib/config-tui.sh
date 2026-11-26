@@ -148,23 +148,31 @@ _cfg_resolve_path() {
 
 # Project settings overlay the same trusted values that the renderer loaded.
 _cfg_load_into_shell() {
-    local path="$1"
+    local path="$1" REPLY
     local scope="${2:-global}"
     if [ "$scope" = "project" ]; then
         _CFG_PROJECT_SETTINGS=()
         _CFG_PROJECT_ORIGINAL=()
         [ ! -f "$path" ] || load_config_safe "$path" _cfg_load_project_value
     else
-        load_config "$SCRIPT_DIR/cortado.conf"
-        if _cfg_resolve_target "$path" && [ -f "$REPLY" ]; then
-            local target="$REPLY"
-            if config_not_group_or_world_writable "$target" 2>/dev/null; then
+        # cortado.sh already reported a packaged refusal at startup.
+        load_config "$SCRIPT_DIR/cortado.conf" packaged 2>/dev/null
+        if [[ -e "$path" || -L "$path" ]]; then
+            # The trust check follows a link itself; source exactly what it judged.
+            if check_trusted_config "$path" 2>/dev/null; then
                 # shellcheck disable=SC1090
-                . "$path"
+                . "$REPLY"
             else
-                read_config_kv "$target" _cfg_is_global_key _cfg_load_global_value
+                _CFG_GLOBAL_CONFIG_REFUSED=true
+                # Read literal settings from the file the link resolves to, as
+                # the writer edits it; a dangling link has nothing to read.
+                if _cfg_resolve_target "$path" && [ -f "$REPLY" ]; then
+                    read_config_kv "$REPLY" _cfg_is_global_key _cfg_load_global_value
+                fi
             fi
         fi
+        # Start from the order the renderer falls back to, never an empty one.
+        MODULE_ORDER="${MODULE_ORDER:-${CORTADO_DEFAULT_MODULE_ORDER:-}}"
         # The global editor fills catalog defaults for missing flags. In project
         # scope, an unset flag has the same meaning as it does in the renderer.
         local mod_def name var def
@@ -476,6 +484,11 @@ _cfg_write_conf() (
     trap - EXIT
     rm -f -- "$tmp" "$snapshot"
     rmdir -- "$lock"
+    # The renderer sources the user config only after the same trust check,
+    # which also judges the parent of the file a link resolves to.
+    if [ "$status" -eq 0 ] && [ "$scope" != project ] && ! check_trusted_config "$path"; then
+        printf 'config: Saved settings are inactive until Cortado can trust %s\n' "$path" >&2
+    fi
     return "$status"
 )
 
@@ -549,7 +562,9 @@ _cfg_save_menu() {
 _cfg_show() {
     local path="$1" scope="$2"
     echo "Config file: $path"
-    if [ ! -f "$path" ]; then
+    if [ "$scope" = "global" ] && [ "$_CFG_GLOBAL_CONFIG_REFUSED" = true ]; then
+        echo "Saved settings are inactive. The statusline ignores this file."
+    elif [[ ! -e "$path" && ! -L "$path" ]]; then
         echo "(file does not exist yet — defaults will be used until saved)"
     fi
     echo ""
@@ -880,6 +895,7 @@ EOF
 cortado_config_main() {
     _cfg_init_colors
     _cfg_init_catalog
+    local _CFG_GLOBAL_CONFIG_REFUSED=false
     local scope="global"
     local action="interactive"
     local set_kv="" toggle_name=""
@@ -919,11 +935,16 @@ cortado_config_main() {
         return 0
     fi
 
-    # Pre-rename fallback for project scope (the global barista.conf is carried over
-    # by cortado.sh at startup). Load valid legacy settings, then write the new
-    # name only if an edit succeeds.
+    # Pre-rename fallbacks. cortado.sh copies a trusted global barista.conf at
+    # startup when it can; otherwise the renderer keeps reading barista.conf,
+    # so show and edit that file. A project's legacy settings are loaded, and
+    # an edit writes the new name.
     local load_path="$path"
-    if [ "$scope" = "project" ] && [ ! -f "$path" ] && [ -f "${PWD}/.barista.conf" ]; then
+    if [ "$scope" = "global" ] && [[ ! -e "$path" && ! -L "$path" ]] &&
+       [[ -e "${path%/*}/barista.conf" || -L "${path%/*}/barista.conf" ]]; then
+        path="${path%/*}/barista.conf"
+        load_path="$path"
+    elif [ "$scope" = "project" ] && [ ! -f "$path" ] && [ -f "${PWD}/.barista.conf" ]; then
         load_path="${PWD}/.barista.conf"
     fi
 

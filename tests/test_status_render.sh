@@ -27,8 +27,7 @@ render() {
     local name="$1" payload="$2"
     shift 2
     local sb="$TEST_BASE/$name"
-    mkdir -p "$sb/cortado-cache"
-    chmod 700 "$sb/cortado-cache"
+    mkdir -m 700 "$sb" "$sb/cortado-cache" || return 1
     printf '%s\n' "$@" > "$sb/cortado.conf"
     chmod 600 "$sb/cortado.conf"
     if [ -n "${SEED_RATE_LIMITS:-}" ]; then

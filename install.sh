@@ -64,6 +64,8 @@ setup_colors() {
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/semver.sh
 . "$SCRIPT_DIR/lib/semver.sh"
+# shellcheck source=lib/config-permissions.sh
+. "$SCRIPT_DIR/lib/config-permissions.sh"
 # shellcheck source=lib/module-registry.sh
 . "$SCRIPT_DIR/lib/module-registry.sh"
 
@@ -1081,10 +1083,11 @@ show_statusline_preview() {
 # =============================================================================
 # CONFIGURATION GENERATION
 # =============================================================================
-generate_config() {
+generate_config() (
     local config_file="$1"
+    umask 077
 
-    cat > "$config_file" << 'HEADER'
+    cat > "$config_file" << 'HEADER' || return 1
 # =============================================================================
 # Cortado Configuration
 # =============================================================================
@@ -1096,32 +1099,32 @@ generate_config() {
 HEADER
 
     # Write global settings based on installer selections
-    echo "# Global Settings" >> "$config_file"
+    echo "# Global Settings" >> "$config_file" || return 1
     if [ "$USE_EMOJI" = "false" ]; then
-        echo 'USE_ICONS="false"' >> "$config_file"
+        echo 'USE_ICONS="false"' >> "$config_file" || return 1
     else
-        echo 'USE_ICONS="true"' >> "$config_file"
+        echo 'USE_ICONS="true"' >> "$config_file" || return 1
     fi
 
     # Display mode
-    echo "DISPLAY_MODE=\"${DISPLAY_MODE:-normal}\"" >> "$config_file"
+    echo "DISPLAY_MODE=\"${DISPLAY_MODE:-normal}\"" >> "$config_file" || return 1
 
     # Status style
-    echo "STATUS_STYLE=\"${STATUS_STYLE:-emoji}\"" >> "$config_file"
+    echo "STATUS_STYLE=\"${STATUS_STYLE:-emoji}\"" >> "$config_file" || return 1
 
     # Progress bar characters
-    echo "PROGRESS_BAR_FILLED=\"${PROGRESS_FILLED:-█}\"" >> "$config_file"
-    echo "PROGRESS_BAR_EMPTY=\"${PROGRESS_EMPTY:-░}\"" >> "$config_file"
+    echo "PROGRESS_BAR_FILLED=\"${PROGRESS_FILLED:-█}\"" >> "$config_file" || return 1
+    echo "PROGRESS_BAR_EMPTY=\"${PROGRESS_EMPTY:-░}\"" >> "$config_file" || return 1
 
     # Separator
-    echo "SEPARATOR=\"${SEPARATOR_CHAR:- | }\"" >> "$config_file"
+    echo "SEPARATOR=\"${SEPARATOR_CHAR:- | }\"" >> "$config_file" || return 1
 
     # Color theme
-    echo "COLOR_THEME=\"${COLOR_THEME:-default}\"" >> "$config_file"
-    echo "" >> "$config_file"
+    echo "COLOR_THEME=\"${COLOR_THEME:-default}\"" >> "$config_file" || return 1
+    echo "" >> "$config_file" || return 1
 
     # Write module enable/disable settings
-    echo "# Module Settings" >> "$config_file"
+    echo "# Module Settings" >> "$config_file" || return 1
     for mod_def in "${ALL_MODULES[@]}"; do
         local name=$(get_module_name "$mod_def")
         local var_name="MODULE_$(echo "$name" | tr '[:lower:]-' '[:upper:]_')"
@@ -1131,12 +1134,12 @@ HEADER
             enabled="true"
         fi
 
-        echo "$var_name=\"$enabled\"" >> "$config_file"
+        echo "$var_name=\"$enabled\"" >> "$config_file" || return 1
     done
 
     # Write module order
-    echo "" >> "$config_file"
-    echo "# Module display order (comma-separated)" >> "$config_file"
+    echo "" >> "$config_file" || return 1
+    echo "# Module display order (comma-separated)" >> "$config_file" || return 1
     local order_str=""
     for module in "${SELECTED_MODULES[@]}"; do
         if [ -z "$order_str" ]; then
@@ -1145,7 +1148,7 @@ HEADER
             order_str="$order_str,$module"
         fi
     done
-    echo "MODULE_ORDER=\"$order_str\"" >> "$config_file"
+    echo "MODULE_ORDER=\"$order_str\"" >> "$config_file" || return 1
 
     # Write footer with basic settings
     cat >> "$config_file" << 'FOOTER'
@@ -1181,22 +1184,22 @@ DEBUG_MODE="false"
 #   - Different modules for different project types
 #   - Disabling slow modules in certain directories
 FOOTER
-}
+)
 
 # =============================================================================
 # VALIDATION
 # =============================================================================
 validate_config() {
-    local config_file="$1"
-    local errors=0
+    local config_file="$1" REPLY
 
-    if [ ! -f "$config_file" ]; then
+    if [[ ! -e "$config_file" && ! -L "$config_file" ]]; then
         return 0
     fi
+    check_trusted_config "$config_file" packaged || return 1
 
     # Source the config to validate
     (
-        . "$config_file" 2>/dev/null
+        . "$REPLY" 2>/dev/null
 
         # Validate MODULE_ORDER contains valid modules
         if [ -n "$MODULE_ORDER" ]; then
@@ -1235,7 +1238,7 @@ validate_config() {
         done
     )
 
-    return $errors
+    return 0
 }
 
 # =============================================================================
@@ -1243,14 +1246,19 @@ validate_config() {
 # =============================================================================
 # Copy the user's Barista override (barista.conf) to cortado.conf so their settings
 # carry over. Never overwrites an existing cortado.conf and leaves the original in
-# place. cp -p keeps the 600 mode that cortado.sh's writable-config check expects.
+# place. Verify the original before copying it with permissions intact.
 # Prints the path it migrated, or nothing when there was nothing to do.
 migrate_legacy_user_config() {
     local legacy="${1:-$LEGACY_USER_CONFIG}"
     local target="${2:-$CLAUDE_DIR/cortado.conf}"
-    [ -f "$legacy" ] || return 0
-    [ -f "$target" ] && return 0
-    cp -p "$legacy" "$target" || return 1
+    local REPLY
+    [[ -e "$legacy" || -L "$legacy" ]] || return 0
+    [[ -e "$target" || -L "$target" ]] && return 0
+    check_trusted_config "$legacy" || return 1
+    if ! copy_checked_legacy_config "$REPLY" "$target"; then
+        print_warning "Using legacy config in place at $legacy" >&2
+        return 0
+    fi
     echo "$target"
 }
 
@@ -1455,7 +1463,7 @@ do_uninstall() {
 }
 
 # Copy runtime files (script, VERSION, modules, lib) into an install prefix.
-# Testable without writing settings.json. Fail if lib/config-tui.sh is absent.
+# Testable without writing settings.json.
 copy_runtime_files() {
     local src="${1:-$SCRIPT_DIR}"
     local dest="$2"
@@ -1463,7 +1471,7 @@ copy_runtime_files() {
     [ -n "$dest" ] || return 1
     [ -f "$src/cortado.sh" ] || return 1
     [ -d "$src/modules" ] || return 1
-    [ -d "$src/lib" ] || return 1
+    [ -f "$src/lib/config-permissions.sh" ] && [ -f "$src/lib/config-tui.sh" ] || return 1
 
     mkdir -p "$dest/modules" "$dest/lib" || return 1
     cp "$src/cortado.sh" "$dest/" || return 1
@@ -1473,7 +1481,6 @@ copy_runtime_files() {
     fi
     cp "$src/modules/"*.sh "$dest/modules/" || return 1
     cp "$src/lib/"*.sh "$dest/lib/" || return 1
-    [ -f "$dest/lib/config-tui.sh" ] || return 1
     return 0
 }
 
@@ -1694,18 +1701,50 @@ do_install() (
     echo ""
 
     # Create directories
-    mkdir -p "$CLAUDE_DIR" || {
+    (umask 077; mkdir -p "$CLAUDE_DIR") || {
         print_error "Could not create $CLAUDE_DIR"
         exit 1
     }
 
-    local pending_backup=""
+    if [[ -e "$CORTADO_DIR" || -L "$CORTADO_DIR" ]] && [ ! -d "$CORTADO_DIR" ]; then
+        print_error "Expected a directory at $CORTADO_DIR" >&2
+        exit 1
+    fi
+
+    local pending_backup="" runtime_stage="" runtime_promoted=false runtime_committed=false
+    # Older ShellCheck (CI's Ubuntu) reports the trap-only body as unreachable (SC2317).
+    # shellcheck disable=SC2317,SC2329 # Called by the EXIT trap in this subshell.
+    cleanup_install() {
+        if [ -n "$runtime_stage" ]; then
+            if [ "$runtime_committed" = false ]; then
+                if [ "$runtime_promoted" = true ]; then
+                    if ! mv -- "$CORTADO_DIR" "$runtime_stage/"; then
+                        print_error "Could not roll back the new runtime. The previous runtime is in $runtime_stage/previous." >&2
+                        return 1
+                    fi
+                fi
+                local saved="$runtime_stage/previous/cortado"
+                if [[ -e "$saved" || -L "$saved" ]] && ! mv -- "$saved" "$CLAUDE_DIR/"; then
+                    print_error "Could not restore $saved to $CLAUDE_DIR" >&2
+                    return 1
+                fi
+            fi
+            rm -rf -- "$runtime_stage"
+        fi
+        [ -z "$pending_backup" ] || rm -rf -- "$pending_backup"
+    }
+    trap cleanup_install EXIT
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+
     if [ "$first_line" = "detected" ]; then
-        if ! mkdir -p "$BACKUP_DIR" || ! pending_backup=$(mktemp -d "$BACKUP_DIR/snapshot.XXXXXX"); then
+        local snapshot
+        if ! mkdir -p "$BACKUP_DIR" || ! snapshot=$(mktemp -d "$BACKUP_DIR/snapshot.XXXXXX"); then
             print_error "Could not stage a statusline backup in $BACKUP_DIR" >&2
             exit 1
         fi
-        trap 'rm -rf -- "$pending_backup"' EXIT
+        pending_backup="$snapshot"
         if ! backup_existing_statusline "$pending_backup"; then
             print_error "Could not prepare a statusline backup in $BACKUP_DIR" >&2
             exit 1
@@ -1717,57 +1756,54 @@ do_install() (
                 print_error "Could not save backup manifest in $BACKUP_DIR" >&2
                 exit 1
             fi
-            trap - EXIT
             pending_backup=""
         fi
     fi
 
-    # Remove existing installation
-    [ -d "$CORTADO_DIR" ] && rm -rf "$CORTADO_DIR"
-    [ -f "$CLAUDE_DIR/cortado.sh" ] && rm "$CLAUDE_DIR/cortado.sh"
-
-    # Install files
+    # Stage and test a complete replacement before moving any live files.
     print_info "Installing Cortado..."
 
-    mkdir -p "$CORTADO_DIR" || {
-        print_error "Could not create $CORTADO_DIR"
+    local stage staged_runtime
+    if ! stage=$(mktemp -d "$CLAUDE_DIR/.cortado-install.XXXXXX"); then
+        print_error "Could not stage Cortado runtime in $CLAUDE_DIR" >&2
         exit 1
-    }
+    fi
+    runtime_stage="$stage"
+    staged_runtime="$runtime_stage/cortado"
+    (umask 077; mkdir "$staged_runtime" "$runtime_stage/previous") || exit 1
 
     local installed_dir
-    if ! installed_dir=$(CDPATH='' cd -- "$CORTADO_DIR" && pwd -P); then
+    if ! installed_dir=$(CDPATH='' cd -- "$CLAUDE_DIR" && pwd -P); then
         print_error "Could not resolve the installed directory: $CORTADO_DIR" >&2
         exit 1
     fi
+    installed_dir="${installed_dir%/}/cortado"
 
-    if ! copy_runtime_files "$SCRIPT_DIR" "$CORTADO_DIR"; then
-        print_error "Could not copy Cortado runtime files (need cortado.sh, modules/, lib/config-tui.sh)"
+    if ! copy_runtime_files "$SCRIPT_DIR" "$staged_runtime"; then
+        print_error "Could not copy Cortado runtime files (need cortado.sh, modules/, and lib/)"
         exit 1
     fi
 
     # Validate module files
-    local module_count=$(ls -1 "$CORTADO_DIR/modules/"*.sh 2>/dev/null | wc -l | tr -d ' ')
+    local module_count=$(ls -1 "$staged_runtime/modules/"*.sh 2>/dev/null | wc -l | tr -d ' ')
     if [ "$module_count" -eq 0 ]; then
         print_warning "No module files found - statusline may not work correctly"
     else
         print_success "Installed $module_count module files"
     fi
 
-    # Carry over the user's Barista settings before the test run below
-    local migrated
-    if migrated=$(migrate_legacy_user_config); then
-        [ -n "$migrated" ] && print_success "Migrated $LEGACY_USER_CONFIG -> $migrated"
-    else
-        print_warning "Could not copy $LEGACY_USER_CONFIG to $CLAUDE_DIR/cortado.conf (Cortado will read the old file)"
+    local generated="$staged_runtime/cortado.conf"
+    if ! generate_config "$generated" || [ ! -f "$generated" ] || [ -L "$generated" ]; then
+        print_error "Could not generate Cortado config" >&2
+        exit 1
     fi
+    validate_config "$generated" || exit 1
 
-    # Generate config
-    generate_config "$CORTADO_DIR/cortado.conf"
-
-    # Validate generated config
-    validate_config "$CORTADO_DIR/cortado.conf"
-
-    print_success "Copied statusline files to $CORTADO_DIR"
+    # Carry over the user's Barista settings before the test run below.
+    local migrated
+    if migrated=$(migrate_legacy_user_config) && [ -n "$migrated" ]; then
+        print_success "Migrated $LEGACY_USER_CONFIG -> $migrated"
+    fi
 
     # Test installation BEFORE applying to settings.json
     echo ""
@@ -1786,13 +1822,13 @@ do_install() (
         exit 1
     fi
 
-    if ! test_output=$(render_statusline_sample "$installed_dir/cortado.sh" "$test_json"); then
+    if ! test_output=$(render_statusline_sample "$staged_runtime/cortado.sh" "$test_json"); then
         print_error "Installation aborted. Settings not modified."
         print_info "Fix the errors above and try again."
         exit 1
     fi
 
-    if ! test_statusline_directory "$installed_dir/cortado.sh" "$test_json" "$HOME"; then
+    if ! test_statusline_directory "$staged_runtime/cortado.sh" "$test_json" "$HOME"; then
         print_error "Statusline test FAILED - sample directory missing or could not be checked" >&2
         print_error "Installation aborted. Settings not modified." >&2
         exit 1
@@ -1805,7 +1841,9 @@ do_install() (
         print_error "Installation aborted. Settings not modified."
         # shellcheck disable=SC2016 # $payload is a jq variable.
         local quoted_payload=$(jq -nr --arg payload "$test_json" '$payload | @sh')
-        printf '%b %s\n' "${BLUE}i${NC}" "Try running manually: printf '%s\\n' $quoted_payload | $quoted_path"
+        # shellcheck disable=SC2016 # $path is a jq variable.
+        local quoted_source=$(jq -nr --arg path "$SCRIPT_DIR/cortado.sh" '$path | @sh')
+        printf '%b %s\n' "${BLUE}i${NC}" "Try running manually: printf '%s\\n' $quoted_payload | $quoted_source"
         exit 1
     fi
 
@@ -1815,16 +1853,31 @@ do_install() (
     echo "  $test_output"
     echo ""
 
-    # Update settings.json only after successful test
+    if [ -d "$CORTADO_DIR" ] && ! mv -- "$CORTADO_DIR" "$runtime_stage/previous/"; then
+        print_error "Could not move the previous runtime at $CORTADO_DIR" >&2
+        exit 1
+    fi
+    if ! mv -- "$staged_runtime" "$CLAUDE_DIR/"; then
+        print_error "Could not install the staged runtime in $CLAUDE_DIR" >&2
+        exit 1
+    fi
+    runtime_promoted=true
+    print_success "Copied statusline files to $CORTADO_DIR"
+
+    # Update settings.json only after successful test and promotion.
     print_info "Applying configuration to settings.json..."
 
     write_statusline_settings "$quoted_path" || exit 1
+    runtime_committed=true
+    if [ -f "$CLAUDE_DIR/cortado.sh" ]; then
+        rm -- "$CLAUDE_DIR/cortado.sh" || print_warning "Could not remove the older $CLAUDE_DIR/cortado.sh"
+    fi
 
     if [ -n "$pending_backup" ]; then
-        trap - EXIT
         if ! mv -f "$pending_backup/manifest.json" "$BACKUP_DIR/"; then
             print_warning "Could not replace the backup manifest. The new backup is in $pending_backup."
         fi
+        pending_backup=""
     fi
 
     # Final message
@@ -1858,6 +1911,7 @@ do_install() (
         echo -e "To restore it, run: ${CYAN}$0 --uninstall${NC}"
         echo ""
     fi
+    exit 0
 )
 
 # =============================================================================

@@ -7,7 +7,7 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "$PROJECT_ROOT/tests/lib/assert.sh" plain
 TEST_BASE=$(mktemp -d)
 trap 'rm -rf "$TEST_BASE"' EXIT
-mkdir "$TEST_BASE/bin" "$TEST_BASE/proc" "$TEST_BASE/runtime"
+mkdir -m 700 "$TEST_BASE/bin" "$TEST_BASE/proc" "$TEST_BASE/runtime"
 cp -R "$PROJECT_ROOT/modules" "$PROJECT_ROOT/lib" "$PROJECT_ROOT/cortado.sh" \
     "$PROJECT_ROOT/cortado.conf" "$PROJECT_ROOT/VERSION" "$TEST_BASE/runtime/"
 # Redirect only the procfs root. Let Bash expand real paths in the fixture.

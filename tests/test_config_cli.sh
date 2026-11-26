@@ -2,6 +2,7 @@
 # ABOUTME: Tests for cortado.sh config subcommand (CLI path, show, set, toggle, write)
 # ABOUTME: Run with: bash tests/test_config_cli.sh
 
+umask 077
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=tests/lib/assert.sh
 . "$SCRIPT_DIR/tests/lib/assert.sh" indented
@@ -95,6 +96,7 @@ chmod 666 "$TMPHOME/writable-global/cortado.conf"
 show_out=$(CLAUDE_CONFIG_DIR="$TMPHOME/writable-global" "$CORTADO" config --show 2>&1)
 assert_contains "a writable global config supplies literal assignments to --show" "COLOR_THEME=minimal" "$show_out"
 assert_contains "a writable global config leaves shell-only syntax inert" "DISPLAY_MODE=normal" "$show_out"
+assert_contains "a writable global config is shown as saved but inactive" "Saved settings are inactive" "$show_out"
 
 # statusline path still works with empty-ish JSON (no args)
 json='{"cwd":"/tmp","model":{"display_name":"Test"},"context_window":{"used_percentage":10}}'
@@ -249,6 +251,40 @@ echo "--- Barista migration ---"
 file_mode() {
     if [ "$(uname)" = "Darwin" ]; then /usr/bin/stat -f '%Lp' "$1"; else stat -c '%a' "$1"; fi
 }
+
+save_payload='{"model":{"display_name":"OpusGlobalConfigProbe"}}'
+for save_case in new shared; do
+    save_root=$(mktemp -d "$TMPHOME/save.XXXXXX") || exit 1
+    save_root="$save_root/global"
+    if [ "$save_case" = shared ]; then
+        mkdir "$save_root" && chmod 775 "$save_root" || exit 1
+        expected_mode=775
+    else
+        expected_mode=700
+    fi
+    rc=0
+    save_out=$(
+        umask 002
+        CLAUDE_CONFIG_DIR="$save_root" CACHE_DIR="$save_root/cache" \
+            /bin/bash "$CORTADO" config --set MODULE_MODEL=false 2>&1
+    ) || rc=$?
+    assert_eq "$save_case global save succeeds" 0 "$rc"
+    assert_eq "$save_case global save directory mode" "$expected_mode" "$(file_mode "$save_root")"
+    assert_eq "$save_case global save file mode" 600 "$(file_mode "$save_root/cortado.conf")"
+    assert_file_contains "$save_case global save writes the requested setting" 'MODULE_MODEL="false"' \
+        "$save_root/cortado.conf"
+    save_render=$(printf '%s' "$save_payload" | CLAUDE_CONFIG_DIR="$save_root" CACHE_DIR="$save_root/cache" \
+        /bin/bash "$CORTADO" 2>/dev/null)
+    if [ "$save_case" = shared ]; then
+        assert_contains 'A save in a shared directory explains the setting cannot apply' \
+            'Saved settings are inactive' "$save_out"
+        assert_contains 'A save in a shared directory leaves the model visible' OpusGlobalConfigProbe "$save_render"
+        assert_contains 'A save in a shared directory leaves a visible refusal' 'Config refused' "$save_render"
+    else
+        assert_not_contains 'A first save under umask 002 hides the model' OpusGlobalConfigProbe "$save_render"
+        assert_not_contains 'A first save under umask 002 renders without a refusal' 'Config refused' "$save_render"
+    fi
+done
 
 MIG_DIR="$TMPHOME/mig-claude"
 mkdir -p "$MIG_DIR"

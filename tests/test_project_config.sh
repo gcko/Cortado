@@ -14,6 +14,7 @@ unset COLOR_THEME DISPLAY_MODE LAYOUT_MODE MODULE_ORDER MODEL_ICON SANDBOX_ICON 
 PROJECT="$TEST_BASE/project"
 export CLAUDE_CONFIG_DIR="$TEST_BASE/claude"
 export CACHE_DIR="$CLAUDE_CONFIG_DIR/cortado-cache"
+mkdir -m 700 "$CLAUDE_CONFIG_DIR"
 mkdir -p "$PROJECT" "$CACHE_DIR" "$TEST_BASE/bin"
 PROJECT_FILE="$PROJECT/.cortado.conf"
 # shellcheck source=tests/lib/assert.sh

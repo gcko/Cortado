@@ -20,7 +20,7 @@ run_installer() {
         bash_options=(-O xpg_echo)
     fi
     CLAUDE_CONFIG_DIR="$config_dir" CACHE_DIR="$config_dir/cortado-cache" \
-        /bin/bash "${bash_options[@]}" "$REPO_ROOT/install.sh" --skip-update-check --no-color --no-emoji "$@"
+        /bin/bash "${bash_options[@]}" "${INSTALLER_TREE:-$REPO_ROOT}/install.sh" --skip-update-check --no-color --no-emoji "$@"
 }
 
 install_minimal() {
@@ -168,7 +168,7 @@ printf '%s\n' "$old_settings" > "$config_dir/settings.json" || exit 1
 cp "$config_dir/settings.json" "$TEST_BASE/previous-settings" || exit 1
 chmod 500 "$config_dir" || exit 1
 if [ ! -w "$config_dir" ]; then
-    assert_install_failure 'read-only config directory' "$config_dir" 'Could not stage settings.json'
+    assert_install_failure 'read-only config directory' "$config_dir" 'Could not stage Cortado runtime'
     assert_rc 'read-only config keeps the original settings bytes' 0 cmp -s \
         "$TEST_BASE/previous-settings" "$config_dir/settings.json"
     assert_eq 'read-only config keeps the complete statusLine backup' \
@@ -234,6 +234,10 @@ SH
 cat > "$fault_bin/mv" <<'SH'
 #!/bin/bash
 case "${2:-}" in
+    */.cortado-install.*/previous/cortado) ;;
+    */.cortado-install.*/cortado)
+        if [ "$INSTALLER_TEST_FAULT" = promote ]; then exit 1; fi
+        ;;
     */.settings.*/settings.json)
         case "$INSTALLER_TEST_FAULT" in
             rename) exit 1 ;;
@@ -265,6 +269,13 @@ case "$INSTALLER_TEST_FAULT:${!#}" in
         ;;
 esac
 exec /bin/cp "$@"
+SH
+cat > "$fault_bin/stat" <<'SH'
+#!/bin/bash
+case "$INSTALLER_TEST_FAULT:${3:-}" in
+    config-metadata:*/cortado/cortado.conf) exit 1 ;;
+esac
+exec /usr/bin/stat "$@"
 SH
 cat > "$fault_bin/basename" <<'SH'
 #!/bin/bash
@@ -318,10 +329,32 @@ chmod +x "$fault_bin/"* || exit 1
 # while failing the operation so each exit-status check has its own regression.
 cat > "$TEST_BASE/fault-env" <<'SH'
 case "$INSTALLER_TEST_FAULT" in
+    generate|generate-header|missing-generated|symlink-generated)
+        cat() {
+            command cat "$@" || return
+            if [ "$#" -eq 0 ] && [ -n "${config_file:-}" ]; then
+                generator_calls=$(( ${generator_calls:-0} + 1 ))
+                case "$INSTALLER_TEST_FAULT:$generator_calls" in
+                    generate:2|generate-header:1) return 7 ;;
+                    missing-generated:2) rm -f -- "$config_file" || return ;;
+                    symlink-generated:2)
+                        mv -- "$config_file" "$config_file.body" &&
+                            ln -s cortado.conf.body "$config_file" || return
+                        ;;
+                esac
+            fi
+        }
+        ;;
+    generate-write)
+        echo() {
+            builtin echo "$@" || return
+            if [ -n "${config_file:-}" ] && [ "$1" = '# Global Settings' ]; then return 7; fi
+        }
+        ;;
     physical-path)
         pwd() {
             builtin pwd "$@" || return
-            case "${1:-}:$PWD" in -P:*/cortado) return 1 ;; esac
+            case "${1:-}:$PWD" in -P:*/fault-physical-path) return 1 ;; esac
         }
         ;;
     backup-manifest)
@@ -446,14 +479,56 @@ printf '%s\n' 'original single-file payload' > "$config_dir/cortado.sh" || exit 
 printf '%s\n' '{"statusLine":{"type":"command","command":"original"}}' > "$settings" || exit 1
 install_minimal "$config_dir" || exit 1
 cp "$manifest" "$TEST_BASE/saved-manifest" || exit 1
+printf '\n# Later local edit\n' >> "$config_dir/cortado/cortado.conf" || exit 1
+cp "$config_dir/cortado/cortado.conf" "$TEST_BASE/previous-config" || exit 1
+cp "$settings" "$TEST_BASE/previous-settings" || exit 1
+fault_tree="$TEST_BASE/metadata-tree"
+mkdir -p "$fault_tree/lib" || exit 1
+cp "$REPO_ROOT/"{install.sh,cortado.sh,VERSION} "$fault_tree/" || exit 1
+ln -s "$REPO_ROOT/modules" "$fault_tree/modules" || exit 1
+# Link every other shipped library, so the copy installs like a checkout.
+for lib_file in "$REPO_ROOT"/lib/*.sh; do
+    [ "${lib_file##*/}" = config-permissions.sh ] || ln -s "$lib_file" "$fault_tree/lib/" || exit 1
+done
+sed 's@/usr/bin/stat @command stat @g' "$REPO_ROOT/lib/config-permissions.sh" \
+    > "$fault_tree/lib/config-permissions.sh" || exit 1
+PATH="$fault_bin:$PATH" INSTALLER_TEST_FAULT=config-metadata INSTALLER_TREE="$fault_tree" \
+    assert_install_failure 'unreadable replacement config metadata' "$config_dir" 'refusing to source config'
+assert_rc 'validation failure keeps the active config bytes' 0 cmp -s \
+    "$TEST_BASE/previous-config" "$config_dir/cortado/cortado.conf"
+assert_rc 'validation failure keeps the settings bytes' 0 cmp -s "$TEST_BASE/previous-settings" "$settings"
+assert_rc 'validation failure keeps the published restore manifest' 0 cmp -s "$TEST_BASE/saved-manifest" "$manifest"
+assert_statusline_runs 'the old command still renders after validation failure' "$settings"
+
+for generation_fault in generate generate-header generate-write missing-generated symlink-generated; do
+    fresh_config="$TEST_BASE/$generation_fault"
+    mkdir "$fresh_config" || exit 1
+    printf '%s\n' 'MODEL_ICON=Test' > "$fresh_config/cortado.conf" || exit 1
+    chmod 600 "$fresh_config/cortado.conf" || exit 1
+    INSTALLER_TEST_FAULT="$generation_fault" BASH_ENV="$TEST_BASE/fault-env" \
+        assert_install_failure "$generation_fault failure" "$fresh_config" 'Could not generate Cortado config'
+    assert_rc "$generation_fault failure leaves settings absent" 1 test -e "$fresh_config/settings.json"
+done
+
+blocked_config="$TEST_BASE/runtime-path-is-file"
+mkdir "$blocked_config" || exit 1
+printf '%s\n' 'Existing file at the runtime path' > "$blocked_config/cortado" || exit 1
+assert_install_failure 'a non-directory at the runtime path' "$blocked_config" 'Expected a directory'
+assert_file_contains 'the installer preserves a file at the runtime path' \
+    'Existing file at the runtime path' "$blocked_config/cortado"
+
 printf '%s\n' 'later single-file payload' > "$config_dir/cortado.sh" || exit 1
-for fault in empty rename; do
+for fault in empty rename promote; do
     if [ "$fault" = empty ]; then
         : > "$settings"
         diagnostic='Could not prepare settings.json'
     else
         printf '%s\n' '{"statusLine":{"type":"command","command":"second"}}' > "$settings"
-        diagnostic='Could not replace settings.json'
+        if [ "$fault" = rename ]; then
+            diagnostic='Could not replace settings.json'
+        else
+            diagnostic='Could not install the staged runtime'
+        fi
     fi
     cp "$settings" "$TEST_BASE/previous-settings" || exit 1
     PATH="$fault_bin:$PATH" INSTALLER_TEST_FAULT="$fault" \
@@ -461,6 +536,10 @@ for fault in empty rename; do
     assert_rc "$fault reinstall keeps settings bytes" 0 cmp -s "$TEST_BASE/previous-settings" "$settings"
     assert_rc "$fault reinstall keeps the original restore manifest bytes" 0 cmp -s \
         "$TEST_BASE/saved-manifest" "$manifest"
+    assert_rc "$fault reinstall restores the active config bytes" 0 cmp -s \
+        "$TEST_BASE/previous-config" "$config_dir/cortado/cortado.conf"
+    assert_file_contains "$fault reinstall preserves the later single-file payload" \
+        'later single-file payload' "$config_dir/cortado.sh"
     assert_eq "$fault reinstall keeps only the published backup generation" 1 \
         "$(find "$config_dir/.cortado-backup" -type d -name 'snapshot.*' | wc -l | tr -d ' ')"
 done
@@ -642,7 +721,7 @@ else
     render_dir=$(mktemp -d "$TEST_BASE/render.XXXXXX") || exit 1
     if output=$(CLAUDE_CONFIG_DIR="$render_dir" CACHE_DIR="$render_dir/cortado-cache" \
         TERMINAL_WIDTH=200 /bin/sh -c "$hint" 2>"$render_dir/stderr") &&
-        [[ "$output" == *"MODEL: Test"* ]]; then
+        [[ "$output" == *"🤖 Test"* || "$output" == *"MODEL: Test"* ]]; then
         pass "manual test hint renders the sample through sh"
     else
         fail "manual test hint renders the sample through sh"

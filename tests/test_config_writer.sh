@@ -203,7 +203,9 @@ PATH="$TEST_BASE/bin:$PATH" assert_rc 'writer refuses a target with an unreadabl
 assert_rc 'a failed mode check leaves the config alone' 0 cmp -s "$before" "$config"
 printf '#!/bin/sh\nprintf "bogus\\n"\n' > "$TEST_BASE/bin/stat"
 PATH="$TEST_BASE/bin:$PATH" assert_rc 'writer refuses a malformed mode result' 1 config_edit --set DISPLAY_MODE=compact
-assert_eq 'malformed mode output is diagnosed as a permission check failure' \
+# On Linux the stubbed stat also refuses the packaged config, which adds its own
+# stderr line; the writer's own diagnosis must still be there.
+assert_contains 'malformed mode output is diagnosed as a permission check failure' \
     "config: cannot save over a config with unsafe ownership or permissions: $config" "$(cat "$stderr")"
 rm "$TEST_BASE/bin/stat"
 

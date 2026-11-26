@@ -26,8 +26,7 @@ trap 'rm -rf "$TEST_BASE"' EXIT
 # sandbox <name>: a fresh CLAUDE_CONFIG_DIR with only the rate-limits module on.
 sandbox() {
     local sb="$TEST_BASE/$1"
-    mkdir -p "$sb/cortado-cache"
-    chmod 700 "$sb/cortado-cache"
+    mkdir -m 700 "$sb" "$sb/cortado-cache" || return 1
     printf '%s\n' 'MODULE_ORDER="rate-limits"' 'MODULE_RATE_LIMITS="true"' \
         'COLOR_THEME="monochrome"' 'RATE_SHOW_USAGE_STATUS="false"' > "$sb/cortado.conf"
     chmod 600 "$sb/cortado.conf"
