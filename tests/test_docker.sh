@@ -44,8 +44,8 @@ mkdir "$TEST_BASE/bad-docker-config"
 printf '%s\n' '{"currentContext":"bad context!"}' > "$TEST_BASE/bad-docker-config/config.json"
 now() { perl -MTime::HiRes=time -e 'printf "%.3f\n", time'; }
 no_call_render() {
-    DOCKER_CONFIG="$TEST_BASE/bad-docker-config" DOCKER_CALLS="$1/docker.calls" \
-        render normal '' "CLAUDE_CONFIG_DIR='$1'"
+    RENDER_CONFIG_DIR="$1" DOCKER_CONFIG="$TEST_BASE/bad-docker-config" DOCKER_CALLS="$1/docker.calls" \
+        render normal ''
 }
 start_no_docker_call() {
     local sb="$1"
@@ -77,7 +77,7 @@ check_probe() {
     local desc="$1" expected="$2" sample="$3" sb i entry
     shift 3
     sb=$(mktemp -d "$TEST_BASE/probe.XXXXXX") || exit 1
-    render "$sample" '' "CLAUDE_CONFIG_DIR='$sb'" "$@" >/dev/null || { fail "$desc (cold render failed)"; return; }
+    RENDER_CONFIG_DIR="$sb" render "$sample" '' "$@" >/dev/null || { fail "$desc (cold render failed)"; return; }
     for ((i=0; i<60; i++)); do
         for entry in "$sb"/cortado-cache/docker-*; do
             case "${entry##*/}" in *-lock|*.*) continue ;; esac
@@ -86,7 +86,7 @@ check_probe() {
         sleep 0.05
     done
     [ "$i" -lt 60 ] || { fail "$desc (refresh did not publish)"; return; }
-    check_render "$desc" "$expected" "$sample" '' "CLAUDE_CONFIG_DIR='$sb'" "$@"
+    RENDER_CONFIG_DIR="$sb" check_render "$desc" "$expected" "$sample" '' "$@"
 }
 
 check_probe 'docker shows measured running and total counts' 'DOCKER: 2 running / 3 total [OK]' \
@@ -101,11 +101,12 @@ check_probe 'docker shows the total with no running reading or status' 'DOCKER: 
     total-only 'DOCKER_SHOW_TOTAL="true"'
 check_probe 'docker shows the running count and status with no total' 'DOCKER: 1 running / -- total [OK]' \
     running-only 'DOCKER_SHOW_TOTAL="true"'
-check_probe 'docker shows absence when counting two successful listings fails' 'DOCKER: --' \
+# The awk hooks are Bash, so these renders opt the user config in (#33).
+CORTADO_CONF_ALLOW_BASH=1 check_probe 'docker shows absence when counting two successful listings fails' 'DOCKER: --' \
     normal 'DOCKER_SHOW_TOTAL=true' 'awk() { return 1; }; export -f awk'
-check_probe 'docker shows absence when counting the running listing fails' 'DOCKER: --' \
+CORTADO_CONF_ALLOW_BASH=1 check_probe 'docker shows absence when counting the running listing fails' 'DOCKER: --' \
     normal 'awk() { return 1; }; export -f awk'
-check_probe 'docker rejects a noninteger count from a successful counter' 'DOCKER: --' \
+CORTADO_CONF_ALLOW_BASH=1 check_probe 'docker rejects a noninteger count from a successful counter' 'DOCKER: --' \
     normal 'awk() { printf "%s\n" unknown; }; export -f awk'
 check_render 'docker preserves the icon when every field is disabled' 'DOCKER:' \
     normal '' 'DOCKER_SHOW_RUNNING=false' 'DOCKER_SHOW_TOTAL=false' 'DOCKER_SHOW_STATUS=false'
@@ -113,7 +114,7 @@ check_render 'docker preserves the icon when every field is disabled' 'DOCKER:' 
 sb=$(mktemp -d "$TEST_BASE/selection.XXXXXX") || exit 1
 printf '%s\n' '{"currentContext":"first"}' > "$DOCKER_CONFIG/config.json"
 selection_output() {
-    render selection '' "CLAUDE_CONFIG_DIR='$sb'" "$@"
+    RENDER_CONFIG_DIR="$sb" render selection '' "$@"
 }
 expect_selection() {
     local desc="$1" expected="$2" actual i

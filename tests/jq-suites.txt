@@ -24,6 +24,7 @@ test_utils.sh
 
 # Renders whose assertions read payload fields (model, workspace, session)
 test_config_cli.sh
+test_config_data.sh
 test_config_permissions.sh
 test_config_writer.sh
 test_debug_log.sh

@@ -645,7 +645,8 @@ if section_is generation; then
     mkdir "$config_dir" || exit 1
     printf '%s\n' 'printf "%s\n" "DIR: home | MODEL: Test"' 'exit 7' > "$config_dir/cortado.conf" || exit 1
     chmod 600 "$config_dir/cortado.conf" || exit 1
-    assert_install_failure 'nonzero renderer with output' "$config_dir" 'Statusline test FAILED'
+    # These renderer faults come from a Bash user config, so they opt in (#33).
+    CORTADO_CONF_ALLOW_BASH=1 assert_install_failure 'nonzero renderer with output' "$config_dir" 'Statusline test FAILED'
 
     config_dir="$TEST_BASE/diagnostic-renderer"
     mkdir "$config_dir" || exit 1
@@ -653,7 +654,7 @@ if section_is generation; then
     chmod 600 "$config_dir/cortado.conf" || exit 1
     printf '%s\n' "$old_settings" > "$config_dir/settings.json" || exit 1
     cp "$config_dir/settings.json" "$TEST_BASE/previous-settings" || exit 1
-    PATH="$fault_bin:$PATH" INSTALLER_TEST_FAULT=diagnostic-cleanup \
+    PATH="$fault_bin:$PATH" INSTALLER_TEST_FAULT=diagnostic-cleanup CORTADO_CONF_ALLOW_BASH=1 \
         assert_install_failure 'zero-exit renderer with a syntax diagnostic on stderr' \
             "$config_dir" 'Statusline test FAILED - script errors detected'
     assert_rc 'zero-exit renderer with a diagnostic preserves settings bytes' 0 cmp -s \

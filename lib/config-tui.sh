@@ -43,30 +43,10 @@ _cfg_module_var() {
     echo "MODULE_$(echo "$1" | tr '[:lower:]-' '[:upper:]_')"
 }
 
-# The trusted global config editor retains its broader setting prefixes.
+# A key the global config may set: the same typed allowlist the renderer reads.
 _cfg_is_global_key() {
-    local key="$1"
-    case "$key" in
-        *[!A-Za-z0-9_]*|'') return 1 ;;
-    esac
-    case "$key" in
-        MODULE_*|SEPARATOR|DISPLAY_MODE|COLOR_THEME|USE_ICONS|\
-        USE_STATUS_INDICATORS|STATUS_STYLE|STATUS_*|\
-        PROGRESS_BAR_*|DIRECTORY_*|CONTEXT_*|GIT_*|\
-        PROJECT_*|MODEL_*|COST_*|RATE_*|TIME_*|\
-        BATTERY_*|CPU_*|MEMORY_*|DISK_*|NETWORK_*|\
-        UPTIME_*|LOAD_*|TEMP_*|BRIGHTNESS_*|PROC_*|\
-        DOCKER_*|NODE_*|WEATHER_*|TIMEZONE_*|SANDBOX_*|\
-        CACHE_MAX_AGE|DEBUG_MODE|LAYOUT_MODE|\
-        TERMINAL_WIDTH|RIGHT_SIDE_RESERVE|VERSION_*|UPDATE_*)
-            return 0
-            ;;
-    esac
-    # Settings a shipped module declares with @config.
-    case "${_CORTADO_PROJECT_KEYS:-}" in
-        *" $key "*) return 0 ;;
-    esac
-    return 1
+    local REPLY
+    config_key_type "$1"
 }
 
 # Values that would break KEY="value" or inject when the user config is sourced.
@@ -155,19 +135,20 @@ _cfg_load_into_shell() {
         _CFG_PROJECT_ORIGINAL=()
         [ ! -f "$path" ] || load_config_safe "$path" _cfg_load_project_value
     else
-        # cortado.sh already reported a packaged refusal at startup.
+        # cortado.sh already reported a packaged refusal at startup. The
+        # renderer already read these once; report this load's lines only.
+        CONFIG_UNREAD=() CONFIG_UNREAD_RENDER=0
         load_config "$SCRIPT_DIR/cortado.conf" packaged 2>/dev/null
         if [[ -e "$path" || -L "$path" ]]; then
-            # The trust check follows a link itself; source exactly what it judged.
+            # The trust check follows a link itself; read exactly what it judged.
             if check_trusted_config "$path" 2>/dev/null; then
-                # shellcheck disable=SC1090
-                . "$REPLY"
+                load_checked_config "$REPLY" user "$path"
             else
                 _CFG_GLOBAL_CONFIG_REFUSED=true
                 # Read literal settings from the file the link resolves to, as
                 # the writer edits it; a dangling link has nothing to read.
                 if _cfg_resolve_target "$path" && [ -f "$REPLY" ]; then
-                    read_config_kv "$REPLY" _cfg_is_global_key _cfg_load_global_value
+                    load_config_data "$REPLY" "$path"
                 fi
             fi
         fi
@@ -194,10 +175,6 @@ _cfg_load_into_shell() {
     STATUS_STYLE="${STATUS_STYLE:-emoji}"
     NETWORK_SHOW_WAN="${NETWORK_SHOW_WAN:-false}"
     NETWORK_WAN_REDACT="${NETWORK_WAN_REDACT:-true}"
-}
-
-_cfg_load_global_value() {
-    printf -v "$1" '%s' "$2" 2>/dev/null
 }
 
 _cfg_load_project_value() {
@@ -563,6 +540,14 @@ _cfg_show() {
     elif [[ ! -e "$path" && ! -L "$path" ]]; then
         echo "(file does not exist yet — defaults will be used until saved)"
     fi
+    if [ "$scope" = "global" ] && [ "${_CORTADO_CONF_ALLOW_BASH:-false}" = true ]; then
+        echo "CORTADO_CONF_ALLOW_BASH=1: this file is sourced as Bash."
+    fi
+    if [ "$scope" = "global" ] && [ "${CONFIG_UNREAD[0]+set}" ]; then
+        echo ""
+        echo "Not read (config is data; see cortado config --migrate --dry-run):"
+        printf '  %s\n' "${CONFIG_UNREAD[@]}"
+    fi
     echo ""
     echo "COLOR_THEME=$COLOR_THEME  DISPLAY_MODE=$DISPLAY_MODE  LAYOUT_MODE=$LAYOUT_MODE"
     echo "SEPARATOR=\"$SEPARATOR\"  USE_ICONS=$USE_ICONS  STATUS_STYLE=$STATUS_STYLE"
@@ -860,6 +845,40 @@ _cfg_run_interactive() {
     return 1
 }
 
+# List the lines the data parser cannot read, with their numbers. Read only:
+# the file is opened as data and never written, locked or sourced.
+_cfg_migrate_dry_run() {
+    local path="$1" scope="$2" policy=trusted_config_setting_allowed
+    local _CFG_MIGRATE_LINES=()
+    [ "$scope" = project ] && policy=project_config_setting_allowed
+    echo "Config file: $path"
+    if [ ! -f "$path" ]; then
+        if [[ -e "$path" || -L "$path" ]]; then
+            echo "config: not a regular file; nothing was read: $path" >&2
+            return 1
+        fi
+        echo "(file does not exist; no lines to migrate)"
+        return 0
+    fi
+    read_config_kv "$path" "$policy" _cfg_migrate_ignore _cfg_migrate_record
+    if [ "${_CFG_MIGRATE_LINES[0]+set}" ]; then
+        echo "Lines Cortado does not read (config is data, never run as Bash):"
+        printf '  %s\n' "${_CFG_MIGRATE_LINES[@]}"
+        echo "Rewrite each as KEY=\"value\", or remove it. Nothing was changed."
+    else
+        echo "Every line is data; no lines to migrate."
+    fi
+    return 0
+}
+
+_cfg_migrate_ignore() { :; }
+
+_cfg_migrate_record() {
+    local REPLY
+    config_printable "$3"
+    _CFG_MIGRATE_LINES+=("line $1: $2: $REPLY")
+}
+
 _cfg_usage() {
     cat <<'EOF'
 Usage: cortado config [options]
@@ -874,6 +893,7 @@ Options:
   --set KEY=VALUE     Set a single key (MODULE_*, COLOR_THEME, …) and save
   --toggle NAME       Toggle a module on/off by short name (e.g. git, cpu)
   --path              Print resolved config path and exit
+  --migrate --dry-run List each line the data-only parser cannot read; change nothing
   --project           Edit display settings and disable modules in ./.cortado.conf
   --global            Edit $CLAUDE_CONFIG_DIR/cortado.conf (default)
   -h, --help          This help
@@ -894,12 +914,14 @@ cortado_config_main() {
     local _CFG_GLOBAL_CONFIG_REFUSED=false
     local scope="global"
     local action="interactive"
-    local set_kv="" toggle_name=""
+    local set_kv="" toggle_name="" dry_run=false
 
     while [ $# -gt 0 ]; do
         case "$1" in
             --show|--list) action="show"; shift ;;
             --path) action="path"; shift ;;
+            --migrate) action="migrate"; shift ;;
+            --dry-run) dry_run=true; shift ;;
             --project) scope="project"; shift ;;
             --global) scope="global"; shift ;;
             --set)
@@ -929,6 +951,17 @@ cortado_config_main() {
     if [ "$action" = "path" ]; then
         echo "$path"
         return 0
+    fi
+    if [ "$action" = "migrate" ] || [ "$dry_run" = true ]; then
+        if [ "$action" != "migrate" ] || [ "$dry_run" != true ]; then
+            echo "config: only --migrate --dry-run is available; edit the listed lines by hand" >&2
+            return 2
+        fi
+        if [ "$scope" = "project" ] && [ ! -f "$path" ] && [ -f "${PWD}/.barista.conf" ]; then
+            path="${PWD}/.barista.conf"
+        fi
+        _cfg_migrate_dry_run "$path" "$scope"
+        return
     fi
 
     # Pre-rename fallbacks. cortado.sh copies a trusted global barista.conf at
@@ -963,6 +996,12 @@ cortado_config_main() {
             fi
             if ! _cfg_value_is_safe "$val"; then
                 echo "config: invalid value characters" >&2
+                return 2
+            fi
+            local REPLY
+            if [ "$scope" = "global" ] && config_key_type "$key" &&
+                ! config_value_fits_type "$REPLY" "$val" && [ "${key#MODULE_}" = "$key" ]; then
+                echo "config: $key expects a $REPLY value" >&2
                 return 2
             fi
             case "$key" in

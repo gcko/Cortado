@@ -225,6 +225,8 @@ sb=$(sandbox stale-cache)
 assert_eq "a failed fetch shows the age on both stale readings" "5h:42%~6h0m 7d:10%~6h0m" "$(render_cache "$sb" 21600)"
 assert_eq "the stale fallback follows a curl attempt" "attempt" "$(cat "$sb/curl.log" 2>/dev/null)"
 
+# The cat hook below is Bash, so these renders opt the user config in (#33).
+export CORTADO_CONF_ALLOW_BASH=1
 for replacement in fresh stale unstable; do
     sb=$(sandbox "cache-replacement-$replacement")
     cat >> "$sb/cortado.conf" <<'CONFIG'
@@ -258,6 +260,7 @@ CONFIG
             ;;
     esac
 done
+unset CORTADO_CONF_ALLOW_BASH
 
 sb=$(sandbox expired-cache)
 assert_eq "a reading older than 24 hours is absent" "5h:-- 7d:--" "$(render_cache "$sb" 86401)"
@@ -398,6 +401,8 @@ fi
 
 echo ""
 echo "=== sub-percent growth can trigger a projected warning ==="
+# The date hook below is Bash, so these renders opt the user config in (#33).
+export CORTADO_CONF_ALLOW_BASH=1
 for theme in default monochrome; do
     sb=$(sandbox "projection-$theme")
     printf '%s\n' "COLOR_THEME=$theme" 'RATE_SHOW_TIME_REMAINING=false' 'TERMINAL_WIDTH=200' \
@@ -422,6 +427,7 @@ for theme in default monochrome; do
     assert_eq "$theme keeps the projected warning when growth is below 0.01%" "$expected" \
         "$(render "$sb" "$projection_payload")"
 done
+unset CORTADO_CONF_ALLOW_BASH
 
 echo ""
 echo "=== fresh quota without a usable live clock ==="

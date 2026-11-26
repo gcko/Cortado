@@ -33,7 +33,7 @@ check_load() {
     local desc="$1" expected="$2" sample="$3" payload="$4" sb i
     shift 4
     sb=$(mktemp -d "$TEST_BASE/probe.XXXXXX") || exit 1
-    render "$sample" "$payload" "CLAUDE_CONFIG_DIR='$sb'" "$@" >/dev/null || {
+    RENDER_CONFIG_DIR="$sb" render "$sample" "$payload" "$@" >/dev/null || {
         fail "$desc (cold render failed)"
         return
     }
@@ -42,7 +42,7 @@ check_load() {
         sleep 0.05
     done
     [ "$i" -lt 60 ] || { fail "$desc (probe did not publish)"; return; }
-    check_render "$desc" "$expected" "$sample" "$payload" "CLAUDE_CONFIG_DIR='$sb'" "$@"
+    RENDER_CONFIG_DIR="$sb" check_render "$desc" "$expected" "$sample" "$payload" "$@"
 }
 
 check_load 'load shows the measured averages and status' 'LOAD: 1.25 0.75 0.50 [OK]' \
@@ -52,24 +52,26 @@ check_load 'load shows absence for an unusable reading' 'LOAD: --' malformed ''
 check_load 'load shows absence for each missing average' 'LOAD: 1.25 -- -- [OK]' \
     partial '' 'LOAD_SHOW_ALL=true'
 # POSIX is always available. The fixture uses commas for any caller locale other than C.
-check_load 'load reads dot decimals independently of the caller locale' 'LOAD: 1.25 0.75 0.50 [OK]' \
+# These configs export a locale or replace bc, which is Bash, so they need the
+# environment's opt-in (#33).
+CORTADO_CONF_ALLOW_BASH=1 check_load 'load reads dot decimals independently of the caller locale' 'LOAD: 1.25 0.75 0.50 [OK]' \
     normal '' 'LOAD_SHOW_ALL=true' 'export LC_ALL=POSIX'
-check_load 'load reports high status without bc' 'LOAD: 16.00 [CRIT]' \
+CORTADO_CONF_ALLOW_BASH=1 check_load 'load reports high status without bc' 'LOAD: 16.00 [CRIT]' \
     high '' 'bc() { return 1; }'
-check_load 'load ignores malformed output from the unused bc' 'LOAD: 16.00 [CRIT]' \
+CORTADO_CONF_ALLOW_BASH=1 check_load 'load ignores malformed output from the unused bc' 'LOAD: 16.00 [CRIT]' \
     high '' 'bc() { printf "%s\n" unavailable; }'
 
 sb=$(mktemp -d "$TEST_BASE/rounding.XXXXXX") || exit 1
 mkdir -m 700 "$sb/cortado-cache"
 (umask 077; printf '%s\n' '8 2.9599 -- --' > "$sb/cortado-cache/load")
-check_render 'load just below the rounded threshold stays healthy' 'LOAD: 2.9599 [OK]' normal '' \
-    "CLAUDE_CONFIG_DIR='$sb'" 'LOAD_WARNING_THRESHOLD=3 LOAD_CRITICAL_THRESHOLD=5'
+RENDER_CONFIG_DIR="$sb" check_render 'load just below the rounded threshold stays healthy' 'LOAD: 2.9599 [OK]' normal '' \
+    'LOAD_WARNING_THRESHOLD=3' 'LOAD_CRITICAL_THRESHOLD=5'
 (umask 077; printf '%s\n' '8 2.9600 -- --' > "$sb/cortado-cache/load")
-check_render 'load at the rounded threshold warns' 'LOAD: 2.9600 [WARN]' normal '' \
-    "CLAUDE_CONFIG_DIR='$sb'" 'LOAD_WARNING_THRESHOLD=3 LOAD_CRITICAL_THRESHOLD=5'
+RENDER_CONFIG_DIR="$sb" check_render 'load at the rounded threshold warns' 'LOAD: 2.9600 [WARN]' normal '' \
+    'LOAD_WARNING_THRESHOLD=3' 'LOAD_CRITICAL_THRESHOLD=5'
 (umask 077; printf '%s\n' '8 2.97 -- --' > "$sb/cortado-cache/load")
-check_render 'load in the same percentage bucket as the warning threshold warns' 'LOAD: 2.97 [WARN]' normal '' \
-    "CLAUDE_CONFIG_DIR='$sb'" 'LOAD_WARNING_THRESHOLD=3 LOAD_CRITICAL_THRESHOLD=5'
+RENDER_CONFIG_DIR="$sb" check_render 'load in the same percentage bucket as the warning threshold warns' 'LOAD: 2.97 [WARN]' normal '' \
+    'LOAD_WARNING_THRESHOLD=3' 'LOAD_CRITICAL_THRESHOLD=5'
 
 printf '\nResults: %s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

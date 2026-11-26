@@ -61,7 +61,9 @@ check "a zero-padded compaction threshold uses decimal arithmetic" "CTX: ░░�
     "$small_usage" 'CONTEXT_COMPACT_THRESHOLD=08'
 check "a signed zero-padded compaction threshold still clamps the estimate" "CTX: ░░░░░░░░ 5% [OK] (0→⚡)" \
     "$small_usage" 'CONTEXT_COMPACT_THRESHOLD=-08'
-check "a malformed compaction threshold keeps the default estimate" "CTX: ░░░░░░░░ 5% [OK] (150k→⚡)" \
+# A malformed raw value reaches the module only from a sourced config; the data
+# parser refuses it first (#33), so this check opts the user config in.
+CORTADO_CONF_ALLOW_BASH=1 check "a malformed compaction threshold keeps the default estimate" "CTX: ░░░░░░░░ 5% [OK] (150k→⚡)" \
     "$small_usage" 'CONTEXT_COMPACT_THRESHOLD=abc'
 
 printf 'Results: %s passed, %s failed\n' "$PASS" "$FAIL"

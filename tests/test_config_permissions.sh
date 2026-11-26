@@ -506,7 +506,9 @@ init_installer_catalog || exit 1
 new_sandbox
 printf '%s\n' 'printf "INSTALLER_OVERRIDE\n"' > "$config"
 chmod 600 "$config"
-assert_eq 'Installer validation reads a safe config' INSTALLER_OVERRIDE "$(validate_config "$config")"
+# Validation reads a safe config as data (#33), so the command is named, not run.
+assert_eq 'Installer validation reads a safe config as data' \
+    'Warning: config line 1 is not read (shell command): printf "INSTALLER_OVERRIDE\n"' "$(validate_config "$config")"
 chmod 620 "$config"
 installer_status=0
 installer_output=$(validate_config "$config" 2> "$TEST_BASE/stderr") || installer_status=$?

@@ -12,6 +12,7 @@ workspace="$TEST_BASE/tmp"
 mkdir "$workspace" || exit 1
 workspace_json=$(jq -nc --arg cwd "$workspace" '{current_dir:$cwd}') || exit 1
 
+# Escape bytes reach the config as raw bytes in single quotes: config is data (#33).
 render() (
     local render_locale="$1" payload="$2" sb
     shift 2
@@ -28,8 +29,9 @@ render() (
 payload='{"workspace":'"$workspace_json"',"model":{"display_name":"Opus"}}'
 assert_eq 'smart breaks between modules when the icons push them past 15 columns' \
     $'📁 tmp\n🤖 Opus' "$(render C.UTF-8 "$payload" 'TERMINAL_WIDTH=15')"
+# The tput hook is Bash, so it needs the environment's opt-in (#33).
 assert_eq 'smart fits the same modules in exactly 16 columns' \
-    '📁 tmp | 🤖 Opus' "$(COLUMNS=16 render C.UTF-8 "$payload" 'tput() { return 1; }')"
+    '📁 tmp | 🤖 Opus' "$(COLUMNS=16 CORTADO_CONF_ALLOW_BASH=1 render C.UTF-8 "$payload" 'tput() { return 1; }')"
 
 mixed='{"workspace":'"$workspace_json"',"model":{"display_name":"é⚡️‍漢"}}'
 assert_eq 'smart fits a narrow letter, selector, joiner and wide characters in 17 columns' \
@@ -39,7 +41,7 @@ assert_eq 'smart breaks before the mixed-width module at 16 columns' \
 
 assert_eq 'smart ignores the separator color and counts its wide glyph' \
     $'📁 tmp\n🤖 Opus' "$(render C.UTF-8 "$payload" 'TERMINAL_WIDTH=16' \
-        "SEPARATOR=\$' \033[36m界\033[0m '")"
+        $'SEPARATOR=\' \033[36m界\033[0m \'')"
 assert_eq 'wrap pads a directory with a wide icon to the 16-column boundary' \
     "$(printf '%s%10s' '📁 tmp' '')" \
     "$(render C.UTF-8 "$payload" 'MODULE_ORDER=directory' 'LAYOUT_MODE=wrap' 'TERMINAL_WIDTH=16')"
@@ -70,7 +72,7 @@ assert_eq 'truncate discards the entire joined emoji when it cannot fit' \
     $'A ...\033[0m' "$(render C.UTF-8 '{"model":{"display_name":"👨‍💻WXYZ"}}' \
         'MODULE_ORDER=model' 'MODEL_ICON=A' 'LAYOUT_MODE=truncate' 'TERMINAL_WIDTH=6')"
 
-tab_config=( 'DIRECTORY_ICON=D' 'MODEL_ICON=M' "SEPARATOR=\$'\t'" )
+tab_config=( 'DIRECTORY_ICON=D' 'MODEL_ICON=M' $'SEPARATOR=\'\t\'' )
 assert_eq 'smart wraps before a tab-separated model at 11 columns' \
     $'D tmp\nM Opus' "$(render C.UTF-8 "$payload" "${tab_config[@]}" 'TERMINAL_WIDTH=11')"
 assert_eq 'smart wraps before a tab-separated model at 13 columns' \
@@ -83,7 +85,7 @@ assert_eq 'truncate stops before a tab whose next stop cannot fit' \
     $'D tmp...\033[0m' "$(render C.UTF-8 "$payload" "${tab_config[@]}" 'LAYOUT_MODE=truncate' 'TERMINAL_WIDTH=9')"
 
 colored='{"model":{"display_name":"OpusABCDE"}}'
-color_config="MODEL_ICON=\$'\033[38;5;196m🤖\033[0m'"
+color_config=$'MODEL_ICON=\'\033[38;5;196m🤖\033[0m\''
 assert_eq 'truncate preserves the complete colored icon and ends in a reset' \
     $'\033[38;5;196m🤖\033[0m Op...\033[0m' \
     "$(render C.UTF-8 "$colored" 'MODULE_ORDER=model' 'LAYOUT_MODE=truncate' 'TERMINAL_WIDTH=8' "$color_config")"
@@ -103,7 +105,7 @@ assert_eq 'truncate fits the ellipsis to a two-column budget' \
     $'..\033[0m' "$(render C.UTF-8 "$colored" 'MODULE_ORDER=model' 'LAYOUT_MODE=truncate' 'TERMINAL_WIDTH=2')"
 assert_eq 'truncate drops the color opener of a discarded separator' \
     $'📁 tmp ...\033[0m' "$(render C.UTF-8 "$payload" 'LAYOUT_MODE=truncate' 'TERMINAL_WIDTH=10' \
-        "SEPARATOR=\$' \033[36m|\033[0m '")"
+        $'SEPARATOR=\' \033[36m|\033[0m \'')"
 assert_eq 'truncate emits only two dots and a reset when a colored first glyph cannot fit' \
     $'..\033[0m' "$(render C.UTF-8 "$colored" 'MODULE_ORDER=model' 'LAYOUT_MODE=truncate' \
         'TERMINAL_WIDTH=2' "$color_config")"
@@ -111,7 +113,7 @@ assert_eq 'truncate emits only a newline when all modules are empty with a negat
     $'\n.' "$(render C.UTF-8 "$payload" 'MODULE_ORDER=model' 'MODULE_MODEL=false' \
         'LAYOUT_MODE=truncate' 'TERMINAL_WIDTH=10' 'RIGHT_SIDE_RESERVE=20' && printf '.')"
 
-link_icon="MODEL_ICON=\$'AB\033]8;;https://example.invalid/\aLink\033]8;;\a'"
+link_icon=$'MODEL_ICON=\'AB\033]8;;https://example.invalid/\aLink\033]8;;\a\''
 assert_eq 'truncate discards the hyperlink opener when no linked text fits' \
     $'AB...\033[0m' "$(render C.UTF-8 "$payload" 'MODULE_ORDER=model' 'LAYOUT_MODE=truncate' \
         'TERMINAL_WIDTH=5' "$link_icon")"
@@ -122,7 +124,7 @@ assert_eq 'truncate closes a retained hyperlink before the marker and reset' \
 assert_eq 'truncate closes a retained hyperlink that uses an ESC-backslash terminator' \
     $'AB\033]8;id=test;https://example.invalid/\033\134L\033]8;;\033\134...\033[0m' \
     "$(render C.UTF-8 "$payload" 'MODULE_ORDER=model' 'LAYOUT_MODE=truncate' 'TERMINAL_WIDTH=6' \
-        "MODEL_ICON=\$'AB\033]8;id=test;https://example.invalid/\033\134Link\033]8;;\033\134'")"
+        $'MODEL_ICON=\'AB\033]8;id=test;https://example.invalid/\033\134Link\033]8;;\033\134\'')"
 
 # Count width work rather than setting a wall-clock deadline for shared CI.
 long_label=$(printf '%1024s' '' | sed 's/ /漢/g')

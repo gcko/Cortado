@@ -64,10 +64,11 @@ log_render() (
 assert_contains 'debug mode names the refused value and the platform used' \
     "CORTADO_OS=msys is not a supported platform; using ${host_os:-none}" "$(log_render)"
 
+# The host hook is Bash, so these renders opt the user config in (#33).
 unsupported_host='cortado_host_os() { REPLY=; }'
-check_render 'an unsupported host states it instead of running Linux code' 'cortado: unsupported platform' - \
+CORTADO_CONF_ALLOW_BASH=1 check_render 'an unsupported host states it instead of running Linux code' 'cortado: unsupported platform' - \
     "$payload" "$order" "$unsupported_host"
-check_render 'an unsupported host can opt into the Linux modules explicitly' 'MODEL: Opus' - \
+CORTADO_CONF_ALLOW_BASH=1 check_render 'an unsupported host can opt into the Linux modules explicitly' 'MODEL: Opus' - \
     "$payload" "$order" "$unsupported_host" 'CORTADO_OS=linux'
 
 echo "=== host triples map to the two supported platforms ==="

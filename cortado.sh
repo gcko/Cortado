@@ -34,6 +34,8 @@ CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 
 # shellcheck source=lib/config-permissions.sh
 . "$SCRIPT_DIR/lib/config-permissions.sh"
+# shellcheck source=lib/config-data.sh
+. "$SCRIPT_DIR/lib/config-data.sh"
 # shellcheck source=lib/module-registry.sh
 . "$SCRIPT_DIR/lib/module-registry.sh"
 # shellcheck source=lib/platform.sh
@@ -47,7 +49,25 @@ CONFIG_REFUSALS=()
 # The order used when no trusted config sets MODULE_ORDER; cortado config shares it.
 CORTADO_DEFAULT_MODULE_ORDER="sandbox,version,update,directory,context,git,project,model,cost,rate-limits,time,battery"
 
-# Load Bash config only after verifying its target and parent.
+# Only the environment Cortado started with can opt the user config into Bash.
+_CORTADO_CONF_ALLOW_BASH=false
+if config_bash_opt_in_from_env; then
+    _CORTADO_CONF_ALLOW_BASH=true
+fi
+
+# Read a checked config as data. With the opt-in, the user config alone is
+# sourced as Bash; the packaged config never is.
+load_checked_config() {
+    local checked_path="$1" scope="${2:-user}" label="${3:-$1}"
+    if [ "$scope" = user ] && [ "$_CORTADO_CONF_ALLOW_BASH" = true ]; then
+        # shellcheck source=/dev/null
+        . "$checked_path"
+        return
+    fi
+    load_config_data "$checked_path" "$label"
+}
+
+# Load a config only after verifying its target and parent.
 load_config() {
     local config_path="$1" REPLY
     [[ -e "$config_path" || -L "$config_path" ]] || return 1
@@ -55,49 +75,17 @@ load_config() {
         CONFIG_REFUSALS+=("$REPLY")
         return 1
     fi
-    # shellcheck source=/dev/null
-    . "$REPLY"
-}
-
-# Read literal KEY=VALUE lines through the caller's policy and consumer.
-read_config_kv() {
-    local config_path="$1" allows_setting="$2" consume_setting="$3"
-    local line key val
-    [ -f "$config_path" ] || return 1
-
-    while IFS= read -r line || [ -n "$line" ]; do
-        # Strip leading/trailing whitespace
-        line="${line#"${line%%[![:space:]]*}"}"
-        line="${line%"${line##*[![:space:]]}"}"
-
-        case "$line" in
-            ""|\#*) continue ;;
-            *=*) ;;
-            *) continue ;;
-        esac
-
-        key="${line%%=*}"
-        val="${line#*=}"
-        case "$val" in
-            \"*\") val="${val#\"}"; val="${val%\"}" ;;
-            \'*\') val="${val#\'}"; val="${val%\'}" ;;
-        esac
-
-        # Allow a pipe for the default separator.
-        case "$val" in
-            *\`*|*\$*|*\;*|*\&*|*\>*|*\<*|*'*'*|*'?'*|*'['*) continue ;;
-        esac
-
-        "$allows_setting" "$key" "$val" || continue
-        "$consume_setting" "$key" "$val" "$line" || true
-    done < "$config_path"
-    return 0
+    load_checked_config "$REPLY" "${2:-user}" "$config_path"
 }
 
 # Shared project allowlist for the renderer and config CLI.
 project_config_setting_allowed() {
-    local key="$1" val="$2"
+    local key="$1" val="$2" REPLY
     case "$val" in *[[:cntrl:]]*) return 1 ;; esac
+    # Allow a pipe for the default separator.
+    case "$val" in
+        *\`*|*\$*|*\;*|*\&*|*\>*|*\<*|*'*'*|*'?'*|*'['*) return 1 ;;
+    esac
     case "$key" in
         SEPARATOR|DISPLAY_MODE|COLOR_THEME|USE_ICONS|USE_STATUS_INDICATORS|STATUS_STYLE|\
         STATUS_GREEN|STATUS_YELLOW|STATUS_ORANGE|STATUS_RED|\
@@ -112,9 +100,11 @@ project_config_setting_allowed() {
             ;;
     esac
     case "$_CORTADO_PROJECT_KEYS" in
-        *" $key "*) return 0 ;;
+        *" $key "*) ;;
         *) return 1 ;;
     esac
+    # Installed module settings carry the type their @config header declares.
+    config_key_type "$key" && config_value_fits_type "$REPLY" "$val"
 }
 
 # Match complete exported names, including names with empty values.
@@ -198,8 +188,7 @@ if [[ ! -e "$USER_CONFIG" && ! -L "$USER_CONFIG" ]] &&
         if copy_checked_legacy_config "$REPLY" "$USER_CONFIG" 2>/dev/null; then
             load_config "$USER_CONFIG"
         else
-            # shellcheck source=/dev/null
-            . "$REPLY"
+            load_checked_config "$REPLY" user "$LEGACY_USER_CONFIG"
         fi
     else
         CONFIG_REFUSALS+=("$REPLY")
@@ -944,6 +933,12 @@ main() {
             log_debug "$refused_config"
         done
     fi
+    if [ "${DEBUG_MODE:-false}" = "true" ] && [ "${CONFIG_UNREAD[0]+set}" ]; then
+        local unread_line
+        for unread_line in "${CONFIG_UNREAD[@]}"; do
+            log_debug "cortado: config not read: $unread_line"
+        done
+    fi
     report_module_refusals
 
     if [ -n "${CORTADO_OS_REFUSED:-}" ]; then
@@ -1020,6 +1015,10 @@ render_statusline() {
     local sections=""
     if [ "${CONFIG_REFUSALS[0]+set}" ]; then
         sections="Config refused"
+    fi
+    # A trusted config line the data parser did not apply may change the line.
+    if [ "${CONFIG_UNREAD_RENDER:-0}" -gt 0 ]; then
+        sections="${sections:+$sections$'\n'}Config partly read"
     fi
 
     # Process modules in specified order. Split MODULE_ORDER with IFS scoped to

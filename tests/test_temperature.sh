@@ -31,11 +31,12 @@ if [ -n "$comma_locale" ]; then
 fi
 check_render 'temperature shows the converted Fahrenheit reading and status' 'TEMP: 194°F [CRIT]' \
     hot '' 'TEMP_UNITS=F'
-check_render 'temperature shows absence when Fahrenheit conversion fails' 'TEMP: --' \
+# The bc hooks are Bash, so these renders opt the user config in (#33).
+CORTADO_CONF_ALLOW_BASH=1 check_render 'temperature shows absence when Fahrenheit conversion fails' 'TEMP: --' \
     hot '' 'TEMP_UNITS=F' 'bc() { return 1; }'
 # The variables expand inside the sandbox config's bc function.
 # shellcheck disable=SC2016
-check_render 'temperature keeps Fahrenheit when a status threshold conversion fails' 'TEMP: 194°F' \
+CORTADO_CONF_ALLOW_BASH=1 check_render 'temperature keeps Fahrenheit when a status threshold conversion fails' 'TEMP: 194°F' \
     hot '' 'TEMP_UNITS=F' 'bc() {
         local calculation
         IFS= read -r calculation

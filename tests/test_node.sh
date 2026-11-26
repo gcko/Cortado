@@ -18,7 +18,7 @@ chmod +x "$TEST_BASE/bin/node"
 check_node() {
     local desc="$1" expected="$2" sample="$3" sb i entry
     sb=$(mktemp -d "$TEST_BASE/probe.XXXXXX") || exit 1
-    render "$sample" '' "CLAUDE_CONFIG_DIR='$sb'" >/dev/null || {
+    RENDER_CONFIG_DIR="$sb" render "$sample" '' >/dev/null || {
         fail "$desc (cold render failed)"
         return
     }
@@ -30,7 +30,7 @@ check_node() {
         sleep 0.05
     done
     [ "$i" -lt 60 ] || { fail "$desc (probe did not publish)"; return; }
-    check_render "$desc" "$expected" "$sample" '' "CLAUDE_CONFIG_DIR='$sb'"
+    RENDER_CONFIG_DIR="$sb" check_render "$desc" "$expected" "$sample" ''
 }
 
 check_node 'node shows the probed runtime version' 'NODE: 22.14.0' normal
