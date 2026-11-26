@@ -358,6 +358,8 @@ _UPD_RT_PREV=""
 _UPD_RT_PUBLISHED=false
 _UPD_REFRESHED=false
 _UPD_LOCK=""
+# The PID a lock names: this installer, or the fresh-install subshell doing the work.
+_UPD_OWNER=""
 
 # Remove a directory tree this update created, including read-only parts.
 _update_remove_tree() {
@@ -396,12 +398,16 @@ _update_cleanup() {
     _UPD_RT_STAGE=""
     _UPD_RT_PREV=""
     _UPD_RT_PUBLISHED=false
-    # Release the lock last, and only while it still names this installer.
-    if [ -n "$_UPD_LOCK" ]; then
-        if [ "$(readlink "$_UPD_LOCK" 2>/dev/null)" = "$$" ]; then
-            rm -f -- "$_UPD_LOCK"
-        fi
-        _UPD_LOCK=""
+    # Release the lock last.
+    _update_unlock "$_UPD_LOCK"
+    _UPD_LOCK=""
+}
+
+# Remove the update lock at $1, only while it names this installer.
+_update_unlock() {
+    [ -n "$1" ] || return 0
+    if [ "$(readlink "$1" 2>/dev/null)" = "${_UPD_OWNER:-$$}" ]; then
+        rm -f -- "$1"
     fi
 }
 
@@ -500,7 +506,7 @@ _update_lock() {
         fi
         made=false
         _UPD_DEFER=true
-        if ln -sn -- "$$" "$lock" 2>/dev/null; then
+        if ln -sn -- "${_UPD_OWNER:-$$}" "$lock" 2>/dev/null; then
             _UPD_LOCK="$lock"
             made=true
         fi
@@ -2272,7 +2278,7 @@ do_install() (
         exit 1
     fi
 
-    local pending_backup="" runtime_stage="" runtime_promoted=false runtime_committed=false
+    local pending_backup="" runtime_stage="" runtime_promoted=false runtime_committed=false install_lock=""
     # Older ShellCheck (CI's Ubuntu) reports the trap-only body as unreachable (SC2317).
     # shellcheck disable=SC2317,SC2329 # Called by the EXIT trap in this subshell.
     cleanup_install() {
@@ -2294,7 +2300,8 @@ do_install() (
         fi
         [ -z "$pending_backup" ] || rm -rf -- "$pending_backup"
     }
-    trap cleanup_install EXIT
+    # Roll back first, then release the update lock taken for the swap.
+    trap 'cleanup_install; _update_unlock "$install_lock"' EXIT
     trap 'exit 129' HUP
     trap 'exit 130' INT
     trap 'exit 143' TERM
@@ -2414,6 +2421,11 @@ do_install() (
     echo "  $test_output"
     echo ""
 
+    # Swap the runtime under the lock --update takes. It names this subshell,
+    # which does the work; the installer only waits for it.
+    _UPD_OWNER=$(exec sh -c 'echo "$PPID"')
+    install_lock="${installed_dir%/*}/.cortado-update.lock"
+    _update_lock "${installed_dir%/*}" || exit 1
     if [ -d "$CORTADO_DIR" ] && ! mv -- "$CORTADO_DIR" "$runtime_stage/previous/"; then
         print_error "Could not move the previous runtime at $CORTADO_DIR" >&2
         exit 1

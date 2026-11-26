@@ -1176,6 +1176,45 @@ assert_rc "migrate is a no-op without barista.conf" 0 migrate_legacy_user_config
 [ -f "$MIG_TMP/cortado.conf" ] && { echo "  FAIL: migrate created cortado.conf from nothing"; FAIL=$((FAIL + 1)); }
 rmdir "$MIG_TMP" 2>/dev/null
 
+# --- a fresh install swaps the runtime under the lock --update takes ---
+# fresh_install: install --minimal into a new config directory; sets fresh_root,
+# fresh_lock, fresh_out and fresh_rc. FRESH_SETUP runs first, in the test shell.
+fresh_install() {
+    fresh_root=$(mktemp -d "$CLAUDE_CONFIG_DIR/fresh.XXXXXX") || exit 1
+    fresh_lock="$(CDPATH='' cd -- "$fresh_root" && pwd -P)/.cortado-update.lock"
+    eval "${FRESH_SETUP:-:}"
+    fresh_out=$(PATH="${FRESH_PATH:-$PATH}" CLAUDE_CONFIG_DIR="$fresh_root" CACHE_DIR="$fresh_root/cortado-cache" \
+        HOME="$fresh_root" /bin/bash "$REPO_ROOT/install.sh" --minimal --skip-update-check --no-color 2>&1)
+    fresh_rc=$?
+}
+
+fresh_install
+assert_eq "a fresh install exits 0" 0 "$fresh_rc"
+assert_rc "a fresh install publishes the runtime" 0 test -f "$fresh_root/cortado/cortado.sh"
+assert_rc "a fresh install releases the update lock" 1 test -L "$fresh_lock"
+
+# shellcheck disable=SC2016 # Expands inside fresh_install.
+FRESH_SETUP='ln -s "$$" "$fresh_lock"' fresh_install
+assert_eq "a fresh install while an update holds the lock fails" 1 "$fresh_rc"
+assert_contains "a fresh install while an update holds the lock names it" "process $$" "$fresh_out"
+assert_rc "a fresh install while an update holds the lock publishes no runtime" 1 test -e "$fresh_root/cortado"
+assert_rc "a fresh install while an update holds the lock writes no settings" 1 test -e "$fresh_root/settings.json"
+assert_eq "a fresh install while an update holds the lock leaves the lock" "$$" "$(readlink "$fresh_lock")"
+assert_empty "a fresh install while an update holds the lock leaves no staging" \
+    "$(find "$fresh_root" -maxdepth 1 -name '.cortado-install.*')"
+
+fresh_bin="$CLAUDE_CONFIG_DIR/fresh-bin"
+mkdir -p "$fresh_bin"
+# TERM the installer process that runs ln (the do_install subshell) once the lock exists.
+# shellcheck disable=SC2016 # The stub body expands when the stub runs.
+printf '%s\n' '#!/bin/bash' 'for last in "$@"; do :; done' '/bin/ln "$@" || exit $?' \
+    'case "$last" in */.cortado-update.lock) kill -TERM "$PPID" ;; esac' > "$fresh_bin/ln"
+chmod 755 "$fresh_bin/ln"
+FRESH_PATH="$fresh_bin:$PATH" fresh_install
+assert_eq "TERM just after a fresh install takes the lock exits 143" 143 "$fresh_rc"
+assert_rc "TERM just after a fresh install takes the lock releases it" 1 test -L "$fresh_lock"
+assert_rc "TERM just after a fresh install takes the lock publishes no runtime" 1 test -e "$fresh_root/cortado"
+
 legacy_source=$(mktemp -d "$CLAUDE_CONFIG_DIR/trusted.XXXXXX") || exit 1
 printf '%s\n' 'MODULE_ORDER=model' 'MODULE_MODEL=true' 'USE_ICONS=true' 'MODEL_ICON=LEGACY' \
     > "$legacy_source/override" || exit 1
