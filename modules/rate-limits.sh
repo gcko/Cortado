@@ -149,13 +149,24 @@ _check_backoff() {
     fi
 }
 
+# Set REPLY to the current Unix time, or to "" when the clock is unusable.
+_rate_limits_epoch() {
+    REPLY=$(date +%s 2>/dev/null) || REPLY=
+    case "$REPLY" in
+        ''|0*|*[!0-9]*) REPLY= ;;
+    esac
+}
+
 # Older versions briefly wrote the bearer config to a fixed path. Remove a
 # leftover only after the five-minute grace period for an older render.
 _cleanup_legacy_curl_config() {
     local legacy_config="$CACHE_DIR/rate_limits_curlcfg"
     if [ -f "$legacy_config" ]; then
         local mtime now
-        now=$(date +%s)
+        _rate_limits_epoch
+        now="$REPLY"
+        # Without a usable clock the file's age is unknown; keep it.
+        [ -n "$now" ] || return 0
         mtime=$(_file_mtime "$legacy_config")
         if [ "$mtime" -gt 0 ] && [ "$((now - mtime))" -gt 300 ]; then
             rm -f -- "$legacy_config" 2>/dev/null
@@ -503,13 +514,8 @@ module_rate_limits() {
     fi
 
     local now
-    now=$(date +%s 2>/dev/null) || now=
-    case "$now" in
-        0*|*[!0-9]*) now= ;;
-    esac
-    if ! [ "$now" -gt 0 ] 2>/dev/null; then
-        now=
-    fi
+    _rate_limits_epoch
+    now="$REPLY"
 
     # History rows drive both projections and need two measured percentages.
     if [ -n "$now" ] && [ -n "$five_hour" ] && [ -n "$seven_day" ]; then

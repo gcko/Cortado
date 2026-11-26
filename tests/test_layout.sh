@@ -128,7 +128,8 @@ assert_eq 'truncate closes a retained hyperlink that uses an ESC-backslash termi
 long_label=$(printf '%1024s' '' | sed 's/ /漢/g')
 long_payload=$(jq -nc --arg label "$long_label" '{model:{display_name:$label}}')
 BASH_ENV="$TEST_BASE/trace.sh"
-printf '%s\n' 'set -x' > "$BASH_ENV"
+# A literal PS4 keeps the trace parser independent of the caller's PS4.
+printf '%s\n' "PS4='+ '" 'set -x' > "$BASH_ENV"
 long_output=$(export BASH_ENV; render C "$long_payload" 'MODULE_ORDER=model' \
     'LAYOUT_MODE=truncate' 'TERMINAL_WIDTH=16' 2>"$TEST_BASE/width-trace")
 unset BASH_ENV

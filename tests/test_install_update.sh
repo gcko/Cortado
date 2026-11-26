@@ -301,6 +301,181 @@ for missing in config-tui.sh config-permissions.sh; do
         1 test -e "$incomplete_source/dest/cortado.sh"
 done
 
+# --- update transactions hand the caller's traps back ---
+trap_dir=$(mktemp -d "$CLAUDE_CONFIG_DIR/traps.XXXXXX")
+trap_output=$(/bin/bash -c '
+    . "$1"
+    trap "echo caller-exit" EXIT
+    _update_begin
+    _update_end
+    trap -p EXIT
+' -- "$INSTALL")
+assert_contains "a finished update restores the caller's EXIT trap" "trap -- 'echo caller-exit' EXIT" "$trap_output"
+trap_output=$(/bin/bash -c '
+    . "$1"
+    trap "echo caller-exit" EXIT
+    _update_begin
+    _update_mktemp_dir _UPD_TMP "$2/cortado-update.XXXXXX"
+    : > "$_UPD_TMP/partial"
+    kill -TERM $$
+    echo not-reached
+' -- "$INSTALL" "$trap_dir")
+trap_status=$?
+assert_eq "TERM inside an update exits with the signal status" 143 "$trap_status"
+assert_eq "TERM inside an update runs the caller's EXIT trap once" caller-exit "$trap_output"
+assert_empty "TERM inside an update removes its staging" "$(ls -A "$trap_dir")"
+
+# --- --update publishes the managed runtime from the exact release (real Git) ---
+# do_update above left the shell in a removed directory; Git needs a real cwd.
+cd "$CLAUDE_CONFIG_DIR" || exit 1
+fixture_git() {
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git -c user.name=Fixture \
+        -c user.email=fixture@example.invalid -c commit.gpgsign=false -c tag.gpgsign=false \
+        -c core.hooksPath=/dev/null "$@"
+}
+
+# git_release_case <name>: a Git source tagged v2.0.0 with a bare origin, and a
+# managed 1.0.0 runtime named by settings.json. Sets src, cfg, active, launcher.
+git_release_case() {
+    local root="$CLAUDE_CONFIG_DIR/git-cases/$1"
+    src="$root/source"
+    cfg="$root/config"
+    active="$cfg/cortado"
+    mkdir -p "$src/modules" "$src/lib" "$active/modules" "$active/lib" "$root/bin" || exit 1
+    # A real source tree: the installer loads its libraries from lib/.
+    cp "$REPO_ROOT/install.sh" "$src/"
+    cp "$REPO_ROOT/lib/"*.sh "$src/lib/"
+    cat > "$src/cortado.sh" <<'RENDER'
+#!/bin/bash
+runtime=$(dirname "$0")
+. "$runtime/lib/config-tui.sh"
+for module in "$runtime"/modules/*.sh; do . "$module"; done
+show_current_reading
+RENDER
+    chmod 755 "$src/cortado.sh"
+    printf '%s\n' '# release module' > "$src/modules/model.sh"
+    printf '%s\n' 'show_current_reading() { echo released; }' > "$src/lib/config-tui.sh"
+    printf '2.0.0\n' > "$src/VERSION"
+    fixture_git -C "$src" init -q --template= || exit 1
+    if [ "${2:-}" = retired ]; then
+        # 1.0.0 shipped a module that 2.0.0 removes; the source stays at 1.0.0.
+        printf '%s\n' 'show_current_reading() { echo retired; }' > "$src/modules/zz-retired.sh"
+        printf '1.0.0\n' > "$src/VERSION"
+        fixture_git -C "$src" add -A && fixture_git -C "$src" commit -qm old || exit 1
+        fixture_git -C "$src" rm -q modules/zz-retired.sh || exit 1
+        printf '2.0.0\n' > "$src/VERSION"
+    fi
+    fixture_git -C "$src" add -A &&
+        fixture_git -C "$src" commit -qm release &&
+        fixture_git -C "$src" tag v2.0.0 &&
+        fixture_git clone -q --bare "$src" "$root/origin.git" &&
+        fixture_git -C "$src" remote add origin "$root/origin.git" || exit 1
+
+    printf '#!/bin/bash\necho installed\n' > "$active/cortado.sh"
+    chmod 755 "$active/cortado.sh"
+    printf '%s\n' '# old module' > "$active/modules/model.sh"
+    if [ "${2:-}" = retired ]; then
+        fixture_git -C "$src" checkout -q --detach HEAD~1 || exit 1
+        cp "$src/cortado.sh" "$active/cortado.sh"
+        cp "$src/modules/zz-retired.sh" "$active/modules/"
+    fi
+    printf '%s\n' '# old library' > "$active/lib/config-tui.sh"
+    printf '1.0.0\n' > "$active/VERSION"
+    printf '%s\n' 'custom generated config' > "$active/cortado.conf"
+    chmod 600 "$active/cortado.conf"
+    # shellcheck disable=SC2016 # $path is a jq variable.
+    jq -n --arg path "$active/cortado.sh" '{statusLine:{type:"command",command:($path|@sh)},padding:7}' \
+        > "$cfg/settings.json"
+    chmod 600 "$cfg/settings.json"
+    launcher=$(jq -r '.statusLine.command' "$cfg/settings.json")
+    cp "$cfg/settings.json" "$root/settings.before"
+    cp "$active/cortado.conf" "$root/conf.before"
+    case_bin="$root/bin"
+}
+
+stub_bin="$CLAUDE_CONFIG_DIR/bin"
+run_git_update() {
+    git_update_output=$(PATH="$case_bin:$stub_bin:$PATH" CLAUDE_CONFIG_DIR="$cfg" \
+        CACHE_DIR="$cfg/cortado-cache" RELEASE_HTTP=200 RELEASE_BODY='{"tag_name":"v2.0.0"}' \
+        RELEASE_CURL_STATUS=0 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+        /bin/bash "$src/install.sh" --update --no-color --no-emoji 2>&1)
+    git_update_status=$?
+    active_output=$(printf '{}\n' | /bin/sh -c "$launcher" 2>/dev/null)
+    active_status=$?
+}
+
+git_release_case dev-commit
+printf '%s\n' 'show_current_reading() { echo unreleased; }' > "$src/lib/config-tui.sh"
+fixture_git -C "$src" commit -qam development || exit 1
+run_git_update
+assert_eq "--update from a development commit after the tag exits 0" 0 "$git_update_status"
+assert_eq "--update from a development commit publishes the tagged bytes" released "$active_output"
+assert_eq "--update from a development commit installs the tag's VERSION" 2.0.0 "$(cat "$active/VERSION")"
+assert_rc "--update from a development commit keeps settings byte-identical" 0 \
+    cmp "${cfg%/config}/settings.before" "$cfg/settings.json"
+assert_rc "--update from a development commit keeps the generated config" 0 \
+    cmp "${cfg%/config}/conf.before" "$active/cortado.conf"
+
+git_release_case lib-copy-error
+cat > "$case_bin/cp" <<'STUB'
+#!/bin/bash
+for arg in "$@"; do
+    case "$arg" in */source/lib|*/source/lib/*|*/Cortado-2.0.0/lib|*/Cortado-2.0.0/lib/*) exit 1 ;; esac
+done
+exec /bin/cp "$@"
+STUB
+chmod 755 "$case_bin/cp"
+run_git_update
+rm -f "$case_bin/cp"
+assert_eq "a failed library copy fails the update" 1 "$git_update_status"
+assert_eq "a failed library copy leaves the saved command working" 0 "$active_status"
+assert_eq "a failed library copy leaves the old output" installed "$active_output"
+assert_eq "a failed library copy leaves the old VERSION" 1.0.0 "$(cat "$active/VERSION")"
+assert_rc "a failed library copy keeps settings byte-identical" 0 \
+    cmp "${cfg%/config}/settings.before" "$cfg/settings.json"
+assert_rc "a failed library copy keeps the generated config" 0 \
+    cmp "${cfg%/config}/conf.before" "$active/cortado.conf"
+assert_empty "a failed library copy leaves no runtime staging" \
+    "$(find "$cfg" -maxdepth 1 -name '.cortado-runtime.*')"
+
+git_release_case retired-module retired
+assert_eq "the retired-module fixture starts on the retired module" retired \
+    "$(printf '{}\n' | /bin/sh -c "$launcher" 2>/dev/null)"
+run_git_update
+assert_eq "a Git update that retires a module exits 0" 0 "$git_update_status"
+assert_eq "a Git update removes the retired module from the runtime" "" \
+    "$(ls "$active/modules/zz-retired.sh" 2>/dev/null)"
+assert_eq "a Git update renders the tagged release" \
+    "$(printf '{}\n' | /bin/bash "$src/cortado.sh")" "$active_output"
+assert_eq "a Git update that retires a module advances VERSION" 2.0.0 "$(cat "$active/VERSION")"
+assert_rc "a Git update that retires a module keeps the generated config" 0 \
+    cmp "${cfg%/config}/conf.before" "$active/cortado.conf"
+assert_rc "a Git update that retires a module keeps settings byte-identical" 0 \
+    cmp "${cfg%/config}/settings.before" "$cfg/settings.json"
+
+git_release_case missing-entry-point
+rm "$active/cortado.sh"
+run_git_update
+assert_eq "--update over a missing managed entry point exits 0" 0 "$git_update_status"
+assert_not_contains "--update over a missing managed entry point never claims it is current" \
+    'Already up to date' "$(printf '%s\n' "$git_update_output" | grep -v Refreshed)"
+assert_eq "--update restores a working managed command" 0 "$active_status"
+assert_eq "--update restores the released entry point" released "$active_output"
+assert_eq "--update over a missing entry point installs the release VERSION" 2.0.0 "$(cat "$active/VERSION")"
+assert_rc "--update over a missing entry point keeps settings byte-identical" 0 \
+    cmp "${cfg%/config}/settings.before" "$cfg/settings.json"
+
+git_release_case custom-command
+printf '%s\n' '{"statusLine":{"type":"command","command":"my-own-statusline"}}' > "$cfg/settings.json"
+cp "$cfg/settings.json" "${cfg%/config}/settings.before"
+rm "$active/cortado.sh"
+run_git_update
+assert_eq "--update with a custom statusLine command exits 0" 0 "$git_update_status"
+assert_eq "--update leaves a runtime that a custom command does not use" "" "$(ls "$active/cortado.sh" 2>/dev/null)"
+assert_eq "--update leaves that runtime's VERSION" 1.0.0 "$(cat "$active/VERSION")"
+assert_rc "--update keeps a custom command byte-identical" 0 \
+    cmp "${cfg%/config}/settings.before" "$cfg/settings.json"
+
 # --- migrate_legacy_user_config (Barista -> Cortado) ---
 MIG_TMP=$(mktemp -d)
 printf '%s\n' 'COLOR_THEME="vibrant"' > "$MIG_TMP/barista.conf"

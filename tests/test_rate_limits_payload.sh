@@ -437,6 +437,21 @@ for clock in 'return 1' 'echo invalid' 'echo 0'; do
         "$(cat "$sb/cortado-cache/rate_limits_payload_recorded" 2>/dev/null)"
 done
 
+sb=$(sandbox legacy-cleanup-bad-clock)
+printf '%s\n' RATE_SHOW_TIME_REMAINING=true DEBUG_MODE=true \
+    "date() { if [ \"\$*\" = '+%s' ]; then echo 123abc; else /bin/date \"\$@\"; fi; }" >> "$sb/cortado.conf"
+: > "$sb/cortado-cache/rate_limits_curlcfg"
+legacy_payload=$(printf '{"rate_limits":{"five_hour":{"used_percentage":10,"resets_at":%s},"seven_day":{"used_percentage":20}}}' \
+    "$((NOW + 3600))")
+assert_eq "an invalid clock with a legacy cleanup file still shows measured percentages" '5h:10% 7d:20%' \
+    "$(render "$sb" "$legacy_payload")"
+assert_eq "an invalid clock keeps the legacy cleanup file" yes \
+    "$([ -f "$sb/cortado-cache/rate_limits_curlcfg" ] && echo yes)"
+assert_eq "an invalid clock with a legacy cleanup file adds no history row" '' \
+    "$(cat "$sb/.usage_history" 2>/dev/null)"
+assert_eq "an invalid clock with a legacy cleanup file logs no arithmetic or module error" '' \
+    "$(grep -E 'value too great|syntax error|failed with exit code' "$sb/cortado.log" 2>/dev/null)"
+
 sb=$(sandbox no-clock-api)
 printf '%s\n' RATE_SHOW_TIME_REMAINING=true \
     'date() { if [ "$*" = +%s ]; then return 1; else /bin/date "$@"; fi; }' >> "$sb/cortado.conf"

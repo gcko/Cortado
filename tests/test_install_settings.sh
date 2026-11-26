@@ -709,17 +709,35 @@ assert_eq "settings-only install preserves unrelated settings" "false" \
     "$(jq -r '.includeCoAuthoredBy' "$settings")"
 assert_statusline_runs 'updated settings render through sh with a literal $ in the path' "$settings"
 
+file_mode() {
+    stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1"
+}
+
 config_dir="$TEST_BASE/group-write-umask"
+mkdir -p "$config_dir" && chmod 755 "$config_dir" || exit 1
 if (umask 002; LC_ALL=en_US.UTF-8 install_minimal "$config_dir"); then
     pass 'minimal install passes the UTF-8 sample under umask 002'
 else
     fail 'minimal install passes the UTF-8 sample under umask 002'
 fi
-config_mode=$(stat -f '%Lp' "$config_dir/cortado/cortado.conf" 2>/dev/null) ||
-    config_mode=$(stat -c '%a' "$config_dir/cortado/cortado.conf")
-assert_eq 'the generated config is owner-only under umask 002' '600' "$config_mode"
+assert_eq 'the generated config is owner-only under umask 002' '600' "$(file_mode "$config_dir/cortado/cortado.conf")"
+# shellcheck disable=SC2016 # $path is a jq variable.
+assert_eq 'umask 002 publishes the managed command' \
+    "$(jq -nr --arg path "$(cd "$config_dir/cortado" 2>/dev/null && pwd -P)/cortado.sh" '$path | @sh')" \
+    "$(jq -r '.statusLine.command' "$config_dir/settings.json" 2>/dev/null)"
 assert_statusline_runs 'the generated config renders through the command saved under umask 002' \
     "$config_dir/settings.json"
+assert_eq 'umask 002 keeps the existing config parent mode' 755 "$(file_mode "$config_dir")"
+for path in "$config_dir/cortado" "$config_dir/cortado/modules" "$config_dir/cortado/lib" \
+    "$config_dir/cortado/cortado.sh" "$config_dir/cortado/VERSION" \
+    "$config_dir/cortado/modules/"*.sh "$config_dir/cortado/lib/"*.sh; do
+    mode=$(file_mode "$path")
+    if [ -n "$mode" ] && (( (8#$mode & 8#022) == 0 )); then
+        pass "umask 002 publishes ${path#"$config_dir"/} without group or other write ($mode)"
+    else
+        fail "umask 002 publishes ${path#"$config_dir"/} without group or other write ($mode)"
+    fi
+done
 
 # Disable the only listed module to trigger the installer's manual test hint.
 config_dir="$TEST_BASE/manual hint's"

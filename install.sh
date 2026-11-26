@@ -313,66 +313,326 @@ _copy_staged_release() {
     cp "$extract_dir/VERSION" "$SCRIPT_DIR/"
 }
 
+# -----------------------------------------------------------------------------
+# Update transaction: every path an update creates is recorded here before any
+# file lands in it, so an error or a catchable signal removes it. Globals, so
+# the trap handlers can read them from any call depth.
+# -----------------------------------------------------------------------------
+_UPD_DEPTH=0
+_UPD_DEFER=false
+_UPD_SIGNAL=""
+_UPD_PREV_TRAPS=""
+_UPD_PREV_EXIT_CMD=""
+_UPD_TMP=""
+_UPD_RUNTIME_TMP=""
+_UPD_BACKUP=""
+_UPD_BACKUP_DONE=false
+_UPD_RT_DEST=""
+_UPD_RT_STAGE=""
+_UPD_RT_PREV=""
+_UPD_REFRESHED=false
+
+_update_cleanup() {
+    if [ -n "$_UPD_RT_PREV" ]; then
+        # Roll back a swap that moved the working runtime aside but did not finish.
+        if [ -d "$_UPD_RT_PREV/runtime" ] && [ ! -e "$_UPD_RT_DEST" ] && [ ! -L "$_UPD_RT_DEST" ]; then
+            mv -- "$_UPD_RT_PREV/runtime" "$_UPD_RT_DEST"
+        fi
+        rm -rf -- "$_UPD_RT_PREV"
+    fi
+    [ -z "$_UPD_RT_STAGE" ] || rm -rf -- "$_UPD_RT_STAGE"
+    [ -z "$_UPD_TMP" ] || rm -rf -- "$_UPD_TMP"
+    [ -z "$_UPD_RUNTIME_TMP" ] || rm -rf -- "$_UPD_RUNTIME_TMP"
+    if [ -n "$_UPD_BACKUP" ] && [ "$_UPD_BACKUP_DONE" != true ]; then
+        rm -rf -- "$_UPD_BACKUP"
+    fi
+    _UPD_TMP=""
+    _UPD_RUNTIME_TMP=""
+    _UPD_BACKUP=""
+    _UPD_BACKUP_DONE=false
+    _UPD_RT_DEST=""
+    _UPD_RT_STAGE=""
+    _UPD_RT_PREV=""
+}
+
+# Restore the caller's traps after cleanup.
+_update_restore_traps() {
+    trap - EXIT HUP INT TERM
+    eval "$_UPD_PREV_TRAPS"
+    _UPD_DEPTH=0
+}
+
+_update_on_signal() {
+    if [ "$_UPD_DEFER" = true ]; then
+        _UPD_SIGNAL="$1"
+        return
+    fi
+    _update_cleanup
+    _update_restore_traps
+    exit "$1"
+}
+
+_update_on_exit() {
+    _update_cleanup
+    eval "$_UPD_PREV_EXIT_CMD"
+}
+
+# Set REPLY to the command in one line of `trap -p` output:
+#   trap -- 'command' EXIT
+_trap_command() {
+    REPLY=""
+    [ -n "$1" ] || return 0
+    eval "set -- $1"
+    REPLY="$3"
+}
+
+# Start (or join) an update transaction.
+_update_begin() {
+    _UPD_DEPTH=$((_UPD_DEPTH + 1))
+    [ "$_UPD_DEPTH" -eq 1 ] || return 0
+    _UPD_PREV_TRAPS=$(trap -p EXIT HUP INT TERM)
+    _trap_command "$(trap -p EXIT)"
+    _UPD_PREV_EXIT_CMD="$REPLY"
+    _UPD_SIGNAL=""
+    _UPD_DEFER=false
+    trap '_update_on_exit' EXIT
+    trap '_update_on_signal 129' HUP
+    trap '_update_on_signal 130' INT
+    trap '_update_on_signal 143' TERM
+}
+
+# Clean up and hand the traps back once the outermost caller finishes.
+_update_end() {
+    [ "$_UPD_DEPTH" -gt 0 ] || return 0
+    _UPD_DEPTH=$((_UPD_DEPTH - 1))
+    [ "$_UPD_DEPTH" -eq 0 ] || return 0
+    _update_cleanup
+    _update_restore_traps
+}
+
+# mktemp -d with signals deferred until the caller has recorded the path.
+# Usage: _update_mktemp_dir VAR template
+_update_mktemp_dir() {
+    local made status=0
+    _UPD_DEFER=true
+    made=$(mktemp -d "$2") || status=$?
+    [ "$status" -ne 0 ] || eval "$1=\$made"
+    _UPD_DEFER=false
+    return "$status"
+}
+
+# Deliver a signal that arrived while an allocation was deferred.
+_update_take_signal() {
+    local status="$_UPD_SIGNAL"
+    [ -n "$status" ] || return 0
+    _UPD_SIGNAL=""
+    _update_on_signal "$status"
+}
+
 _publish_release_archive() {
-    local tag="$1" tmp_dir extract_dir backup_dir previous_traps rc=1
-    if ! tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/cortado-update.XXXXXX"); then
+    local tag="$1" refresh="${2:-false}" extract_dir rc=1
+    _update_begin
+    if ! _update_mktemp_dir _UPD_TMP "${TMPDIR:-/tmp}/cortado-update.XXXXXX"; then
+        _update_take_signal
         print_error "Could not create a temporary directory for the update."
+        _update_end
         return 1
     fi
-    previous_traps=$(trap -p EXIT HUP INT TERM)
-    trap 'rm -rf -- "$tmp_dir"' EXIT
-    trap 'exit 129' HUP
-    trap 'exit 130' INT
-    trap 'exit 143' TERM
+    _update_take_signal
 
-    extract_dir="$tmp_dir/Cortado-${tag#v}"
-    if _stage_release_archive "$tag" "$tmp_dir" "$extract_dir"; then
-        if ! backup_dir=$(mktemp -d "$SCRIPT_DIR.backup.XXXXXX"); then
+    extract_dir="$_UPD_TMP/Cortado-${tag#v}"
+    if _stage_release_archive "$tag" "$_UPD_TMP" "$extract_dir"; then
+        if ! _update_mktemp_dir _UPD_BACKUP "$SCRIPT_DIR.backup.XXXXXX"; then
+            _update_take_signal
             print_error "Could not create a source backup in the parent of $SCRIPT_DIR."
-        elif ! cp -R "$SCRIPT_DIR/." "$backup_dir/"; then
-            print_error "Could not back up the source to $backup_dir."
-        elif ! _copy_staged_release "$extract_dir"; then
-            print_error "Could not copy the release to $SCRIPT_DIR. The source backup is at $backup_dir."
+        elif _update_take_signal && ! cp -R "$SCRIPT_DIR/." "$_UPD_BACKUP/"; then
+            print_error "Could not back up the source to $_UPD_BACKUP."
         else
-            rm -rf -- "$backup_dir"
-            rc=0
+            _UPD_BACKUP_DONE=true
+            if ! _copy_staged_release "$extract_dir"; then
+                print_error "Could not copy the release to $SCRIPT_DIR. The source backup is at $_UPD_BACKUP."
+                # Keep the completed backup for recovery.
+                _UPD_BACKUP=""
+            else
+                rm -rf -- "$_UPD_BACKUP"
+                _UPD_BACKUP=""
+                rc=0
+                # Build the runtime from the verified tree, not the overlaid source.
+                if [ "$refresh" = true ] && ! _refresh_managed_runtime "$tag" "$extract_dir"; then
+                    rc=1
+                fi
+            fi
         fi
     fi
 
-    rm -rf -- "$tmp_dir"
-    trap - EXIT HUP INT TERM
-    eval "$previous_traps"
+    _update_end
     return "$rc"
 }
 
-# Refresh only the runtime managed by this installer, preserving its config
-# and the statusLine command that Claude Code already uses.
+# Stage the exact bytes of release $1 below $2 and set REPLY to the tree.
+# A Git checkout reads the tag itself, never its working tree; any other
+# source downloads and verifies the published archive.
+_stage_release_tree() {
+    local tag="$1" dir="$2" tree release_ver
+    tree="$dir/Cortado-${tag#v}"
+    if [ -d "$SCRIPT_DIR/.git" ]; then
+        if ! _cortado_git -C "$SCRIPT_DIR" rev-parse -q --verify "refs/tags/$tag^{commit}" >/dev/null 2>&1; then
+            _cortado_git -C "$SCRIPT_DIR" fetch -q origin --tags --force >/dev/null 2>&1
+        fi
+        if ! { mkdir "$tree" &&
+            _cortado_git -C "$SCRIPT_DIR" archive --format=tar -o "$dir/release.tar" "refs/tags/$tag" 2>/dev/null &&
+            tar -xf "$dir/release.tar" -C "$tree"; }; then
+            print_error "Could not read release $tag from the Git checkout at $SCRIPT_DIR."
+            return 1
+        fi
+        if [ ! -f "$tree/cortado.sh" ] || [ ! -f "$tree/VERSION" ]; then
+            print_error "Release $tag is missing essential files."
+            return 1
+        fi
+        release_ver=$(tr -d '[:space:]' < "$tree/VERSION")
+        if [ "$release_ver" != "${tag#v}" ]; then
+            print_error "Release VERSION ($release_ver) does not match release ${tag#v}."
+            return 1
+        fi
+    else
+        _stage_release_archive "$tag" "$dir" "$tree" || return 1
+    fi
+    REPLY="$tree"
+}
+
+# Set REPLY to the runtime directory when settings.json runs exactly this
+# installer's managed command; fail for a custom command or no settings.
+_managed_runtime_dest() {
+    local dest="$CORTADO_DIR" parent
+    [ -f "$SETTINGS_FILE" ] || return 1
+    if [ -d "$CORTADO_DIR" ]; then
+        dest=$(CDPATH='' cd -- "$CORTADO_DIR" && pwd -P) || return 1
+    elif parent=$(CDPATH='' cd -- "$CLAUDE_DIR" 2>/dev/null && pwd -P); then
+        dest="$parent/cortado"
+    fi
+    # shellcheck disable=SC2016 # $path is a jq variable.
+    jq -e --arg path "$dest/cortado.sh" --arg configured "$CORTADO_DIR/cortado.sh" '
+        .statusLine | select(.type == "command") | .command as $command
+        | [$path, $configured, ($path | @sh), ($configured | @sh)] | index($command) != null
+    ' "$SETTINGS_FILE" >/dev/null 2>&1 || return 1
+    REPLY="$dest"
+}
+
+# Publish release tree $1 (version $3) as the runtime at $2. The new runtime
+# is assembled and validated beside $2, then swapped in with two renames; the
+# working runtime is moved back if the swap fails or a signal arrives.
+_publish_managed_runtime() {
+    local tree="$1" dest="$2" version="$3" parent entry staged_version mode
+    parent="${dest%/*}"
+    _update_begin
+    _UPD_RT_DEST="$dest"
+    if ! _update_mktemp_dir _UPD_RT_STAGE "$parent/.cortado-runtime.XXXXXX" ||
+        ! _update_take_signal ||
+        ! _update_mktemp_dir _UPD_RT_PREV "$parent/.cortado-previous.XXXXXX" ||
+        ! _update_take_signal; then
+        print_error "Could not stage a runtime beside $dest."
+        _update_end
+        return 1
+    fi
+    if ! copy_runtime_files "$tree" "$_UPD_RT_STAGE"; then
+        print_error "Could not copy release ${version} into the staged runtime."
+        _update_end
+        return 1
+    fi
+    # Carry over everything the release does not own, such as cortado.conf.
+    if [ -d "$dest" ]; then
+        for entry in "$dest"/* "$dest"/.[!.]* "$dest"/..?*; do
+            [ -e "$entry" ] || [ -L "$entry" ] || continue
+            case "${entry##*/}" in
+                cortado.sh|VERSION|modules|lib) continue ;;
+            esac
+            if ! cp -pR "$entry" "$_UPD_RT_STAGE/"; then
+                print_error "Could not carry ${entry##*/} over to the staged runtime."
+                _update_end
+                return 1
+            fi
+        done
+    fi
+    staged_version=""
+    if [ -f "$_UPD_RT_STAGE/VERSION" ]; then
+        staged_version=$(tr -d '[:space:]' < "$_UPD_RT_STAGE/VERSION")
+    fi
+    mode=$(printf '%o' $(( 8#777 & ~8#$(umask) )))
+    if [ ! -x "$_UPD_RT_STAGE/cortado.sh" ] || [ ! -f "$_UPD_RT_STAGE/lib/config-tui.sh" ] ||
+        [ "$staged_version" != "$version" ] ||
+        ! chmod "$mode" "$_UPD_RT_STAGE" || ! chmod -R go-w "$_UPD_RT_STAGE"; then
+        print_error "The staged runtime for release ${version} is incomplete."
+        _update_end
+        return 1
+    fi
+    if [ -e "$dest" ] && ! mv -- "$dest" "$_UPD_RT_PREV/runtime"; then
+        print_error "Could not move the current runtime at $dest aside."
+        _update_end
+        return 1
+    fi
+    if ! mv -- "$_UPD_RT_STAGE" "$dest"; then
+        print_error "Could not publish the staged runtime at $dest."
+        _update_end
+        return 1
+    fi
+    _UPD_RT_STAGE=""
+    _update_end
+}
+
+# Refresh only the runtime managed by this installer to release $1, from the
+# staged release tree $2 when the caller has one. Preserves its config and
+# the statusLine command that Claude Code already uses.
 _refresh_managed_runtime() {
-    local desired_version="$1" dest installed_version source_dir
-    [ -f "$CORTADO_DIR/cortado.sh" ] && [ -f "$SETTINGS_FILE" ] || return 0
-    dest=$(CDPATH='' cd -- "$CORTADO_DIR" && pwd -P) || return 1
+    local tag="$1" tree="${2:-}" dest source_dir installed_version="" rc=1
+    _UPD_REFRESHED=false
+    _managed_runtime_dest || return 0
+    dest="$REPLY"
     source_dir=$(CDPATH='' cd -- "$SCRIPT_DIR" && pwd -P) || return 1
     if [ "$source_dir" = "$dest" ] || _is_homebrew_prefix "$dest"; then
         return 0
     fi
-    # shellcheck disable=SC2016 # $path is a jq variable.
-    if ! jq -e --arg path "$dest/cortado.sh" --arg configured "$CORTADO_DIR/cortado.sh" '
-        .statusLine | select(.type == "command") | .command as $command
-        | [$path, $configured, ($path | @sh), ($configured | @sh)] | index($command) != null
-    ' "$SETTINGS_FILE" >/dev/null 2>&1; then
-        return 0
-    fi
-    installed_version=
     if [ -f "$dest/VERSION" ]; then
         installed_version=$(tr -d '[:space:]' < "$dest/VERSION")
     fi
-    if [ "$installed_version" != "$desired_version" ]; then
-        if ! copy_runtime_files "$source_dir" "$dest"; then
-            print_error "Could not refresh the installed Cortado runtime at $dest."
+    if [ "$installed_version" = "${tag#v}" ] && [ -f "$dest/cortado.sh" ] &&
+        [ -f "$dest/lib/config-tui.sh" ]; then
+        return 0
+    fi
+
+    _update_begin
+    if [ -z "$tree" ]; then
+        if ! _update_mktemp_dir _UPD_RUNTIME_TMP "${TMPDIR:-/tmp}/cortado-update.XXXXXX"; then
+            _update_take_signal
+            print_error "Could not create a temporary directory for the update."
+            _update_end
             return 1
         fi
-        print_success "Refreshed the installed Cortado runtime at $dest"
+        _update_take_signal
+        if _stage_release_tree "$tag" "$_UPD_RUNTIME_TMP"; then
+            tree="$REPLY"
+        fi
     fi
+    if [ -n "$tree" ]; then
+        if _publish_managed_runtime "$tree" "$dest" "${tag#v}"; then
+            print_success "Refreshed the installed Cortado runtime at $dest"
+            _UPD_REFRESHED=true
+            rc=0
+        else
+            print_error "Could not refresh the installed Cortado runtime at $dest."
+        fi
+    fi
+    _update_end
+    return "$rc"
+}
+
+# --update and an update accepted from --check-update end with the managed
+# runtime on the release. An update accepted before an install does not: the
+# restarted installer replaces the runtime itself.
+_update_refreshes_runtime() {
+    case "$INSTALL_MODE" in
+        update|check-update) return 0 ;;
+    esac
+    return 1
 }
 
 # Perform the update from the latest GitHub *release* tag (not unpinned main).
@@ -401,8 +661,8 @@ do_update() {
         _cortado_git stash -q 2>/dev/null
         if _cortado_git fetch origin --tags --force 2>/dev/null \
             && _cortado_git checkout -q "$tag" 2>/dev/null; then
-            if [ "$INSTALL_MODE" = update ]; then
-                _refresh_managed_runtime "${tag#v}" || return 1
+            if _update_refreshes_runtime; then
+                _refresh_managed_runtime "$tag" || return 1
             fi
             print_success "Updated to version $REMOTE_VERSION"
             echo ""
@@ -415,10 +675,11 @@ do_update() {
         fi
     else
         print_info "Downloading release $tag..."
-        _publish_release_archive "$tag" || return 1
-        if [ "$INSTALL_MODE" = update ]; then
-            _refresh_managed_runtime "${tag#v}" || return 1
+        local refresh=false
+        if _update_refreshes_runtime; then
+            refresh=true
         fi
+        _publish_release_archive "$tag" "$refresh" || return 1
 
         print_success "Updated to version ${tag#v}"
         echo ""
@@ -2111,7 +2372,16 @@ parse_args() {
 # =============================================================================
 # MAIN
 # =============================================================================
+# Installer-owned files are executable code. Add group and other write
+# protection to the caller's umask, keeping any stricter bits it already has.
+_restrict_umask() {
+    local current
+    current=$(umask) || return 1
+    umask "$(printf '%04o' $(( 8#$current | 8#022 )))"
+}
+
 main() {
+    _restrict_umask
     parse_args "$@"
     setup_colors
 
@@ -2145,9 +2415,11 @@ main() {
             if [ "$INSTALL_MODE" = "update" ]; then
                 if [ "$ver" = "${REMOTE_TAG#v}" ] && [ -f "$SCRIPT_DIR/VERSION" ] &&
                     ! _is_homebrew_prefix "$SCRIPT_DIR"; then
-                    _refresh_managed_runtime "$ver" || exit 1
+                    _refresh_managed_runtime "$REMOTE_TAG" || exit 1
                 fi
-                print_success "Already up to date ($ver)"
+                if [ "$_UPD_REFRESHED" != true ]; then
+                    print_success "Already up to date ($ver)"
+                fi
             else
                 print_success "You have the latest version ($ver)"
             fi
