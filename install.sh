@@ -529,15 +529,20 @@ _update_lock() {
 
 # Remove the lock at $1 only while it names the exited installer $2. It is
 # renamed aside first, so of two installers breaking it only one removes it,
-# and a lock that a running update has taken since is handed back.
+# and a lock that a running update has taken since is handed back. Signals
+# wait until the lock is back, so one never strands it aside.
 _update_break_stale_lock() {
     local lock="$1" stale="$2" aside="$1.$$" taken
-    mv -- "$lock" "$aside" 2>/dev/null || return 0
-    taken=$(readlink "$aside" 2>/dev/null)
-    if [ "$taken" != "$stale" ]; then
-        ln -sn -- "$taken" "$lock" 2>/dev/null
+    _UPD_DEFER=true
+    if mv -- "$lock" "$aside" 2>/dev/null; then
+        taken=$(readlink "$aside" 2>/dev/null)
+        if [ "$taken" != "$stale" ]; then
+            ln -sn -- "$taken" "$lock" 2>/dev/null
+        fi
+        rm -f -- "$aside"
     fi
-    rm -f -- "$aside"
+    _UPD_DEFER=false
+    _update_take_signal
 }
 
 # With the lock held: when no runtime is at $1, put back the newest runtime an

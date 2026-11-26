@@ -1005,6 +1005,27 @@ ln -s 999999999 "$lock_root/.cortado-update.lock"
 _update_break_stale_lock "$lock_root/.cortado-update.lock" 999999999
 assert_empty "breaking a stale lock removes it and leaves nothing else" "$(LC_ALL=C ls -A "$lock_root")"
 
+# A signal while a stale lock is set aside waits until the lock is handed back.
+term_root=$(mktemp -d "$CLAUDE_CONFIG_DIR/break-term.XXXXXX") || exit 1
+mkdir "$term_root/cfg" "$term_root/bin"
+ln -s "$$" "$term_root/cfg/.cortado-update.lock"
+# shellcheck disable=SC2016 # The stub body expands when the stub runs.
+printf '%s\n' '#!/bin/bash' 'for last in "$@"; do :; done' '/bin/mv "$@" || exit $?' \
+    'case "$last" in *.cortado-update.lock.*) kill -TERM "$BREAK_PID" ;; esac' > "$term_root/bin/mv"
+chmod 755 "$term_root/bin/mv"
+PATH="$term_root/bin:$PATH" /bin/bash -c '
+    . "$1" || exit 99
+    export BREAK_PID=$$
+    _update_begin
+    _update_break_stale_lock "$2/.cortado-update.lock" 999999999
+    _update_end
+' _ "$INSTALL" "$term_root/cfg" >/dev/null 2>&1
+assert_eq "TERM while breaking a stale lock still exits 143" 143 "$?"
+assert_eq "TERM while breaking a stale lock still hands a live lock back" "$$" \
+    "$(readlink "$term_root/cfg/.cortado-update.lock")"
+assert_eq "TERM while breaking a stale lock leaves nothing set aside" .cortado-update.lock \
+    "$(LC_ALL=C ls -A "$term_root/cfg")"
+
 # A lock its holder releases between the symlink check and readlink is retried,
 # never reported as a lock that names no installer.
 race_root=$(mktemp -d "$CLAUDE_CONFIG_DIR/race.XXXXXX") || exit 1
