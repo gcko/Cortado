@@ -53,7 +53,9 @@ measure_stalled_weather_renders() {
     printf '%s\n' "MODULE_ORDER=\"$order,weather\"" 'MODULE_WEATHER="true"' > "$stalled/cortado.conf"
     chmod 600 "$stalled/cortado.conf"
     export CORTADO_TIMING_CURL_PIDS="$scratch/curl.pids"
-    # shellcheck disable=SC2329
+    # CI's older ShellCheck reports the body as unreachable (SC2317), not the
+    # function as unused (SC2329); it is invoked from the exported renders.
+    # shellcheck disable=SC2317,SC2329
     curl() {
         sleep 6 &
         printf '%s\n' "$!" >> "$CORTADO_TIMING_CURL_PIDS"
