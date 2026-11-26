@@ -339,7 +339,7 @@ assert_empty 'A missing config directory prints no refusal' "$(cat "$TEST_BASE/s
 if [ "$EUID" -ne 0 ]; then
     new_sandbox
     link_home="$CLAUDE_CONFIG_DIR"
-    mkdir -p -m 700 "$link_home/hidden/dir"
+    mkdir -m 700 "$link_home/hidden" "$link_home/hidden/dir"
     write_override "$link_home/hidden/dir/cortado.conf"
     ln -s "$link_home/hidden/dir" "$link_home/linked"
     chmod 600 "$link_home/hidden"
