@@ -45,6 +45,14 @@ check_render 'memory shows absence for a zero hardware total' 'MEM: --' bad-tota
 check_render 'memory shows absence for a zero page size' 'MEM: --' bad-page
 check_render 'memory ignores a size from a failed sysctl' 'MEM: --' failed-size
 check_render 'memory shows absence when counted pages exceed physical memory' 'MEM: --' oversized
+# Both value parts turned off is a deliberate choice, like every network field off:
+# the segment is empty rather than a bare indicator or a false absence.
+check_render 'memory with both value parts off prints nothing' '' normal '' \
+    'MEMORY_SHOW_PERCENTAGE=false' 'MEMORY_SHOW_USED=false'
+check_render 'memory with both value parts off prints nothing when the probe fails' '' failed '' \
+    'MEMORY_SHOW_PERCENTAGE=false' 'MEMORY_SHOW_USED=false'
+check_render 'memory with only used/total shows it' 'MEM: 0G/0G [OK]' normal '' \
+    'MEMORY_SHOW_PERCENTAGE=false' 'MEMORY_SHOW_USED=true'
 
 # Linux reads /proc/meminfo. The grep stub stands in for it on every host.
 RENDER_OS=linux

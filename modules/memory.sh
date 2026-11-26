@@ -23,6 +23,7 @@
 #   MEMORY_WARNING_THRESHOLD - Yellow at % (default: 70)
 #   MEMORY_CRITICAL_THRESHOLD - Red at % (default: 85)
 #   MEMORY_SHOW_STATUS       - Show status indicator (default: true)
+#   With MEMORY_SHOW_PERCENTAGE and MEMORY_SHOW_USED both false, nothing is shown.
 # =============================================================================
 
 _memory_darwin_reading() {
@@ -56,6 +57,12 @@ module_memory() {
     local warn_thresh="${MEMORY_WARNING_THRESHOLD:-70}"
     local crit_thresh="${MEMORY_CRITICAL_THRESHOLD:-85}"
     local show_status="${MEMORY_SHOW_STATUS:-true}"
+
+    # Both value parts off is a deliberate choice: show nothing, as network does
+    # with every field off, rather than a bare indicator or a false "--".
+    if [ "$show_used" != true ] && [ "$show_pct" != true ]; then
+        return
+    fi
 
     local mem_pct=""
     local mem_used=""
