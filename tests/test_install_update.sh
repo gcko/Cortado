@@ -966,6 +966,22 @@ assert_not_contains "a symlinked leftover runtime is not reported as an earlier 
     ".cortado-previous.linked/runtime" "$git_update_output"
 
 # --- one update at a time ---
+swap_case lock-asides
+# A SIGKILL while a stale lock is set aside leaves .cortado-update.lock.<pid>.
+ln -s 999999999 "$cfg/.cortado-update.lock.999999999"
+ln -s "$$" "$cfg/.cortado-update.lock.$$"
+ln -s 999999999 "$cfg/.cortado-update.lock.notapid"
+printf '%s\n' 'user data' > "$cfg/.cortado-update.lock.999999998"
+run_git_update
+assert_eq "set-aside locks: the update exits 0" 0 "$git_update_status"
+assert_eq "set-aside locks: the release is published" released "$active_output"
+assert_rc "a set-aside lock whose installer has exited is removed" 1 test -L "$cfg/.cortado-update.lock.999999999"
+assert_rc "a set-aside lock whose installer is running is kept" 0 test -L "$cfg/.cortado-update.lock.$$"
+assert_rc "a set-aside lock not named by a PID is kept" 0 test -L "$cfg/.cortado-update.lock.notapid"
+assert_eq "a file named like a set-aside lock is kept" 'user data' \
+    "$(cat "$cfg/.cortado-update.lock.999999998" 2>/dev/null)"
+rm -f "$cfg/.cortado-update.lock.$$" "$cfg/.cortado-update.lock.notapid" "$cfg/.cortado-update.lock.999999998"
+
 swap_case live-lock
 ln -s "$$" "$(lock_path)"
 run_git_update

@@ -571,6 +571,15 @@ _update_recover_runtime() {
         [ -d "$dir" ] || continue
         _update_remove_tree "$dir"
     done
+    # A SIGKILL while a stale lock was set aside leaves it as
+    # .cortado-update.lock.<pid>; remove it once that installer has exited.
+    for dir in "$parent"/.cortado-update.lock.*; do
+        [ -L "$dir" ] || continue
+        case "${dir##*.}" in
+            ''|0*|*[!0-9]*) continue ;;
+        esac
+        kill -0 "${dir##*.}" 2>/dev/null || rm -f -- "$dir"
+    done
     for dir in "$parent"/.cortado-previous.*; do
         [ ! -L "$dir" ] && [ -d "$dir" ] || continue
         rmdir -- "$dir" 2>/dev/null && continue
