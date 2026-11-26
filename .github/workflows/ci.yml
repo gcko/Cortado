@@ -126,12 +126,20 @@ jobs:
         if: ${{ !cancelled() && steps.tools.outcome == 'success' && runner.os != 'macOS' }}
         run: /bin/bash tests/run-suites.sh
 
+      # The 250 ms p95 gate is quarantined while tests/flaky.txt lists
+      # ci:render-p95: p50 and p95 are still measured and printed, but the
+      # limit is not enforced. Deleting that entry turns the gate back on.
       - name: Record default render p50 and p95
         if: ${{ !cancelled() && steps.tools.outcome == 'success' && matrix.jq != 'apple' }}
         continue-on-error: ${{ runner.os != 'macOS' }}
         env:
           CORTADO_RENDER_P95_LIMIT_MS: ${{ runner.os == 'macOS' && '250' || '0' }}
-        run: /bin/bash tests/render_timing.sh 60
+        run: |
+          if awk '$1 == "ci:render-p95" { found = 1 } END { exit !found }' tests/flaky.txt; then
+            printf '%s\n' "::notice::ci:render-p95 is quarantined in tests/flaky.txt; p95 is reported, not enforced (limit ${CORTADO_RENDER_P95_LIMIT_MS} ms)"
+            export CORTADO_RENDER_P95_LIMIT_MS=0
+          fi
+          /bin/bash tests/render_timing.sh 60
 
       - name: Record warm all-modules render p50 and p95
         if: ${{ !cancelled() && steps.tools.outcome == 'success' && matrix.jq != 'apple' }}

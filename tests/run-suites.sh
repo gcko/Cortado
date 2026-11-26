@@ -10,6 +10,8 @@
 # TIMEOUT line as it finishes, and keeps its output in a private file. Failing
 # suites' output is printed afterwards, one whole block per suite, so parallel
 # output never interleaves. The exit status is non-zero when any suite fails.
+# A suite quarantined in tests/flaky.txt is skipped with a "SKIP (flaky)" line
+# (CORTADO_RUN_FLAKY=1 runs it anyway).
 # Bash 3.2 (macOS /bin/bash) and BSD or GNU xargs.
 set -u
 
@@ -68,28 +70,44 @@ case "${SUITE_TIMEOUT:-300}" in
         exit 2 ;;
 esac
 
+# shellcheck source=tests/lib/flaky.sh
+. "$test_dir/lib/flaky.sh"
+kept=() skipped=0
+for suite in "$@"; do
+    if is_flaky "$suite"; then
+        printf 'SKIP (flaky): %s\n' "${suite##*/}"
+        skipped=$((skipped + 1))
+    else
+        kept+=("$suite")
+    fi
+done
+
 work=$(mktemp -d "${TMPDIR:-/tmp}/cortado-suites.XXXXXX") || exit 1
 trap 'rm -rf "$work"' EXIT
 mkdir "$work/tmp" || exit 1
 
-suites=("$@")
+suites=(${kept[@]+"${kept[@]}"})
 # Start the largest suites first: size tracks run time well enough that the
 # slowest suites do not start last and leave the other jobs idle.
 order=$(
     i=0
-    for suite in "${suites[@]}"; do
+    for suite in ${suites[@]+"${suites[@]}"}; do
         printf '%s %s\n' "$(wc -c < "$suite" | tr -d ' ')" "$i"
         i=$((i + 1))
     done | sort -k1,1nr -k2,2n | awk '{ print $2 }'
 )
 started=$SECONDS
-for i in $order; do
-    printf '%s\0%s\0' "$i" "${suites[i]}"
-done | xargs -0 -n 2 -P "$jobs" /bin/bash "$runner" --worker "$work"
+# GNU xargs runs its command once even with no input, so skip it when every
+# suite was quarantined.
+if [ -n "$order" ]; then
+    for i in $order; do
+        printf '%s\0%s\0' "$i" "${suites[i]}"
+    done | xargs -0 -n 2 -P "$jobs" /bin/bash "$runner" --worker "$work"
+fi
 
 passed=0 failed=0 timed_out=0
 i=0
-for suite in "${suites[@]}"; do
+for suite in ${suites[@]+"${suites[@]}"}; do
     result=$(cat "$work/$i.result" 2>/dev/null) || result=
     case "$result" in
         PASS) passed=$((passed + 1)) ;;
@@ -108,6 +126,6 @@ for suite in "${suites[@]}"; do
     i=$((i + 1))
 done
 
-printf '\nsuites: %s passed, %s failed, %s timed out, %ss with %s jobs\n' \
-    "$passed" "$failed" "$timed_out" "$((SECONDS - started))" "$jobs"
+printf '\nsuites: %s passed, %s failed, %s timed out, %s skipped as flaky, %ss with %s jobs\n' \
+    "$passed" "$failed" "$timed_out" "$skipped" "$((SECONDS - started))" "$jobs"
 [ "$failed" -eq 0 ] && [ "$timed_out" -eq 0 ]

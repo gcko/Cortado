@@ -20,7 +20,13 @@
 #   - is listed but guarded nowhere in the file,
 #   - ran zero assertions, or
 #   - printed no Results line or exited non-zero.
+# A section quarantined in tests/flaky.txt as <suite>:<section> stays in the
+# list but is not run: it prints "SKIP (flaky): <suite>:<section>" in its place
+# (CORTADO_RUN_FLAKY=1 runs it anyway).
 # Bash 3.2 compatible.
+
+# shellcheck source=tests/lib/flaky.sh
+. "$(dirname "${BASH_SOURCE[0]}")/flaky.sh"
 
 # shellcheck disable=SC2154 # The sourcing suite sets $section, as above.
 section_is() {
@@ -37,7 +43,7 @@ section_results() {
 run_sections() {
     local variable="$1" jobs="$2" suite="$3"
     shift 3
-    local sections=" $* " found name lane results status work
+    local sections=" $* " found name lane results status work skip=" "
     work=$(mktemp -d "${TMPDIR:-/tmp}/sections.XXXXXX") || exit 1
     _sections_work="$work"
     trap 'rm -rf "$_sections_work"' EXIT
@@ -58,6 +64,14 @@ run_sections() {
         esac
     done
 
+    for name in $sections; do
+        if is_flaky "$suite" "$name"; then
+            skip="$skip$name "
+            # A quarantined section counts as claimed, so no lane runs it.
+            mkdir "$work/$name.claim" || exit 1
+        fi
+    done
+
     case "$jobs" in ''|*[!0-9]*|0*) jobs=4 ;; esac
     lane=0
     while [ "$lane" -lt "$jobs" ] && [ "$lane" -lt "$#" ]; do
@@ -75,6 +89,11 @@ run_sections() {
 
     for name in $sections; do
         printf '== %s\n' "$name"
+        case "$skip" in
+            *" $name "*)
+                printf 'SKIP (flaky): %s:%s\n' "${suite##*/}" "$name"
+                continue ;;
+        esac
         cat "$work/$name.out" 2>/dev/null
         results=$(sed -nE 's/^Results: ([0-9]+) passed, ([0-9]+) failed$/\1 \2/p' "$work/$name.out" 2>/dev/null |
             tail -n 1)

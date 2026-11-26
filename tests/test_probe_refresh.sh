@@ -14,7 +14,10 @@ section="${PROBE_TEST_SECTION:-all}"
 # 5 s refresh deadlines, so a full run starts each one as its own copy of
 # this suite, with its own scratch directory, in PROBE_TEST_JOBS lanes
 # (default 3). Sections are listed slowest first and dealt to lanes in turn.
+# A section quarantined in tests/flaky.txt stays listed but is skipped.
 if [ "$section" = all ]; then
+    # shellcheck source=tests/lib/flaky.sh
+    . "$PROJECT_ROOT/tests/lib/flaky.sh"
     sections='locks deadline validation lifecycle setup clear publication local privacy resolution keys'
     # Every section this file tests must be in the list, or it would not run,
     # and every listed name must be a section here. Every section test on a
@@ -38,11 +41,16 @@ if [ "$section" = all ]; then
     case "$jobs" in ''|*[!0-9]*|0*) jobs=3 ;; esac
     lane=0
     lanes=()
+    skip=" "
     for name in $sections; do
+        if is_flaky "${BASH_SOURCE[0]}" "$name"; then
+            skip="$skip$name "
+            continue
+        fi
         lanes[lane]="${lanes[lane]:-} $name"
         lane=$(((lane + 1) % jobs))
     done
-    for lane in "${lanes[@]}"; do
+    for lane in ${lanes[@]+"${lanes[@]}"}; do
         (
             for name in $lane; do
                 PROBE_TEST_SECTION=$name /bin/bash "${BASH_SOURCE[0]}" > "$scratch/$name.out" 2>&1
@@ -53,6 +61,11 @@ if [ "$section" = all ]; then
     wait
     for name in $sections; do
         printf '== %s\n' "$name"
+        case "$skip" in
+            *" $name "*)
+                printf 'SKIP (flaky): %s:%s\n' "${BASH_SOURCE[0]##*/}" "$name"
+                continue ;;
+        esac
         cat "$scratch/$name.out" 2>/dev/null
         results=$(sed -nE 's/^Results: ([0-9]+) passed, ([0-9]+) failed$/\1 \2/p' "$scratch/$name.out" 2>/dev/null)
         if [ -n "$results" ]; then
