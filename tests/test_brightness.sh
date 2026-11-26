@@ -36,7 +36,7 @@ check_probe() {
     local desc="$1" expected="$2" sample="$3" sb i entry
     shift 3
     sb=$(mktemp -d "$TEST_BASE/probe.XXXXXX") || exit 1
-    render "$sample" '' "CLAUDE_CONFIG_DIR='$sb'" "$@" >/dev/null || { fail "$desc (cold render failed)"; return; }
+    RENDER_CONFIG_DIR="$sb" render "$sample" '' "$@" >/dev/null || { fail "$desc (cold render failed)"; return; }
     for ((i=0; i<60; i++)); do
         for entry in "$sb"/cortado-cache/brightness*; do
             case "${entry##*/}" in *-lock|*.*) continue ;; esac
@@ -49,7 +49,7 @@ check_probe() {
         too-bright|overflow)
             assert_eq "$desc (positive cache is empty)" '' "$(cat "$sb/cortado-cache/brightness" 2>/dev/null)" ;;
     esac
-    check_render "$desc" "$expected" "$sample" '' "CLAUDE_CONFIG_DIR='$sb'" "$@"
+    RENDER_CONFIG_DIR="$sb" check_render "$desc" "$expected" "$sample" '' "$@"
 }
 
 check_probe 'brightness shows the measured percentage' 'BRT: 50%' normal
@@ -69,6 +69,6 @@ check_probe 'a raw value above the maximum cannot produce a brightness reading' 
 sb=$(mktemp -d "$TEST_BASE/corrupt.XXXXXX") || exit 1
 mkdir -m 700 "$sb/cortado-cache"
 (umask 077; printf '999\n' > "$sb/cortado-cache/brightness")
-check_render 'a corrupt cached brightness percentage does not display' 'BRT: --' failed '' "CLAUDE_CONFIG_DIR='$sb'"
+RENDER_CONFIG_DIR="$sb" check_render 'a corrupt cached brightness percentage does not display' 'BRT: --' failed ''
 printf '\nResults: %s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

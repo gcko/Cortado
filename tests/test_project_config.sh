@@ -19,6 +19,11 @@ mkdir -p "$PROJECT" "$CACHE_DIR" "$TEST_BASE/bin"
 PROJECT_FILE="$PROJECT/.cortado.conf"
 # shellcheck source=tests/lib/assert.sh
 . "$SCRIPT_DIR/tests/lib/assert.sh" indented
+# The trusted user config here carries Bash probes (functions, unset, readonly,
+# set -u) that observe what the project parser does. Config is data by default
+# (#33), so the user config opts into Bash; the project config stays data, and
+# quotes its tilde separator because Bash would expand an unquoted one.
+export CORTADO_CONF_ALLOW_BASH=1
 
 # Pin darwin: the expected lines include the macOS-only battery and sandbox.
 render() {
@@ -97,7 +102,7 @@ for value in yes 1 on; do
 done
 
 printf '%s\n' 'MODULE_ORDER=model,directory,sandbox' 'MODULE_DIRECTORY=false' \
-    'SANDBOX_ICON=PROJECT-LOCK' 'SEPARATOR=~' 'COLOR_THEME=default' > "$PROJECT_FILE"
+    'SANDBOX_ICON=PROJECT-LOCK' 'SEPARATOR="~"' 'COLOR_THEME=default' > "$PROJECT_FILE"
 out=$(APP_SANDBOX_CONTAINER_ID=fixture SANDBOX_ICON=ENV-LOCK render)
 assert_eq "renderer preserves an inherited icon and applies project display and disable settings" "🤖 Test~ENV-LOCK" "$out"
 out=$(APP_SANDBOX_CONTAINER_ID=fixture SANDBOX_ICON='' render)

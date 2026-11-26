@@ -187,7 +187,7 @@ source_partial() {
         "$partial_source/install.sh" 2>&1
 }
 
-for missing in semver.sh config-permissions.sh module-registry.sh; do
+for missing in semver.sh config-permissions.sh config-data.sh module-registry.sh; do
     rm -rf "${partial_source:?}/lib"
     mkdir "$partial_source/lib"
     cp "$REPO_ROOT/lib/"*.sh "$partial_source/lib/"
@@ -799,7 +799,7 @@ for lib_file in "$swap_src/lib/"*.sh; do
     assert_new_runtime "a current VERSION without lib/$lib_name"
     assert_rc "a current VERSION without lib/$lib_name restores the library" 0 test -f "$active/lib/$lib_name"
 done
-for lib_name in config-permissions.sh module-registry.sh semver.sh; do
+for lib_name in config-data.sh config-permissions.sh module-registry.sh semver.sh; do
     assert_rc "the release fixture ships lib/$lib_name" 0 test -f "$swap_src/lib/$lib_name"
 done
 

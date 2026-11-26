@@ -55,10 +55,13 @@ read_module_headers() {
                         sub(/^[[:space:]]*#[[:space:]]+@description[[:space:]]+/, "") && $0 != "") {
                         if ($0 !~ /[|[:cntrl:]]/) description = $0
                     }
-                    if ($2 == "@config" && i <= builtin_end &&
+                    # Keep KEY:type. A user module may declare only settings
+                    # under its own prefix, so it cannot widen any other key.
+                    if ($2 == "@config" &&
                         $3 ~ /^[A-Z][A-Z0-9_]*:(bool|int|number|string)$/ && $3 !~ /^MODULE_/) {
-                        split($3, option, ":")
-                        keys = keys " " option[1]
+                        stem = toupper(id) "_"
+                        gsub(/-/, "_", stem)
+                        if (i <= builtin_end || index($3, stem) == 1) keys = keys " " $3
                     }
                 }
                 close(path)
@@ -81,6 +84,18 @@ read_module_headers() {
     ' "${@:2}"
 }
 
+# Names a user module may not declare as settings even under its own prefix:
+# shell, loader and Cortado runtime state.
+config_user_key_reserved() {
+    case "$1" in
+        PATH|IFS|HOME|SHELL|ENV|TMPDIR|CDPATH|GLOBIGNORE|LANG|TZ|PS4|PROMPT_COMMAND|\
+        BASH*|LD_*|DYLD_*|LC_*|CORTADO_*|CLAUDE_*|CTX_*|\
+        CACHE_DIR|MODULES_DIR|SCRIPT_DIR|CONFIG_FILE|USER_CONFIG|LEGACY_USER_CONFIG|CONFIG_*)
+            return 0 ;;
+    esac
+    return 1
+}
+
 # Record a refused user module file for the debug log.
 module_refused() {
     _CORTADO_MODULE_REFUSED_IDS="$_CORTADO_MODULE_REFUSED_IDS$1 "
@@ -90,7 +105,7 @@ module_refused() {
 discover_module_registry() {
     local shipped_dir="$1" user_dir="${2:-}" apply_defaults="${3:-false}"
     local path id key target builtin_end path_var
-    local records enabled args platforms flag category description keys
+    local records enabled args platforms flag category description keys entry
     local candidates=()
 
     # Only this discovery may bind a source path. Drop inherited or earlier ones.
@@ -100,6 +115,8 @@ discover_module_registry() {
     _CORTADO_MODULE_REFUSALS=()
     _CORTADO_MODULE_REFUSED_IDS=' '
     _CORTADO_PROJECT_KEYS=' '
+    # Setting types are per-key names, so a lookup is one expansion.
+    unset "${!_CORTADO_KEY_TYPE_@}" "${!_CORTADO_USER_KEY_TYPE_@}"
     _CORTADO_MODULE_FLAGS=' '
     _CORTADO_MODULE_IDS=' '
     for path in "$shipped_dir"/*.sh; do
@@ -156,11 +173,23 @@ discover_module_registry() {
         module_lookup_key "$id" || continue
         key="$REPLY"
         _CORTADO_MODULE_IDS="$_CORTADO_MODULE_IDS$id "
-        _CORTADO_PROJECT_KEYS="$_CORTADO_PROJECT_KEYS$keys "
+        path_var="_CORTADO_SOURCE_${key#_CORTADO_MODULE_}"
+        if [ -z "${!path_var-}" ]; then
+            # Installed module settings are typed for every scope and allowed
+            # in a project config.
+            for entry in $keys; do
+                _CORTADO_PROJECT_KEYS="$_CORTADO_PROJECT_KEYS${entry%%:*} "
+                printf -v "_CORTADO_KEY_TYPE_${entry%%:*}" '%s' "${entry#*:}"
+            done
+        else
+            for entry in $keys; do
+                config_user_key_reserved "${entry%%:*}" ||
+                    printf -v "_CORTADO_USER_KEY_TYPE_${entry%%:*}" '%s' "${entry#*:}"
+            done
+        fi
         _CORTADO_MODULE_FLAGS="$_CORTADO_MODULE_FLAGS$flag "
         _CORTADO_MODULE_CATALOG+=("$id:$enabled:$category:$description")
         printf -v "$key" '%s' "$flag|$args|$platforms"
-        path_var="_CORTADO_SOURCE_${key#_CORTADO_MODULE_}"
         # Install defaults before trusted config so a config can also unset a
         # flag. Honor an inherited flag for a user-installed module.
         if [ "$apply_defaults" = true ] && [[ -z "${!path_var-}" || -z "${!flag+x}" ]]; then

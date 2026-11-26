@@ -82,6 +82,12 @@ _installer_lib_missing() {
     return 1 2>/dev/null || exit 1
 }
 # Exits when run, returns when sourced (return fails outside a sourced file).
+# shellcheck source=lib/config-data.sh disable=SC2317
+{ [ -r "$SCRIPT_DIR/lib/config-data.sh" ] && . "$SCRIPT_DIR/lib/config-data.sh"; } || {
+    _installer_lib_missing "$SCRIPT_DIR/lib/config-data.sh"
+    return 1 2>/dev/null || exit 1
+}
+# Exits when run, returns when sourced (return fails outside a sourced file).
 # shellcheck source=lib/module-registry.sh disable=SC2317
 { [ -r "$SCRIPT_DIR/lib/module-registry.sh" ] && . "$SCRIPT_DIR/lib/module-registry.sh"; } || {
     _installer_lib_missing "$SCRIPT_DIR/lib/module-registry.sh"
@@ -1624,9 +1630,15 @@ validate_config() {
     fi
     check_trusted_config "$config_file" packaged || return 1
 
-    # Source the config to validate
+    # Read the config as data, as the statusline does; nothing in it runs.
     (
-        . "$REPLY" 2>/dev/null
+        # shellcheck disable=SC2329 # read_config_kv calls it by name.
+        _validate_unread() {
+            local REPLY
+            config_printable "$3"
+            echo "Warning: config line $1 is not read ($2): $REPLY"
+        }
+        read_config_kv "$REPLY" trusted_config_setting_allowed trusted_config_assign _validate_unread
 
         # Validate MODULE_ORDER contains valid modules
         if [ -n "$MODULE_ORDER" ]; then

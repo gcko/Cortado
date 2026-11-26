@@ -10,6 +10,10 @@ trap 'rm -rf "$TEST_BASE"' EXIT
 
 # shellcheck source=tests/lib/assert.sh
 . "$PROJECT_ROOT/tests/lib/assert.sh" plain-comma
+# These fixtures drive module errors from the user config with Bash: function
+# overrides, test-only variables, set -C and malformed raw values. Config is
+# data by default (#33), so the suite opts the user config into Bash.
+export CORTADO_CONF_ALLOW_BASH=1
 # A controlled PATH keeps the system tools available and omits the selected one.
 without_tool() {
     local dest="$1" omit="$2" tool name names=:

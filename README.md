@@ -223,6 +223,12 @@ If the installer updates by downloading an archive, it verifies `Cortado-source.
 
 When `settings.json` runs the installed copy at `~/.claude/cortado/cortado.sh`, `--update` also refreshes that copy to the release. It builds the new copy beside the old one, carries over your `cortado.conf` and any other files you added, and then swaps the two. If any step fails, or Ctrl-C or a TERM or HUP signal interrupts the update, the old copy goes back in place. If it cannot go back, the installer keeps it unchanged and prints where it is. `--update` will not refresh a `~/.claude/cortado` that is a symbolic link or not a directory: it changes nothing there and exits with status 1. A link to the source clone you are updating from, or to a Homebrew prefix, is skipped without an error. A `~/.claude` that is itself a symbolic link works as usual.
 
+### Upgrading: config files are data
+
+Cortado reads `cortado.conf` as data. Earlier versions sourced it as Bash, so a config that runs commands or expands variables now has those lines skipped (see above). Run `cortado config --migrate --dry-run` to list them, then rewrite each as a plain `KEY="value"`.
+
+If you still need the Bash behaviour, start Claude Code with `CORTADO_CONF_ALLOW_BASH=1` in its environment. Cortado then sources your user config as Bash, after the same permission check. Only the environment can turn this on, never a config file, and it never applies to the packaged or project configs. This opt-in lasts through the next major release and is removed in the one after.
+
 ### Migrating from Barista
 
 Cortado can read your existing Barista settings.
@@ -280,7 +286,8 @@ After install, reconfigure without re-running the installer:
 
 ```bash
 cortado config                 # interactive TUI (modules, theme, WAN privacy)
-cortado config --show          # print settings and flag an inactive saved file
+cortado config --show          # print settings, flag an inactive saved file, name skipped lines
+cortado config --migrate --dry-run  # list lines the data parser skips; changes nothing
 cortado config --list          # alias for --show
 cortado config --toggle weather
 cortado config --set COLOR_THEME=monochrome
@@ -292,7 +299,7 @@ cortado config --help          # show usage
 
 The default save path is `$CLAUDE_CONFIG_DIR/cortado.conf` (usually `~/.claude/cortado.conf`). Use `--project` to save allowed preferences in the current directory. Cancel leaves the file untouched.
 
-For the user config, `--set` replaces the last standalone assignment for the key or appends one if needed. When a later line could assign the key again (inside an `if`, say), it appends the new value so it takes effect, and says which line. It saves module flag values of `yes`, `1`, and `on` as `true`, and `no`, `0`, and `off` as `false`, and adds or removes the module in `MODULE_ORDER` the way `--toggle` does.
+For the user config, `--set` replaces the last standalone assignment for the key or appends one if needed. When a later line could assign the key again (inside an `if`, say), it appends the new value so it takes effect, and says which line. It refuses a value that does not fit the setting's type. It saves module flag values of `yes`, `1`, and `on` as `true`, and `no`, `0`, and `off` as `false`, and adds or removes the module in `MODULE_ORDER` the way `--toggle` does.
 
 For the user config, the editor follows symlinks and writes to the target. It refuses a group- or world-writable user config and prints the `chmod go-w` command to run after you review it. A project `.cortado.conf` that is a symlink is refused, because a repository can commit one that points at your own files. Either save keeps the previous contents of an existing file in an owner-only `.bak` beside the file it writes.
 
@@ -342,9 +349,11 @@ MODULE_ORDER="directory,context,git,model"
 
 Configuration is loaded in order of precedence:
 1. Built-in defaults
-2. `cortado.conf` in the script directory, sourced as Bash after the permission check below
-3. `$CLAUDE_CONFIG_DIR/cortado.conf`, sourced as Bash after the same check with user-file ownership rules
+2. `cortado.conf` in the script directory, read as data after the permission check below
+3. `$CLAUDE_CONFIG_DIR/cortado.conf`, read as data after the same check with user-file ownership rules
 4. `.cortado.conf` (per-directory display preferences and module disables)
+
+Every config file is data, never run. Write one `KEY=VALUE` per line: a bare word, `"double quotes"` or `'single quotes'`, with `#` comments on their own line or after the value. A later line for the same key wins, and an `export` prefix is ignored. Cortado skips any other line, such as `$(...)`, backticks, `$HOME`, `$'...'`, a leading `~`, a function or an `if`. It also skips a value that does not fit its setting, such as `CONTEXT_WARNING_THRESHOLD=high`. The statusline then shows `Config partly read` and renders everything else. A name Cortado does not know is only listed, since no module reads it. `cortado config --show` names each skipped line, and `cortado config --migrate --dry-run` lists them with line numbers without changing the file. To put a colour code in a separator or icon, type the escape byte itself inside the quotes.
 
 ### Full Configuration Options
 
@@ -483,7 +492,8 @@ SEPARATOR=" • "
 ├── cortado.sh          # Main entry point (+ config/version CLI)
 ├── lib/
 │   ├── config-tui.sh   # Runtime config TUI (`cortado config`)
-│   ├── config-permissions.sh # Ownership and mode checks for sourced files
+│   ├── config-data.sh       # The one KEY=VALUE config parser
+│   ├── config-permissions.sh # Ownership and mode checks for configs and user modules
 │   ├── module-registry.sh    # Module discovery from file headers
 │   ├── platform.sh     # Decides CORTADO_OS once; BSD/GNU stat and date helpers
 │   └── semver.sh       # Version comparison for the installer and update module
@@ -560,10 +570,11 @@ To contribute a module to Cortado, place the same file in the checkout's `module
 
 ### Config file not loading
 
-- `Config refused` in the statusline means Cortado skipped a Bash config. Run `cortado config --show` in a terminal for the file and reason on stderr. The same details go to `cortado.log` when a trusted config enables debug logging.
+- `Config partly read` means Cortado skipped lines it could not read as data, or values of the wrong type. Run `cortado config --show` to see each one, or `cortado config --migrate --dry-run` for a list with line numbers.
+- `Config refused` in the statusline means Cortado skipped a whole config file. Run `cortado config --show` in a terminal for the file and reason on stderr. The same details go to `cortado.log` when a trusted config enables debug logging.
 - For a symlink, check the resolved file and its immediate parent. The file must belong to your user and have no group or world write bits. Root ownership is also allowed for the packaged config. The parent must belong to your user or root and may be group- or world-writable only with the sticky bit. Missing or unreadable permission metadata causes a refusal.
 - For a user-owned file, `chmod 600 /path/to/resolved/cortado.conf` removes extra write access. A private file can still be replaced through a writable parent. If you own that directory and can remove its shared write access, run `chmod go-w /path/to/resolved/parent`. Leave a deliberately shared directory's permissions to its owner.
-- Per-directory `.cortado.conf` uses the literal settings parser.
+- Per-directory `.cortado.conf` uses the same data parser, with the narrower project allowlist.
 
 ### Testing manually
 ```bash

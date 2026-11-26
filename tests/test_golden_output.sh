@@ -100,6 +100,8 @@ warm_probes() {
     done
 }
 
+# assert_render <fixture> [config lines...]; RENDER_ENV adds environment.
+RENDER_ENV=()
 assert_render() {
     local fixture="$1" sb
     shift
@@ -107,9 +109,10 @@ assert_render() {
     # Expand the fixture's version and ANSI markers for a raw stdout comparison.
     sed -e "s/@VERSION@/$version/" -e $'s/@ESC@/\033/g' "$GOLDEN/$fixture.out" > "$sb/expected"
     if [ "$fixture" = all-modules ]; then
-        warm_probes "$sb" 'cpu brightness processes-total docker-v2-true-false* weather-default-u network-local-v2-true-true load node-*' || exit 1
+        warm_probes "$sb" 'cpu brightness processes-total docker-v2-true-false* weather-default-u network-local-v2-true-true load node-*' \
+            "${RENDER_ENV[@]+"${RENDER_ENV[@]}"}" || exit 1
     fi
-    assert_output "$fixture renders the golden stdout" "$sb"
+    assert_output "$fixture renders the golden stdout${RENDER_LABEL:-}" "$sb" "${RENDER_ENV[@]+"${RENDER_ENV[@]}"}"
 }
 
 assert_mac_cpu_uptime() {
@@ -179,15 +182,30 @@ assert_debug_warning() {
 # The default and compact fixtures show the macOS battery, so pin darwin on every host.
 assert_render default 'CORTADO_OS=darwin' 'TERMINAL_WIDTH=200'
 assert_render compact 'CORTADO_OS=darwin' 'DISPLAY_MODE=compact' 'TERMINAL_WIDTH=60'
-# Exercise the same stubbed macOS hardware on every host.
+# Exercise the same stubbed macOS hardware on every host. The config is plain
+# KEY=VALUE data read by the parser, with raw escape bytes inside quotes.
+all_modules_order='MODULE_ORDER="sandbox, version, update, directory, context, git, project, model, cost, rate-limits, time, battery, cpu, memory, disk, network, uptime, load, temperature, brightness, processes, docker, node, weather, timezone"'
+all_modules_flags=()
+for flag in CPU MEMORY DISK NETWORK UPTIME LOAD TEMPERATURE BRIGHTNESS PROCESSES DOCKER NODE WEATHER TIMEZONE; do
+    all_modules_flags+=("MODULE_$flag=true")
+done
+RENDER_ENV=(APP_SANDBOX_CONTAINER_ID=golden)
 assert_render all-modules \
-    'export APP_SANDBOX_CONTAINER_ID=golden' 'CORTADO_OS=darwin' \
-    'TERMINAL_WIDTH=100' 'STATUS_STYLE=dots' 'NETWORK_SHOW_SSID=true' \
+    'CORTADO_OS=darwin' 'TERMINAL_WIDTH=100' 'STATUS_STYLE=dots' 'NETWORK_SHOW_SSID=true' \
+    "SEPARATOR=\" $(printf '\033')[36m|$(printf '\033')[0m \"" \
+    "MODEL_ICON=\"$(printf '\033')[35m🤖$(printf '\033')[0m\"" \
+    "$all_modules_order" "${all_modules_flags[@]}"
+# The same render from the Bash forms it used before #33, sourced only because
+# the environment opts the user config in.
+RENDER_ENV=(APP_SANDBOX_CONTAINER_ID=golden CORTADO_CONF_ALLOW_BASH=1) RENDER_LABEL=' from a Bash config with the opt-in'
+assert_render all-modules \
+    'CORTADO_OS=darwin' 'TERMINAL_WIDTH=100' 'STATUS_STYLE=dots' 'NETWORK_SHOW_SSID=true' \
     "SEPARATOR=\$' \033[36m|\033[0m '" "MODEL_ICON=\$'\033[35m🤖\033[0m'" \
-    'MODULE_ORDER="sandbox, version, update, directory, context, git, project, model, cost, rate-limits, time, battery, cpu, memory, disk, network, uptime, load, temperature, brightness, processes, docker, node, weather, timezone"' \
+    "$all_modules_order" \
     'MODULE_CPU=true MODULE_MEMORY=true MODULE_DISK=true MODULE_NETWORK=true' \
     'MODULE_UPTIME=true MODULE_LOAD=true MODULE_TEMPERATURE=true MODULE_BRIGHTNESS=true' \
     'MODULE_PROCESSES=true MODULE_DOCKER=true MODULE_NODE=true MODULE_WEATHER=true MODULE_TIMEZONE=true'
+RENDER_ENV=() RENDER_LABEL=
 
 if [ "$("$host_uname" -s)" = Darwin ]; then
     assert_mac_cpu_uptime 'native OSTYPE'

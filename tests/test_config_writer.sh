@@ -179,6 +179,7 @@ assert_rc 'the refused 664 user config is byte-identical' 0 cmp -s "$before" "$c
 assert_contains 'the refusal names the remedy' "review it, then run: chmod go-w $config" "$(cat "$stderr")"
 chmod 600 "$config"
 
+# A Bash hook in the user config needs the opt-in (#33).
 cat > "$config" <<'CONFIG'
 function [ {
     if builtin test "$1" = '!' && builtin test "$2" = -O; then return 0; fi
@@ -187,24 +188,25 @@ function [ {
 COLOR_THEME=default
 CONFIG
 cp "$config" "$before"
-assert_rc 'writer refuses a target the caller does not own' 1 config_edit --set DISPLAY_MODE=compact
+CORTADO_CONF_ALLOW_BASH=1 assert_rc 'writer refuses a target the caller does not own' 1 config_edit --set DISPLAY_MODE=compact
 assert_rc 'a refused owner check leaves the config alone' 0 cmp -s "$before" "$config"
 
 # The shared mode helper (lib/platform.sh) reads BSD or GNU stat for the host;
-# replace it from the trusted config to drive the writer's failure paths.
+# replace it from the trusted config to drive the writer's failure paths. These
+# hooks are Bash, so they run only with the environment's opt-in (#33).
 cat > "$config" <<'CONFIG'
 cortado_file_mode() { return 1; }
 COLOR_THEME=default
 CONFIG
 cp "$config" "$before"
-assert_rc 'writer refuses a target with an unreadable mode' 1 config_edit --set DISPLAY_MODE=compact
+CORTADO_CONF_ALLOW_BASH=1 assert_rc 'writer refuses a target with an unreadable mode' 1 config_edit --set DISPLAY_MODE=compact
 assert_rc 'a failed mode check leaves the config alone' 0 cmp -s "$before" "$config"
 cat > "$config" <<'CONFIG'
 cortado_file_mode() { printf 'bogus\n'; }
 COLOR_THEME=default
 CONFIG
 cp "$config" "$before"
-assert_rc 'writer refuses a malformed mode result' 1 config_edit --set DISPLAY_MODE=compact
+CORTADO_CONF_ALLOW_BASH=1 assert_rc 'writer refuses a malformed mode result' 1 config_edit --set DISPLAY_MODE=compact
 assert_eq 'malformed mode output is diagnosed as a permission check failure' \
     "config: cannot save over a config with unsafe ownership or permissions: $config" "$(cat "$stderr")"
 assert_rc 'a malformed mode result leaves the config alone' 0 cmp -s "$before" "$config"

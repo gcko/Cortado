@@ -15,7 +15,7 @@ Cortado is a **Bash shell script** project (Bash 3.2+ compatible for macOS). It 
 ```
 Cortado/
 ├── cortado.sh          # Main entry point - loads config, modules, orchestrates output
-├── cortado.conf        # Default configuration file (sourced as bash)
+├── cortado.conf        # Default configuration file (KEY=VALUE data)
 ├── install.sh          # Interactive installer with arrow key navigation
 ├── VERSION             # Version tracking (semver), edited only by a release
 ├── AGENTS.md           # This contract (canonical)
@@ -23,7 +23,8 @@ Cortado/
 ├── LICENSE, NOTICE     # Apache 2.0, and the upstream Barista MIT notice
 ├── lib/
 │   ├── config-tui.sh   # Runtime config TUI (`cortado config`)
-│   ├── config-permissions.sh # Ownership and mode checks for sourced files
+│   ├── config-data.sh       # The one KEY=VALUE parser, typed keys and config policies
+│   ├── config-permissions.sh # Ownership and mode checks for configs and user modules
 │   ├── module-registry.sh    # Header discovery for renderer and catalogs
 │   ├── platform.sh          # CORTADO_OS and the BSD/GNU stat and date helpers
 │   └── semver.sh            # Version comparison for installer and update module
@@ -67,7 +68,9 @@ Cortado/
 
    When there is no `cortado.conf` entry, Cortado and the installer check `$CLAUDE_CONFIG_DIR/barista.conf` before copying it with its permissions intact. The renderer loads a trusted legacy file in place if the destination parent fails the check or copying fails. A project's `.barista.conf` is read only when that project has no `.cortado.conf`. Keep these fallbacks until Barista users have had time to migrate.
 
-   Cortado and the installer use the same permission check before sourcing Bash config. The resolved file must belong to the current user, with root also allowed for packaged config. Its parent must belong to the current user or root. Group or other write access is refused, except on a parent with the sticky bit. Unreadable permission metadata also causes a refusal. When packaged settings are unavailable, the renderer falls back to the module header defaults and its built-in display defaults, and adds one `Config refused` section when it rejects Bash config. Detailed reasons go to stderr and to the statusline's debug log when trusted settings enable it. Per-directory `.cortado.conf` is read as literal KEY=VALUE settings through `load_config_safe`. Config-derived numerics are validated before they reach `bc`/URL sinks. `cortado config --project` uses the same safe parser.
+   Every config is data, read by one KEY=VALUE parser in `lib/config-data.sh`: `[export] KEY=VALUE` with unquoted words, `\` escapes, literal `'...'`, and `"..."` in which a backslash escapes only `$`, a backtick, `"` or another backslash, plus blank lines and `#` comments. Anything else (`$(...)`, backticks, `$VAR`, `$'...'`, a leading or post-colon `~`, functions, conditionals, continuation lines, several assignments on one line, lines over 4096 bytes) is never run; the line is skipped and reported in the debug log and `cortado config --show`, and `cortado config --migrate --dry-run` lists each with its line number without changing the file. Keys are typed: the core table in `config-data.sh` and each installed module's `@config KEY:type`, plus `MODULE_*` flags; a user module's `@config` keys count only under its own prefix. A packaged or user config line that the parser skips or whose value does not fit its type adds one `Config partly read` section, because sourcing might have rendered differently; an unknown name is only reported. `CORTADO_CONF_ALLOW_BASH=1`, read only from the environment Cortado starts with, sources the user config as Bash (after the same permission check) through the next major release; the packaged and project configs are never sourced.
+
+   Cortado and the installer use the same permission check before reading a trusted config. The resolved file must belong to the current user, with root also allowed for packaged config. Its parent must belong to the current user or root. Group or other write access is refused, except on a parent with the sticky bit. Unreadable permission metadata also causes a refusal. When packaged settings are unavailable, the renderer falls back to the module header defaults and its built-in display defaults, and adds one `Config refused` section when it rejects a config. Detailed reasons go to stderr and to the statusline's debug log when trusted settings enable it. Per-directory `.cortado.conf` goes through the same parser via `load_config_safe`, with the narrower project allowlist. Config-derived numerics are validated before they reach `bc`/URL sinks. `cortado config --project` uses the same safe parser.
 3. **The platform is decided once** by `cortado_resolve_os` in `lib/platform.sh`, after the trusted configs and before modules load. `CORTADO_OS` is `darwin` or `linux` (WSL is `linux`), read from the build triple in `BASH_VERSINFO[5]`; no module calls `uname` or reads `OSTYPE`. The environment or a trusted config may force `CORTADO_OS=darwin` or `linux` (tests do); any other value is ignored, logged in debug mode, and the detected platform is used. The project config cannot set it. On any other platform the line reads `cortado: unsupported platform`. The BSD/GNU helpers there (`_file_mtime`, `cortado_file_mode`, `cortado_utc_epoch`) follow the real host, not a forced value.
 4. **Modules are discovered** from their headers in `modules/` and in `$CLAUDE_CONFIG_DIR/cortado-modules/`. The renderer sources the installed scripts with `utils.sh` first. It sources user modules inside their execution subshell after the same check, except that a sticky parent does not exempt module code. Module refusals are reported only in debug mode.
 5. **Modules are executed** in the order specified by `MODULE_ORDER` config, skipping any whose `@platforms` leaves out `CORTADO_OS`
@@ -176,7 +179,7 @@ Create `modules/mymodule.sh` and put the following metadata in its leading comme
 | `@ttl 0` | Default probe cache lifetime in seconds. The module manages its cache. |
 | `@timeout-ms 0` | Default probe timeout in milliseconds. The module manages its deadlines. |
 | `@platforms darwin,linux` | Platforms the module has an implementation for: `darwin`, `linux`, or both. Elsewhere the renderer skips it, so a module with no Linux implementation declares `darwin` only. Branch inside a module on `$CORTADO_OS`, never on `uname` or `OSTYPE`. |
-| `@config KEY:type` | A project-safe option in an installed module. Add one line per key with `bool`, `int`, `number`, or `string`. The module validates values. |
+| `@config KEY:type` | A setting the config parser accepts, typed `bool` (`true`/`false` or the legacy on/off spellings), `int`, `number`, or `string`; an empty value always means the default. An installed module's keys are also project-safe. A user module's keys count only under its own prefix (`MYCUSTOM_*` for `mycustom`) and never name shell or runtime state. The module still validates values. |
 | `@menu extra` | Optional category. Use `core`, `system`, `dev`, or `extra`. An optional number gives the menu position. |
 | `@description My module` | Optional text for the installer and config catalog. |
 
@@ -205,6 +208,7 @@ A check that fails intermittently goes into `tests/flaky.txt` and is turned off 
 /bin/bash tests/test_rate_limits.sh     # rate-limit parsers/backoff
 /bin/bash tests/test_platform.sh        # CORTADO_OS, @platforms skipping, BSD/GNU helpers
 /bin/bash tests/test_config_cli.sh      # cortado config CLI and Barista migration
+/bin/bash tests/test_config_data.sh     # the KEY=VALUE parser, typed keys, Bash opt-in, --migrate --dry-run
 /bin/bash tests/test_install_update.sh  # installer update flags, runtime copy, migration
 /bin/bash tests/run-suites.sh           # all suites in parallel, or the suites named as arguments
 /bin/bash tests/run-jq-variants.sh      # all suites with Homebrew jq, then the JSON suites with Apple jq on macOS

@@ -61,8 +61,10 @@ check "the second session expires even with interleaved renders" "" "$b" 21
 
 printf '%s\n' 'VERSION_SHOW_DURATION=abc' >> "$sb/cortado.conf"
 c='{"cwd":"/nonexistent","session_id":"fixture-c"}'
-check "invalid duration uses the default without printing a diagnostic" "$version" "$c" 30
-check "default duration expires after 120 seconds" "" "$c" 150
+# The data parser refuses a non-integer duration (#33); the module's own fallback
+# is exercised through the Bash opt-in.
+CORTADO_CONF_ALLOW_BASH=1 check "invalid duration uses the default without printing a diagnostic" "$version" "$c" 30
+CORTADO_CONF_ALLOW_BASH=1 check "default duration expires after 120 seconds" "" "$c" 150
 
 new_sandbox 0
 check "zero duration hides the notice at session start" "" "$a" 0

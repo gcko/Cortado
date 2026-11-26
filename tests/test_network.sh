@@ -34,7 +34,7 @@ check_probe() {
     local desc="$1" expected="$2" sample="$3" keys="$4" sb i key
     shift 4
     sb=$(mktemp -d "$TEST_BASE/probe.XXXXXX") || exit 1
-    render "$sample" '' "CLAUDE_CONFIG_DIR='$sb'" "$@" >/dev/null || { fail "$desc (cold render failed)"; return; }
+    RENDER_CONFIG_DIR="$sb" render "$sample" '' "$@" >/dev/null || { fail "$desc (cold render failed)"; return; }
     for key in $keys; do
         for ((i=0; i<60; i++)); do
             if [ -s "$sb/cortado-cache/$key" ] || [ -s "$sb/cortado-cache/$key-failed" ]; then break; fi
@@ -42,7 +42,7 @@ check_probe() {
         done
         [ "$i" -lt 60 ] || { fail "$desc ($key did not publish)"; return; }
     done
-    check_render "$desc" "$expected" "$sample" '' "CLAUDE_CONFIG_DIR='$sb'" "$@"
+    RENDER_CONFIG_DIR="$sb" check_render "$desc" "$expected" "$sample" '' "$@"
 }
 
 check_probe 'network shows LAN and redacted WAN readings' 'NET: 192.0.2.8 | 203.0.xxx.xxx' \
@@ -66,28 +66,28 @@ sb=$(mktemp -d "$TEST_BASE/corrupt.XXXXXX") || exit 1
 mkdir -m 700 "$sb/cortado-cache"
 (umask 077; printf '%s\n' not-an-ip > "$sb/cortado-cache/network-local-true-false"
 printf '%s\n' '403:error' > "$sb/cortado-cache/network_wan")
-check_render 'a malformed LAN cache shows absence' 'NET: --' failed '' "CLAUDE_CONFIG_DIR='$sb'"
+RENDER_CONFIG_DIR="$sb" check_render 'a malformed LAN cache shows absence' 'NET: --' failed ''
 for redact in true false; do
-    check_render "a malformed WAN cache shows absence (redact $redact)" 'NET: --' failed '' \
-        "CLAUDE_CONFIG_DIR='$sb'" 'NETWORK_SHOW_LAN=false NETWORK_SHOW_WAN=true' "NETWORK_WAN_REDACT=$redact"
+    RENDER_CONFIG_DIR="$sb" check_render "a malformed WAN cache shows absence (redact $redact)" 'NET: --' failed '' \
+        'NETWORK_SHOW_LAN=false' 'NETWORK_SHOW_WAN=true' "NETWORK_WAN_REDACT=$redact"
 done
 for address in 999.0.0.7 1234:::abcd; do
     (umask 077; printf '%s\n' "$address" > "$sb/cortado-cache/network-local-true-false"
     printf '%s\n' "$address" > "$sb/cortado-cache/network_wan")
-    check_render "a cached address $address shows absence" 'NET: --' failed '' \
-        "CLAUDE_CONFIG_DIR='$sb'" 'NETWORK_SHOW_WAN=true NETWORK_WAN_REDACT=false'
+    RENDER_CONFIG_DIR="$sb" check_render "a cached address $address shows absence" 'NET: --' failed '' \
+        'NETWORK_SHOW_WAN=true' 'NETWORK_WAN_REDACT=false'
 done
 (umask 077; printf '%s\n' '2001:db8::1' > "$sb/cortado-cache/network_wan")
-check_render 'a valid IPv6 cache can display in full' 'NET: 2001:db8::1' failed '' \
-    "CLAUDE_CONFIG_DIR='$sb'" 'NETWORK_SHOW_LAN=false NETWORK_SHOW_WAN=true NETWORK_WAN_REDACT=false'
+RENDER_CONFIG_DIR="$sb" check_render 'a valid IPv6 cache can display in full' 'NET: 2001:db8::1' failed '' \
+    'NETWORK_SHOW_LAN=false' 'NETWORK_SHOW_WAN=true' 'NETWORK_WAN_REDACT=false'
 RENDER_OS=darwin
 (umask 077; printf '%s\n' '192.0.2.9|Private Wi-Fi' > "$sb/cortado-cache/network-local-v2-true-true")
-check_render 'a valid LAN and multi-word SSID both display' 'NET: 192.0.2.9 (Private Wi-Fi)' failed '' \
-    "CLAUDE_CONFIG_DIR='$sb'" 'NETWORK_SHOW_SSID=true'
+RENDER_CONFIG_DIR="$sb" check_render 'a valid LAN and multi-word SSID both display' 'NET: 192.0.2.9 (Private Wi-Fi)' failed '' \
+    'NETWORK_SHOW_SSID=true'
 for ssid in $'Cafe\rNet' $'\033[31mCafe'; do
     (umask 077; printf '%s|%s\n' 192.0.2.9 "$ssid" > "$sb/cortado-cache/network-local-v2-true-true")
-    check_render "a cached Wi-Fi name with a control character is dropped ($(printf '%q' "$ssid"))" \
-        'NET: 192.0.2.9' failed '' "CLAUDE_CONFIG_DIR='$sb'" 'NETWORK_SHOW_SSID=true'
+    RENDER_CONFIG_DIR="$sb" check_render "a cached Wi-Fi name with a control character is dropped ($(printf '%q' "$ssid"))" \
+        'NET: 192.0.2.9' failed '' 'NETWORK_SHOW_SSID=true'
 done
 
 # The macOS probe drops a Wi-Fi name with a control character before caching it.
@@ -111,15 +111,15 @@ STUB
 chmod +x "$TEST_BASE/bin/ipconfig" "$TEST_BASE/bin/networksetup"
 for sample in ssid-cr ssid-esc; do
     sb=$(mktemp -d "$TEST_BASE/ssid.XXXXXX") || exit 1
-    render "$sample" '' "CLAUDE_CONFIG_DIR='$sb'" 'NETWORK_SHOW_SSID=true' >/dev/null
+    RENDER_CONFIG_DIR="$sb" render "$sample" '' 'NETWORK_SHOW_SSID=true' >/dev/null
     for ((i=0; i<60; i++)); do
         [ ! -s "$sb/cortado-cache/network-local-v2-true-true" ] || break
         sleep 0.05
     done
     assert_eq "the probe caches no Wi-Fi name with a control character ($sample)" '192.0.2.9|' \
         "$(cat "$sb/cortado-cache/network-local-v2-true-true" 2>/dev/null)"
-    check_render "the LAN address still displays without the Wi-Fi name ($sample)" 'NET: 192.0.2.9' \
-        "$sample" '' "CLAUDE_CONFIG_DIR='$sb'" 'NETWORK_SHOW_SSID=true'
+    RENDER_CONFIG_DIR="$sb" check_render "the LAN address still displays without the Wi-Fi name ($sample)" 'NET: 192.0.2.9' \
+        "$sample" '' 'NETWORK_SHOW_SSID=true'
 done
 printf '\nResults: %s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

@@ -91,11 +91,14 @@ EOF
 done
 
 mkdir "$TMPHOME/writable-global"
-printf '%s\n' 'COLOR_THEME=minimal' 'export DISPLAY_MODE=verbose' > "$TMPHOME/writable-global/cortado.conf"
+# shellcheck disable=SC2016 # The command substitution is literal fixture text.
+printf '%s\n' 'COLOR_THEME=minimal' 'DISPLAY_MODE=$(echo verbose)' 'export LAYOUT_MODE=none' \
+    > "$TMPHOME/writable-global/cortado.conf"
 chmod 666 "$TMPHOME/writable-global/cortado.conf"
 show_out=$(CLAUDE_CONFIG_DIR="$TMPHOME/writable-global" "$CORTADO" config --show 2>&1)
 assert_contains "a writable global config supplies literal assignments to --show" "COLOR_THEME=minimal" "$show_out"
 assert_contains "a writable global config leaves shell-only syntax inert" "DISPLAY_MODE=normal" "$show_out"
+assert_contains "an export prefix is read as a literal assignment" "LAYOUT_MODE=none" "$show_out"
 assert_contains "a writable global config is shown as saved but inactive" "Saved settings are inactive" "$show_out"
 
 # statusline path still works with empty-ish JSON (no args)
