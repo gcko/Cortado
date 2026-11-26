@@ -216,7 +216,8 @@ if section_is extras; then
     assert_contains "project --show still works" "Modules:" "$show_proj"
     assert_contains "project --show honors MODULE_DIRECTORY=false" "[off] directory" "$show_proj"
 
-    # --project --set must not copy extras that are not allowlisted / not safe
+    # --project --set never sources the project file, and its edit keeps the
+    # other lines as they were (#78): unsafe lines stay inert, and are not copied.
     # shellcheck disable=SC2016 # Keep the variable literal in the project config fixture.
     printf '%s\n' \
         'touch "$CLAUDE_CONFIG_DIR/pwned2"' \
@@ -227,6 +228,8 @@ if section_is extras; then
         'MODULE_CPU="true"' \
         > "$PROJ_PWN/.cortado.conf"
     chmod 644 "$PROJ_PWN/.cortado.conf"
+    cp "$PROJ_PWN/.cortado.conf" "$TMPHOME/pwn-expected"
+    printf '%s\n' 'COLOR_THEME="minimal"' >> "$TMPHOME/pwn-expected"
     (
       cd "$PROJ_PWN" || exit 1
       "$CORTADO" config --project --set COLOR_THEME=minimal >/dev/null 2>&1
@@ -239,17 +242,10 @@ if section_is extras; then
         PASS=$((PASS + 1))
     fi
     assert_file_contains "project --set writes theme" 'COLOR_THEME="minimal"' "$PROJ_PWN/.cortado.conf"
-    if grep -qE 'PATH=|IFS=|BASH_ENV=|PWNED_EXTRA|touch ' "$PROJ_PWN/.cortado.conf"; then
-        echo "  FAIL: project --set copied unsafe extras"
-        FAIL=$((FAIL + 1))
-        echo "    file:"
-        cat "$PROJ_PWN/.cortado.conf"
-    else
-        echo "  PASS: project --set drops PATH/IFS/BASH_ENV/injection extras"
-        PASS=$((PASS + 1))
-    fi
+    assert_eq "project --set appends the theme and copies no extras" 0 \
+        "$(cmp -s "$TMPHOME/pwn-expected" "$PROJ_PWN/.cortado.conf"; echo "$?")"
 
-    # Same extras must not survive --project --toggle
+    # The same holds for --project --toggle.
     printf '%s\n' \
         'PATH=/tmp/evil' \
         'IFS=hack' \
@@ -257,18 +253,16 @@ if section_is extras; then
         'RATE_SHOW_PROGRESS_BAR="true"; echo PWNED_EXTRA' \
         'MODULE_CPU="true"' \
         > "$PROJ_PWN/.cortado.conf"
+    cp "$PROJ_PWN/.cortado.conf" "$TMPHOME/pwn-expected"
+    printf '%s\n' 'MODULE_WEATHER="false"' >> "$TMPHOME/pwn-expected"
+    toggle_rc=0
     (
       cd "$PROJ_PWN" || exit 1
       "$CORTADO" config --project --toggle weather >/dev/null 2>&1
-    )
-    if grep -qE 'PATH=|IFS=|BASH_ENV=|PWNED_EXTRA' "$PROJ_PWN/.cortado.conf"; then
-        echo "  FAIL: project --toggle copied unsafe extras"
-        FAIL=$((FAIL + 1))
-        cat "$PROJ_PWN/.cortado.conf"
-    else
-        echo "  PASS: project --toggle drops PATH/IFS/BASH_ENV/injection extras"
-        PASS=$((PASS + 1))
-    fi
+    ) || toggle_rc=$?
+    assert_eq "project --toggle disables weather" 0 "$toggle_rc"
+    assert_eq "project --toggle appends its flag and copies no extras" 0 \
+        "$(cmp -s "$TMPHOME/pwn-expected" "$PROJ_PWN/.cortado.conf"; echo "$?")"
 fi
 
 if section_is save; then

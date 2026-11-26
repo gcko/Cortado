@@ -193,11 +193,61 @@ if section_is project; then
     rm "$project"
 
     printf '%s\n' 'SEPARATOR=" | "' 'HOME=ignored-by-project-parser' > "$project"
+    cp "$project" "$before"
+    { cat "$before"; printf '%s\n' 'MODULE_MODEL="false"'; } > "$expected"
     assert_rc 'project set accepts a false alias' 0 project_edit --set MODULE_MODEL=off
-    assert_file_contains 'project disable is stored canonically' 'MODULE_MODEL="false"' "$project"
-    assert_file_contains 'project save backs up its original preference' 'SEPARATOR=" | "' "$project.bak"
-    assert_contains 'project save identifies omitted input by line number' 'omits or reformats line 2' "$(cat "$stderr")"
-    assert_not_contains 'project warning omits the original contents' 'ignored-by-project-parser' "$(cat "$stderr")"
+    assert_rc 'project disable is appended canonically, other lines kept' 0 cmp -s "$expected" "$project"
+    assert_empty 'a clean project edit prints no warning' "$(cat "$stderr")"
+    assert_rc 'a clean project edit leaves no backup' 1 test -e "$project.bak"
+
+    # --project --set changes one line and keeps every other byte (#78).
+    printf '%s\n' '# my prefs' 'MODULE_CPU="true"' '' 'DISPLAY_MODE="compact"' > "$project"
+    printf '%s\n' '# my prefs' 'MODULE_CPU="false"' '' 'DISPLAY_MODE="compact"' > "$expected"
+    assert_rc 'project set edits a commented project file' 0 project_edit --set MODULE_CPU=false
+    assert_rc 'only the MODULE_CPU line of the project file changed' 0 cmp -s "$expected" "$project"
+    assert_empty 'the project edit prints no warning' "$(cat "$stderr")"
+    assert_rc 'the project edit leaves no backup' 1 test -e "$project.bak"
+
+    printf '%s\n' 'COLOR_THEME=default  # first' 'export SEPARATOR=" | "' 'COLOR_THEME=monochrome # wins' \
+        'if true; then' 'DISPLAY_MODE=compact' 'fi' > "$project"
+    printf '%s\n' 'COLOR_THEME=default  # first' 'export SEPARATOR=" | "' 'COLOR_THEME="minimal" # wins' \
+        'if true; then' 'DISPLAY_MODE="verbose"' 'fi' > "$expected"
+    assert_rc 'project set replaces a duplicate key' 0 project_edit --set COLOR_THEME=minimal
+    assert_rc 'project set edits a line the data parser reads inside a conditional' 0 \
+        project_edit --set DISPLAY_MODE=verbose
+    assert_rc 'the last duplicate is replaced in place, keeping its comment, and nothing else changes' 0 \
+        cmp -s "$expected" "$project"
+    printf '%s\n' 'COLOR_THEME=default  # first' 'export SEPARATOR="~"' 'COLOR_THEME="minimal" # wins' \
+        'if true; then' 'DISPLAY_MODE="verbose"' 'fi' > "$expected"
+    assert_rc 'project set edits an exported line' 0 project_edit --set 'SEPARATOR=~'
+    assert_rc 'the exported line keeps export' 0 cmp -s "$expected" "$project"
+
+    printf 'DISPLAY_MODE=normal\r\n# no final newline' > "$project"
+    printf 'DISPLAY_MODE="compact"\r\n# no final newline\nCOLOR_THEME="minimal"\n' > "$expected"
+    assert_rc 'project set edits a CRLF line' 0 project_edit --set DISPLAY_MODE=compact
+    assert_rc 'project set appends a missing key after an unterminated line' 0 project_edit --set COLOR_THEME=minimal
+    assert_rc 'the CRLF line keeps its CR and the unterminated line is kept' 0 cmp -s "$expected" "$project"
+    assert_rc 'no project backup after several edits' 1 test -e "$project.bak"
+
+    # The project file is data: a line is an assignment only when the data parser
+    # reads it, and shell syntax around it does not matter.
+    printf '%s\n' 'SEPARATOR="unclosed' 'COLOR_THEME=default' "COLOR_THEME=\$'x'" 'echo COLOR_THEME=x' > "$project"
+    printf '%s\n' 'SEPARATOR="unclosed' 'COLOR_THEME="minimal"' "COLOR_THEME=\$'x'" 'echo COLOR_THEME=x' \
+        'DISPLAY_MODE="compact"' > "$expected"
+    assert_rc 'project set edits past an unclosed quote' 0 project_edit --set COLOR_THEME=minimal
+    assert_empty 'a later line the parser refuses is not reported' "$(cat "$stderr")"
+    assert_rc 'project set appends after an unclosed quote' 0 project_edit --set DISPLAY_MODE=compact
+    assert_rc 'the parsed assignment changed and the refused lines are kept' 0 cmp -s "$expected" "$project"
+    rm -f "$project"
+
+    # A new file from a legacy .barista.conf carries only the settings the project
+    # parser accepted, never the bytes of a file the repository links elsewhere.
+    printf '%s\n' 'TOKEN=test-token-REDACTED' 'SEPARATOR=legacy' > "$TEST_BASE/home/private.conf"
+    ln -s ../home/private.conf "$TEST_BASE/project/.barista.conf"
+    printf '%s\n' '# Cortado project configuration' 'SEPARATOR=legacy' 'COLOR_THEME="minimal"' > "$expected"
+    assert_rc 'project set migrates a linked legacy config' 0 project_edit --set COLOR_THEME=minimal
+    assert_rc 'the new project file holds only accepted legacy settings and the edit' 0 cmp -s "$expected" "$project"
+    rm -f "$project" "$TEST_BASE/project/.barista.conf" "$TEST_BASE/home/private.conf"
 
     # A project file is never sourced, so a group-writable one is saved owner-only.
     rm -f "$project" "$project.bak"
@@ -206,7 +256,7 @@ if section_is project; then
     assert_rc 'a group-writable project config saves under umask 002' 0 with_umask 002 project_edit --set MODULE_MODEL=off
     assert_file_contains 'the group-writable project config gets the change' 'MODULE_MODEL="false"' "$project"
     assert_eq 'the saved project config is owner-only' 600 "$(file_mode "$project")"
-    assert_eq 'the project backup is owner-only' 600 "$(file_mode "$project.bak" 2>/dev/null)"
+    assert_rc 'the group-writable project config leaves no backup' 1 test -e "$project.bak"
     rm -f "$project" "$project.bak"
 fi
 

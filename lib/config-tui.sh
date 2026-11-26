@@ -132,7 +132,7 @@ _cfg_load_into_shell() {
     local scope="${2:-global}"
     if [ "$scope" = "project" ]; then
         _CFG_PROJECT_SETTINGS=()
-        _CFG_PROJECT_ORIGINAL=()
+        _CFG_PROJECT_EDITS=()
         [ ! -f "$path" ] || load_config_safe "$path" _cfg_load_project_value
     else
         # cortado.sh already reported a packaged refusal at startup. The
@@ -181,22 +181,22 @@ _cfg_load_into_shell() {
 }
 
 _cfg_load_project_value() {
-    # Keep a valid preference on disk even if this invocation inherited the key.
+    # The accepted lines seed a new .cortado.conf from a legacy .barista.conf.
     _CFG_PROJECT_SETTINGS+=("$3")
-    _CFG_PROJECT_ORIGINAL+=("$3")
     project_config_assign "$1" "$2"
 }
 
 _cfg_set_project_value() {
-    local key="$1" val="$2" line
-    local settings=()
+    local key="$1" val="$2" edit
+    local edits=()
     project_config_setting_allowed "$key" "$val" || return 1
     project_config_assign "$key" "$val" || return 1
-    # Bash 3.2 treats an empty array as unset under nounset.
-    for line in "${_CFG_PROJECT_SETTINGS[@]+"${_CFG_PROJECT_SETTINGS[@]}"}"; do
-        [ "${line%%=*}" = "$key" ] || settings+=("$line")
+    # One edit per key, the latest. Bash 3.2 treats an empty array as unset
+    # under nounset.
+    for edit in "${_CFG_PROJECT_EDITS[@]+"${_CFG_PROJECT_EDITS[@]}"}"; do
+        [ "${edit%%=*}" = "$key" ] || edits+=("$edit")
     done
-    _CFG_PROJECT_SETTINGS=("${settings[@]+"${settings[@]}"}" "$key=\"$val\"")
+    _CFG_PROJECT_EDITS=("${edits[@]+"${edits[@]}"}" "$key=$val")
 }
 
 _cfg_rebuild_module_order() {
@@ -297,9 +297,23 @@ _cfg_at_shell_boundary() {
     return 0
 }
 
-_cfg_render_global_conf() {
-    local source="$1"
-    shift
+# True when a line assigns a key under the file's grammar, leaving the
+# assignment's parts in BASH_REMATCH. A data file (the project config) is read
+# one line at a time, so only a line the data parser reads assigns anything.
+_cfg_line_assigns() {
+    if [ "$1" = data ]; then
+        config_parse_line "$2" || return 1
+    fi
+    _cfg_assignment "$2"
+}
+
+# Write the source with each KEY=VALUE edit applied: the last line that assigns
+# the key is replaced in place, a missing key is appended, and every other byte
+# is kept. The shell grammar (the user config, which the opt-in may source)
+# also respects shell syntax around the line; the data grammar does not need to.
+_cfg_render_conf() {
+    local grammar="$1" source="$2"
+    shift 2
     local edits=("$@") lines=() locations=() replacements=() later=()
     local prefix="" line newline index=0 i text key ending chosen pattern
     local LC_ALL=C
@@ -313,13 +327,13 @@ _cfg_render_global_conf() {
             fi
             text="${line%$'\r'}"
             chosen=""
-            if _cfg_assignment "$text"; then
+            if _cfg_line_assigns "$grammar" "$text"; then
                 key="${BASH_REMATCH[3]}"
                 ending="${BASH_REMATCH[7]-}${line#"$text"}$newline"
                 for ((i=0; i<${#edits[@]}; i++)); do
                     [ "${edits[i]%%=*}" = "$key" ] || continue
                     # Preserve earlier duplicates and replace the last assignment.
-                    if _cfg_at_shell_boundary "$prefix"; then
+                    if [ "$grammar" = data ] || _cfg_at_shell_boundary "$prefix"; then
                         locations[i]="$index"
                         replacements[i]="${BASH_REMATCH[1]}$key=\"$(_cfg_shell_quote "${edits[i]#*=}")\"$ending"
                         unset 'later[i]'
@@ -330,7 +344,8 @@ _cfg_render_global_conf() {
             fi
             # Any later mention outside a whole-line comment may assign the key
             # again (a conditional, a heredoc), so the edit must come after it.
-            if [ "${#locations[@]}" -gt 0 ] && ! [[ "$text" =~ ^[[:blank:]]*(#|$) ]]; then
+            if [ "$grammar" = shell ] && [ "${#locations[@]}" -gt 0 ] &&
+                ! [[ "$text" =~ ^[[:blank:]]*(#|$) ]]; then
                 for ((i=0; i<${#edits[@]}; i++)); do
                     if [ -n "${locations[i]+x}" ] && [ "$i" != "$chosen" ]; then
                         pattern="(^|[^A-Za-z0-9_])${edits[i]%%=*}="
@@ -358,7 +373,7 @@ _cfg_render_global_conf() {
         fi
         appended="$appended$key=\"$(_cfg_shell_quote "${edits[i]#*=}")\""$'\n'
     done
-    if [ -n "$appended" ] && ! _cfg_at_shell_boundary "$prefix"; then
+    if [ -n "$appended" ] && [ "$grammar" = shell ] && ! _cfg_at_shell_boundary "$prefix"; then
         printf '%s\n' 'config: cannot append a setting to incomplete shell syntax' >&2
         return 1
     fi
@@ -369,29 +384,6 @@ _cfg_render_global_conf() {
         printf '%s' "$appended" || return 1
     fi
     return 0
-}
-
-_cfg_render_project_conf() {
-    local source="$1" line original kept
-    local header='# Cortado project configuration'
-    local number=0
-    if [ -n "$source" ]; then
-        while IFS= read -r line || [ -n "$line" ]; do
-            number=$((number + 1))
-            [ "$line" != "$header" ] || continue
-            kept=false
-            for original in "${_CFG_PROJECT_ORIGINAL[@]+"${_CFG_PROJECT_ORIGINAL[@]}"}"; do
-                if [ "$line" = "$original" ]; then
-                    kept=true
-                    break
-                fi
-            done
-            if [ "$kept" = false ]; then
-                printf 'config: project save omits or reformats line %s (original in .bak)\n' "$number" >&2
-            fi
-        done < "$source" || return 1
-    fi
-    printf '%s\n' "$header" "${_CFG_PROJECT_SETTINGS[@]+"${_CFG_PROJECT_SETTINGS[@]}"}"
 }
 
 # Resolve relative links against the link's parent, including links in a chain.
@@ -473,7 +465,9 @@ _cfg_write_conf() (
 _cfg_stage_conf() {
     local target="$1" scope="$2"
     shift 2
-    local dir="${target%/*}" backup="$target.bak" mode=600 ignored
+    local dir="${target%/*}" backup="$target.bak" mode=600 ignored grammar=shell
+    # A project file is data and its edit keeps every other byte, so it needs no backup.
+    [ "$scope" != project ] || { grammar=data backup=''; }
     if [ -L "$target" ] || { [ -e "$target" ] && [ ! -f "$target" ]; }; then
         printf 'config: config destination is not a regular file: %s\n' "$target" >&2
         return 1
@@ -490,7 +484,7 @@ _cfg_stage_conf() {
             return 1
         fi
         printf -v mode '%o' "$((8#$mode & 0700))"
-        if [ -L "$backup" ] || { [ -e "$backup" ] && [ ! -f "$backup" ]; }; then
+        if [ -n "$backup" ] && { [ -L "$backup" ] || { [ -e "$backup" ] && [ ! -f "$backup" ]; }; }; then
             printf 'config: backup destination is not a regular file: %s\n' "$backup" >&2
             return 1
         fi
@@ -500,16 +494,19 @@ _cfg_stage_conf() {
             printf 'config: cannot preserve a NUL byte in %s\n' "$target" >&2
             return 1
         fi
+    elif [ "$scope" = project ]; then
+        # A new project file starts with a header and the settings the project
+        # parser accepted from a legacy .barista.conf, never that file's bytes:
+        # a repository can link it to a file of the user's.
+        snapshot=$(mktemp "$dir/.cortado-config.XXXXXX") || return 1
+        printf '%s\n' '# Cortado project configuration' \
+            "${_CFG_PROJECT_SETTINGS[@]+"${_CFG_PROJECT_SETTINGS[@]}"}" >| "$snapshot" || return 1
     fi
 
     tmp=$(mktemp "$dir/.cortado-config.XXXXXX") || return 1
-    if [ "$scope" = project ]; then
-        _cfg_render_project_conf "$snapshot" >| "$tmp" || return 1
-    else
-        _cfg_render_global_conf "$snapshot" "$@" >| "$tmp" || return 1
-    fi
+    _cfg_render_conf "$grammar" "$snapshot" "$@" >| "$tmp" || return 1
     chmod "$mode" "$tmp" || return 1
-    if [ -n "$snapshot" ]; then
+    if [ -n "$snapshot" ] && [ -n "$backup" ]; then
         mv -f -- "$snapshot" "$backup" || return 1
     fi
     mv -f -- "$tmp" "$target" || return 1
@@ -533,6 +530,7 @@ _cfg_save_menu() {
             fi
         done
     fi
+    [ "$scope" != project ] || edits=("${_CFG_PROJECT_EDITS[@]+"${_CFG_PROJECT_EDITS[@]}"}")
     _cfg_write_conf "$path" "$scope" "${edits[@]+"${edits[@]}"}"
 }
 
@@ -1038,6 +1036,7 @@ cortado_config_main() {
                 return 2
             fi
             local edits=("$key=$val") old_order="${MODULE_ORDER:-}"
+            [ "$scope" != project ] || edits=("${_CFG_PROJECT_EDITS[@]}")
             # The renderer runs only the modules MODULE_ORDER lists, as --toggle keeps.
             if [ "$scope" = global ] && _cfg_module_name_for_var "$key"; then
                 printf -v "$key" '%s' "$val"
@@ -1078,6 +1077,7 @@ cortado_config_main() {
                 echo "config: unknown module: $toggle_name" >&2
                 return 2
             fi
+            [ "$scope" != project ] || edits=("${_CFG_PROJECT_EDITS[@]+"${_CFG_PROJECT_EDITS[@]}"}")
             if _cfg_write_conf "$path" "$scope" "${edits[@]+"${edits[@]}"}"; then
                 if _cfg_module_enabled "$toggle_name" "$scope"; then
                     echo "Enabled $toggle_name → $path"
