@@ -66,12 +66,15 @@ API with an owner-only credential file. Walk both.
 - A credentials file that is not owner-only (mode 644), on the API path. Same placeholder; the
   refusal is only in the debug log.
 - A fetch that fails with a cached reading on disk. Plant one with `SEED_CACHE` and `SEED_AGE=6H`:
-  today the six-hour-old reading renders exactly as a fresh one.
+  each window shows the reading's age after its percentage (`5h:42%~6h0m`), and a window whose
+  `resets_at` has already passed shows `--` instead.
 - A 429 backoff with nothing cached: `⏸ API cooldown 5m` (`WAIT: API cooldown 5m` in monochrome).
 - A 429 backoff with a cached reading: the reading plus a `⏸` cooldown marker.
-- A window object with no `utilization`. Today it renders `0%` and green.
-- One window present and the other `null`: the whole segment falls back to the placeholder.
-- A `resets_at` already in the past.
+- A window object with no `utilization`: that window shows `--` beside the other (`5h:-- 7d:42%`).
+- One window measured and the other `null`: the measured one stays and the null one shows `--`
+  (`5h:0% 7d:--`).
+- A `resets_at` already in the past, from the cache or the payload: that window shows `--`. A
+  reset time with a UTC offset (`-05:00`) is converted first, so an open window is never withheld.
 
 **The limit:** the figures are what Claude Code last sent, or what the Anthropic usage endpoint
 returns for the logged-in account, no more often than the cache TTL (`RATE_CACHE_TTL`, 120 seconds
