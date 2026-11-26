@@ -311,7 +311,9 @@ log_module_stderr() {
 # fail: bash 3.2 does not restart it when a child exits meanwhile (EINTR), and
 # a removed or unwritable pipe refuses it. A failed open would skip the command
 # and leave the reader waiting forever for a writer, so retry it, and otherwise
-# release the reader and run the command without the capture.
+# release the reader and run the command without the capture. A pipe that
+# cannot be read (mode 200) fails the reader's own open instead, and then the
+# write open would wait forever for a reader, so it is never attempted.
 with_module_stderr() {
     local _cms_target="$1" _cms_opened=false _cms_try _cms_status=0
     shift
@@ -320,7 +322,7 @@ with_module_stderr() {
         return
     fi
     for _cms_try in 1 2 3; do
-        [ -p "$_cms_target" ] || break
+        [ -p "$_cms_target" ] && [ -r "$_cms_target" ] || break
         { { _cms_opened=true; "$@"; } 2>|"$_cms_target"; } 2>/dev/null || _cms_status=$?
         [ "$_cms_opened" = false ] || return "$_cms_status"
         _cms_status=0
@@ -333,7 +335,11 @@ with_module_stderr() {
 
 cleanup_module_stderr() {
     if [ -n "$CORTADO_STDERR_READER" ]; then
+        # TERM, then KILL: a reader forked a moment ago can still carry the
+        # main shell's TERM trap, which defers TERM and then drops it, and a
+        # reader waiting in its FIFO open would then wait forever.
         kill "$CORTADO_STDERR_READER" 2>/dev/null || :
+        kill -KILL "$CORTADO_STDERR_READER" 2>/dev/null || :
     fi
     rm -rf -- "$CORTADO_STDERR_CAPTURE" 2>/dev/null || :
 }
