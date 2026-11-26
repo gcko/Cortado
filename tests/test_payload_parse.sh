@@ -210,6 +210,40 @@ assert_contains "an unopenable parser pipe still shows the quota reading" '5h:7%
 assert_eq "an unopenable parser pipe leaves no temporary directory" '' \
     "$(cd "$scratch/tmp" && find . -name 'cortado-json.*')"
 
+# The callback keeps the caller's stderr and its own status on both paths, and
+# its children inherit no saved copy of stderr (fd 8). Without a pipe, the
+# parser's descriptors (6 and 7) are not open either.
+mkdir -p "$scratch/fd-check"
+fd_callback() {
+    printf '%s\n' "$(/bin/ls /dev/fd | tr '\n' ' ')"
+    printf '%s\n' callback-marker >&2
+    return 42
+}
+check_callback() {
+    local label="$1" extra_path="$2" out status
+    out=$(
+        # shellcheck source=modules/utils.sh
+        . "$PROJECT_ROOT/modules/utils.sh"
+        PATH="$extra_path$scratch/bin:$PATH" TMPDIR="$scratch/tmp" CLAUDE_CONFIG_DIR="$scratch/fd-check" \
+            with_payload_context fd_callback <<< '{}' 2>"$scratch/fd-check/stderr"
+    )
+    status=$?
+    assert_eq "$label: the callback's stderr reaches the caller" callback-marker "$(cat "$scratch/fd-check/stderr")"
+    assert_eq "$label: the callback's exit status is kept" 42 "$status"
+    case " $out " in
+        *" 8 "*) fail "$label: callback children do not inherit fd 8 ($out)" ;;
+        *) pass "$label: callback children do not inherit fd 8" ;;
+    esac
+    fds_seen="$out"
+}
+check_callback 'worker pipe' ''
+check_callback 'no parser pipe' "$scratch/no-fifo:"
+case " $fds_seen " in
+    *" 6 "* | *" 7 "*) fail "no parser pipe: the parser's fds 6 and 7 are closed ($fds_seen)" ;;
+    *) pass "no parser pipe: the parser's fds 6 and 7 are closed" ;;
+esac
+unset fds_seen
+
 export FAIL_JQ=true
 assert_eq "failed jq freezes the absence sentinels" "$readonly_missing" "$(inspect_payload '{}')"
 render '{"context_window":{"used_percentage":0},"rate_limits":{"spend_limit":{"used_percentage":12}}}'
