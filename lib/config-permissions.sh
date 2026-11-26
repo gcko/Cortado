@@ -118,6 +118,25 @@ check_trusted_config() {
     REPLY="${checked%.}"
 }
 
+# A config path that does not stat may lie under a directory Cortado cannot
+# search, which hides whether the config exists. Set REPLY to a refusal when the
+# nearest ancestor that exists is such a directory. A path whose existing
+# ancestors are all searchable simply does not exist.
+check_config_searchable() {
+    local dir="$1"
+    [[ "$dir" = /* ]] || dir="$PWD/$dir"
+    while :; do
+        dir="${dir%/*}"
+        [ -n "$dir" ] || return 0
+        [[ -e "$dir" || -L "$dir" ]] || continue
+        [[ -d "$dir" && ! -x "$dir" ]] || return 0
+        printf -v REPLY 'cortado: refusing to source config %q: %s' "$1" \
+            'cannot search the directory that holds it'
+        printf '%s\n' "$REPLY" >&2
+        return 1
+    done
+}
+
 # Publish a checked legacy file only into a parent where it will be accepted.
 copy_checked_legacy_config() (
     local source="$1" destination="$2" stage filename="${2##*/}"

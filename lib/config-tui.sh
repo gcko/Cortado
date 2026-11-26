@@ -151,6 +151,9 @@ _cfg_load_into_shell() {
                     load_config_data "$REPLY" "$path"
                 fi
             fi
+        elif ! check_config_searchable "$path" 2>/dev/null; then
+            # The renderer refuses a config it cannot tell exists.
+            _CFG_GLOBAL_CONFIG_REFUSED=true
         fi
         # Start from the order the renderer falls back to, never an empty one.
         MODULE_ORDER="${MODULE_ORDER:-${CORTADO_DEFAULT_MODULE_ORDER:-}}"

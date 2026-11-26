@@ -289,6 +289,51 @@ chmod 1777 "$CLAUDE_CONFIG_DIR"
 render
 assert_eq 'A sticky parent protects an owner-only override' 'OVERRIDE Opus' "$rendered"
 
+# A config directory Cortado cannot search hides whether a config exists (#85).
+if [ "$EUID" -ne 0 ]; then
+    new_sandbox
+    write_override "$config"
+    chmod 600 "$CLAUDE_CONFIG_DIR"
+    render
+    chmod 700 "$CLAUDE_CONFIG_DIR"
+    assert_refused 'A config directory without search permission'
+    assert_contains 'An unsearchable config directory shows the refusal notice' 'Config refused' "$rendered"
+    assert_file_contains 'The unsearchable directory refusal names the reason' \
+        'cannot search the directory that holds it' "$TEST_BASE/stderr"
+
+    new_sandbox
+    hidden_parent="$CLAUDE_CONFIG_DIR"
+    CLAUDE_CONFIG_DIR="$hidden_parent/inner"
+    mkdir -m 700 "$CLAUDE_CONFIG_DIR"
+    write_override "$CLAUDE_CONFIG_DIR/cortado.conf"
+    chmod 600 "$hidden_parent"
+    render
+    chmod 700 "$hidden_parent"
+    assert_refused 'A config directory below an unsearchable directory'
+    assert_contains 'An unsearchable ancestor shows the refusal notice' 'Config refused' "$rendered"
+
+    new_sandbox
+    write_override "$config"
+    chmod 600 "$CLAUDE_CONFIG_DIR"
+    show_status=0
+    /bin/bash "$tree/cortado.sh" config --show > "$TEST_BASE/config.out" 2> "$TEST_BASE/config.err" ||
+        show_status=$?
+    chmod 700 "$CLAUDE_CONFIG_DIR"
+    assert_eq 'Show runs with an unsearchable config directory' 0 "$show_status"
+    assert_file_contains 'Show says the unsearchable config is inactive' 'Saved settings are inactive' \
+        "$TEST_BASE/config.out"
+else
+    printf '  SKIP: root searches every directory\n'
+fi
+
+new_sandbox
+CLAUDE_CONFIG_DIR="$CLAUDE_CONFIG_DIR/absent/claude"
+render
+assert_eq 'A config directory that does not exist renders silently with the defaults' 0 "$render_status"
+assert_contains 'A missing config directory still renders the model' 'Opus' "$rendered"
+assert_not_contains 'A missing config directory shows no refusal' 'Config refused' "$rendered"
+assert_empty 'A missing config directory prints no refusal' "$(cat "$TEST_BASE/stderr")"
+
 mkdir -m 700 "$TEST_BASE/safe target" "$TEST_BASE/shared target"
 write_override "$TEST_BASE/safe target/override"
 write_override "$TEST_BASE/shared target/override"
