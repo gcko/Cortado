@@ -418,6 +418,23 @@ else
     printf '  SKIP: chmod +a is not available (macOS ACL cases)\n'
 fi
 
+# The ACL listing runs beside stat and must end with its nonce; a listing that
+# stopped early (ls failed or was cut off) refuses, whatever it held so far.
+acl_parse() {
+    /bin/bash -c '. "$1/lib/config-permissions.sh"; _CORTADO_ACL_DONE=done-marker _check_config_acl' _ "$REPO_ROOT"
+}
+assert_eq 'A finished listing with no ACL entries passes' 0 \
+    "$(printf '%s\n' '-rw-------  1 me  staff  0 Nov 26 12:00 /x' done-marker | acl_parse >/dev/null; echo "$?")"
+assert_eq 'A finished listing with a read-only entry passes' 0 \
+    "$(printf '%s\n' '-rw-------  1 me  staff  0 Nov 26 12:00 /x' ' 0: group:everyone allow read' done-marker |
+        acl_parse >/dev/null; echo "$?")"
+assert_eq 'A listing without its nonce is refused' 1 \
+    "$(printf '%s\n' '-rw-------  1 me  staff  0 Nov 26 12:00 /x' | acl_parse >/dev/null; echo "$?")"
+assert_contains 'An unfinished listing names the reason' 'could not read access control lists' \
+    "$(printf '%s\n' '-rw-------  1 me  staff  0 Nov 26 12:00 /x' | acl_parse)"
+assert_eq 'A write entry after the nonce is not part of the listing' 0 \
+    "$(printf '%s\n' done-marker ' 0: group:everyone allow write' | acl_parse >/dev/null; echo "$?")"
+
 mkdir -m 700 "$TEST_BASE/safe target" "$TEST_BASE/shared target"
 write_override "$TEST_BASE/safe target/override"
 write_override "$TEST_BASE/shared target/override"

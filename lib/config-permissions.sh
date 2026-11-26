@@ -9,13 +9,17 @@ _config_permission_error() {
 # Refuse a macOS ACL entry that lets anyone but the current user change a path.
 # The mode bits do not show ACLs. Only read-class rights and inheritance flags
 # are harmless; any other right, or an entry this cannot read, counts as a
-# write. Deny entries never widen access.
+# write. Deny entries never widen access. Reads the `ls -led` listing that
+# _check_config_metadata started on stdin; a listing that does not end with
+# its nonce did not finish, so the path is refused.
 _check_config_acl() {
-    local listing entry who rights right me=''
+    local entry who rights right me='' finished=false
     local pattern='^ [0-9]+: (.+) (allow|deny) ([a-z_,]+)$'
-    listing=$(/bin/ls -led -- "$@") ||
-        { _config_permission_error 'could not read access control lists'; return; }
     while IFS= read -r entry; do
+        if [ "$entry" = "$_CORTADO_ACL_DONE" ]; then
+            finished=true
+            break
+        fi
         case "$entry" in
             ' '[0-9]*': '*) ;;
             *) continue ;;
@@ -37,12 +41,29 @@ _check_config_acl() {
                     ;;
             esac
         done
-    done <<< "$listing"
+    done
+    [ "$finished" = true ] ||
+        _config_permission_error 'could not read access control lists'
 }
 
 # Check the immediate physical parent and, when supplied, the resolved file.
 # Print a reason on failure so stderr and the renderer's debug log can agree.
 _check_config_metadata() {
+    case "${BASH_VERSINFO[5]}" in
+        *-darwin*)
+            # macOS has no cheaper sign of an ACL than listing it, so the listing
+            # starts now and runs beside stat. Its random last line shows it ended.
+            # A pipe, not process substitution, so the file parses in POSIX mode.
+            local _CORTADO_ACL_DONE="cortado-acl-$RANDOM-$RANDOM-$RANDOM" scope="$1"
+            shift
+            { /bin/ls -led -- "$@" 2>/dev/null && printf '%s\n' "$_CORTADO_ACL_DONE"; } |
+                _check_config_metadata_now "$scope" "$@"
+            ;;
+        *) _check_config_metadata_now "$@" ;;
+    esac
+}
+
+_check_config_metadata_now() {
     local scope="$1"; shift
     local metadata mode entry pattern file_mode file_owner dir_mode dir_owner acl=false
     local LC_ALL=C
@@ -93,7 +114,7 @@ _check_config_metadata() {
         (( (8#$dir_mode & 022) == 0 || (8#$dir_mode & 01000) != 0 )) ||
             { _config_permission_error 'parent is group- or world-writable without the sticky bit'; return; }
     fi
-    [ "$acl" = false ] || _check_config_acl "$@"
+    [ "$acl" = false ] || _check_config_acl
 }
 
 _trusted_config_path() (
