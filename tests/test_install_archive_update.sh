@@ -14,6 +14,9 @@ package="$TEST_BASE/package"
 mkdir -p "$fixture" "$package" "$TEST_BASE/bin" || exit 1
 printf '%s\n' 'verified fixture' > "$fixture/expected-runtime"
 cp "$fixture/expected-runtime" "$package/cortado.sh"
+mkdir "$package/modules" "$package/lib" || exit 1
+printf '%s\n' "# module fixture" > "$package/modules/model.sh"
+printf '%s\n' "# library fixture" > "$package/lib/config-tui.sh"
 cat > "$package/install.sh" <<'STUB'
 #!/bin/bash
 printf 'Restarted installer with %s\n' "$*"
@@ -87,6 +90,11 @@ case "$url" in
         ;;
     */SHA256SUMS)
         case "$DOWNLOAD_CASE" in
+            interrupted)
+                printf '%s\n' part > "$output"
+                kill -TERM "$PPID"
+                exit 1
+                ;;
             manifest-stall) sleep 0.01; exit 28 ;;
             missing-manifest) printf '%s\n' 'HTTP 404' > "$output"; exit 22 ;;
             manifest-http-error) cp "$RELEASE_ASSETS/SHA256SUMS" "$output"; exit 22 ;;
@@ -132,7 +140,25 @@ cat > "$TEST_BASE/bin/unzip" <<'STUB'
 printf '%s\n' 'unzip' >> "$UNZIP_LOG"
 exec "$UNZIP_BIN" "$@"
 STUB
-chmod +x "$TEST_BASE/bin/curl" "$TEST_BASE/bin/unzip"
+cat > "$TEST_BASE/bin/cp" <<'STUB'
+#!/bin/bash
+if [ "$DOWNLOAD_CASE" = partial-copy ]; then
+    for arg in "$@"; do
+        case "$arg" in
+            */cortado-update.*/Cortado-*/VERSION) version="$arg" ;;
+            */cortado-update.*/Cortado-*/cortado.sh) fail_copy=true ;;
+        esac
+        dest="$arg"
+    done
+    if [ "${fail_copy:-false}" = true ]; then
+        if [ -n "${version:-}" ]; then /bin/cp "$version" "$dest"; fi
+        printf '%s\n' 'simulated copy failure' >&2
+        exit 1
+    fi
+fi
+exec /bin/cp "$@"
+STUB
+chmod +x "$TEST_BASE/bin/curl" "$TEST_BASE/bin/unzip" "$TEST_BASE/bin/cp"
 
 run_archive_update() {
     local download_case="$1" flag="${2:---update}" version="${3:-$fixture_version}" sandbox
@@ -141,6 +167,21 @@ run_archive_update() {
     cp -R "$REPO_ROOT/install.sh" "$REPO_ROOT/VERSION" "$REPO_ROOT/lib" "$sandbox/source/"
     printf '%s\n' 'installed fixture' > "$sandbox/config/cortado/cortado.sh"
     printf '%s\n' '{"statusLine":{"type":"command","command":"fixture"}}' > "$sandbox/config/settings.json"
+    case "$download_case" in
+        managed|managed-stale)
+            # shellcheck disable=SC2016 # $path is a jq variable.
+            jq -n --arg path "$sandbox/config/cortado/cortado.sh" \
+                '{statusLine:{type:"command",command:($path|@sh)},padding:11}' > "$sandbox/config/settings.json"
+            printf '%s\n' 'custom generated config' > "$sandbox/config/cortado/cortado.conf"
+            chmod 600 "$sandbox/config/cortado/cortado.conf"
+            cp "$REPO_ROOT/VERSION" "$sandbox/config/cortado/"
+            if [ "$download_case" = managed-stale ]; then
+                printf '%s\n' "$version" > "$sandbox/source/VERSION"
+                cp -R "$package/modules" "$package/lib" "$sandbox/source/"
+                cp "$fixture/expected-runtime" "$sandbox/source/cortado.sh"
+            fi
+            ;;
+    esac
     chmod 600 "$sandbox/config/settings.json"
     cp -R "$sandbox/source" "$sandbox/source.before"
     cp -R "$sandbox/config" "$sandbox/config.before"
@@ -266,6 +307,31 @@ STUB
 chmod +x "$TEST_BASE/failing-hash/shasum"
 UPDATE_PATH="$TEST_BASE/failing-hash:$PATH" run_archive_update valid
 assert_refused 'a checksum tool that fails after printing a digest' 'Could not compute SHA-256 for Cortado-source.zip'
+
+run_archive_update partial-copy
+assert_eq 'a partial source copy exits unsuccessfully' 1 "$update_status"
+assert_contains 'a partial source copy diagnoses the copy failure' 'Could not copy the release' "$update_output"
+assert_not_contains 'a partial source copy does not announce an update' 'Updated to version' "$update_output"
+assert_rc 'a partial source copy leaves the source version eligible for retry' 0 \
+    cmp "$update_sandbox/source.before/VERSION" "$update_sandbox/source/VERSION"
+assert_empty 'a failed source copy removes staging' "$(ls -A "$update_sandbox/tmp")"
+
+run_archive_update interrupted
+assert_eq 'TERM during a release download preserves the signal status' 143 "$update_status"
+assert_empty 'TERM during a release download removes staging' "$(ls -A "$update_sandbox/tmp")"
+
+for scenario in managed managed-stale; do
+    run_archive_update "$scenario"
+    assert_eq "explicit update succeeds for $scenario" 0 "$update_status"
+    assert_rc "explicit update refreshes the active runtime for $scenario" 0 \
+        cmp "$fixture/expected-runtime" "$update_sandbox/config/cortado/cortado.sh"
+    assert_eq "explicit update refreshes the active version for $scenario" "$fixture_version" \
+        "$(cat "$update_sandbox/config/cortado/VERSION")"
+    assert_rc "explicit update preserves settings for $scenario" 0 \
+        cmp "$update_sandbox/config.before/settings.json" "$update_sandbox/config/settings.json"
+    assert_rc "explicit update preserves the generated config for $scenario" 0 \
+        cmp "$update_sandbox/config.before/cortado/cortado.conf" "$update_sandbox/config/cortado/cortado.conf"
+done
 
 run_archive_update binary-entry
 assert_archived_release 'a verified uppercase binary entry' "$fixture_version"

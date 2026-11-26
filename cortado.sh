@@ -221,15 +221,43 @@ create_module_stderr() (
     printf '%s\n' "$dir"
 ) 2>/dev/null
 
+capture_module_stderr() {
+    local dir="$1" counter total retained
+    if command -v dd >/dev/null; then
+        # BSD head can consume bytes past its output limit on a pipe.
+        LC_ALL=C dd ibs=1 obs=4096 count=65536 >| "$dir/data" &&
+            LC_ALL=C wc -c >| "$dir/omitted"
+        return
+    fi
+
+    # Count a second stream in full so head's read-ahead cannot lose bytes.
+    [ -p "$dir/count" ] || mkfifo "$dir/count" || return 1
+    LC_ALL=C wc -c >| "$dir/total" < "$dir/count" &
+    counter=$!
+    if ! (
+        set -o pipefail
+        LC_ALL=C tee "$dir/count" | {
+            local status=0
+            LC_ALL=C head -c 65536 >| "$dir/data" || status=$?
+            cat >/dev/null && [ "$status" -eq 0 ]
+        }
+    ); then
+        kill "$counter" 2>/dev/null || :
+        wait "$counter" 2>/dev/null || :
+        return 1
+    fi
+    wait "$counter" || return 1
+    IFS=' ' read -r total < "$dir/total" || return 1
+    retained=$(LC_ALL=C wc -c < "$dir/data") || return 1
+    printf '%d\n' "$((total - retained))" >| "$dir/omitted"
+}
+
 start_module_stderr() {
     [ -n "$CORTADO_STDERR_CAPTURE" ] || return 0
     local dir="$CORTADO_STDERR_CAPTURE"
-    # Read exactly the prefix: BSD head can consume bytes past its output limit
-    # on a pipe. Buffer dd's writes, then count the rest as the pipe drains.
     (
         umask 077
-        if ! { LC_ALL=C dd ibs=1 obs=4096 count=65536 >| "$dir/data" &&
-            LC_ALL=C wc -c >| "$dir/omitted"; }; then
+        if ! capture_module_stderr "$dir"; then
             cat > /dev/null
             exit 1
         fi
@@ -612,13 +640,14 @@ layout_codepoint_width() {
     fi
 }
 
-# With no limit, return the ending column (starting at $4 or zero). With a
-# limit, return the visible prefix that fits, with any retained OSC 8 link
-# closed. Use byte offsets so this also works in the C locale.
+# With no limit, return the ending column (starting at $4 or zero). The caller
+# may stop measurement as soon as this exceeds $5. With a limit, return the
+# fitting prefix, closing its retained OSC 8 link. Use byte offsets in any locale.
 scan_layout() {
     local LC_ALL=C
     local remaining="$1" destination="$2" limit="${3:--1}"
     local columns="${4:-0}" consumed=0 size width plain glyph codepoint byte i
+    local measure_until="${5:--1}"
     local base_point=0 base_width=0 join_pending=0 keep
     local kept=0 kept_link='' before_base=0 before_base_link='' active_link=''
     local utf8=$'^([\302-\337][\200-\277]|[\340-\357][\200-\277]{2}|[\360-\364][\200-\277]{3})'
@@ -747,6 +776,9 @@ scan_layout() {
             break
         fi
         columns=$((columns + width))
+        if (( measure_until >= 0 && columns > measure_until )); then
+            break
+        fi
         consumed=$((consumed + size))
         if (( limit >= 0 && keep )); then
             kept=$consumed
@@ -1087,7 +1119,7 @@ render_statusline() {
             local available_width=$((term_width - right_reserve))
             (( available_width >= 0 )) || available_width=0
             local output_len
-            scan_layout "$output" output_len
+            scan_layout "$output" output_len -1 0 "$available_width"
             if [ "$output_len" -gt "$available_width" ]; then
                 local ellipsis='...'
                 if (( available_width < 3 )); then

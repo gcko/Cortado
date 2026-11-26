@@ -709,6 +709,18 @@ assert_eq "settings-only install preserves unrelated settings" "false" \
     "$(jq -r '.includeCoAuthoredBy' "$settings")"
 assert_statusline_runs 'updated settings render through sh with a literal $ in the path' "$settings"
 
+config_dir="$TEST_BASE/group-write-umask"
+if (umask 002; LC_ALL=en_US.UTF-8 install_minimal "$config_dir"); then
+    pass 'minimal install passes the UTF-8 sample under umask 002'
+else
+    fail 'minimal install passes the UTF-8 sample under umask 002'
+fi
+config_mode=$(stat -f '%Lp' "$config_dir/cortado/cortado.conf" 2>/dev/null) ||
+    config_mode=$(stat -c '%a' "$config_dir/cortado/cortado.conf")
+assert_eq 'the generated config is owner-only under umask 002' '600' "$config_mode"
+assert_statusline_runs 'the generated config renders through the command saved under umask 002' \
+    "$config_dir/settings.json"
+
 # Disable the only listed module to trigger the installer's manual test hint.
 config_dir="$TEST_BASE/manual hint's"
 mkdir -p "$config_dir" || exit 1

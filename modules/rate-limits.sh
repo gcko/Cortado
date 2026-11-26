@@ -502,10 +502,17 @@ module_rate_limits() {
         eval "$REPLY"
     fi
 
-    local now=$(date +%s)
+    local now
+    now=$(date +%s 2>/dev/null) || now=
+    case "$now" in
+        0*|*[!0-9]*) now= ;;
+    esac
+    if ! [ "$now" -gt 0 ] 2>/dev/null; then
+        now=
+    fi
 
     # History rows drive both projections and need two measured percentages.
-    if [ -n "$five_hour" ] && [ -n "$seven_day" ]; then
+    if [ -n "$now" ] && [ -n "$five_hour" ] && [ -n "$seven_day" ]; then
         if [ "$from_payload" = "true" ] && ! cache_get "rate_limits_payload_recorded" "$cache_ttl" >/dev/null; then
             cache_set "rate_limits_payload_recorded" "$now"
             fresh_fetch=true
@@ -522,7 +529,7 @@ module_rate_limits() {
     local seven_day_remaining=0
 
     # Parse 5-hour reset time and calculate projection
-    if [ -n "$five_hour" ] && [ -n "$five_hour_reset" ]; then
+    if [ -n "$now" ] && [ -n "$five_hour" ] && [ -n "$five_hour_reset" ]; then
         local five_hour_reset_epoch=$(_parse_reset_epoch "${five_hour_reset%%.*}")
         five_hour_remaining=$((five_hour_reset_epoch - now))
         if [ "$five_hour_remaining" -gt 18000 ]; then
@@ -550,7 +557,7 @@ module_rate_limits() {
     fi
 
     # Parse 7-day reset time and calculate projection
-    if [ -n "$seven_day" ] && [ -n "$seven_day_reset" ]; then
+    if [ -n "$now" ] && [ -n "$seven_day" ] && [ -n "$seven_day_reset" ]; then
         local seven_day_reset_epoch=$(_parse_reset_epoch "${seven_day_reset%%.*}")
         seven_day_remaining=$((seven_day_reset_epoch - now))
         if [ "$seven_day_remaining" -gt 604800 ]; then

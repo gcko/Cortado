@@ -124,5 +124,21 @@ assert_eq 'truncate closes a retained hyperlink that uses an ESC-backslash termi
     "$(render C.UTF-8 "$payload" 'MODULE_ORDER=model' 'LAYOUT_MODE=truncate' 'TERMINAL_WIDTH=6' \
         "MODEL_ICON=\$'AB\033]8;id=test;https://example.invalid/\033\134Link\033]8;;\033\134'")"
 
+# Count width work rather than setting a wall-clock deadline for shared CI.
+long_label=$(printf '%1024s' '' | sed 's/ /漢/g')
+long_payload=$(jq -nc --arg label "$long_label" '{model:{display_name:$label}}')
+BASH_ENV="$TEST_BASE/trace.sh"
+printf '%s\n' 'set -x' > "$BASH_ENV"
+long_output=$(export BASH_ENV; render C "$long_payload" 'MODULE_ORDER=model' \
+    'LAYOUT_MODE=truncate' 'TERMINAL_WIDTH=16' 2>"$TEST_BASE/width-trace")
+unset BASH_ENV
+assert_eq 'a long CJK label truncates on a whole character' $'🤖 漢漢漢漢漢...\033[0m' "$long_output"
+scans=$(grep -cE '^\++ layout_codepoint_width ' "$TEST_BASE/width-trace")
+if [ "$scans" -gt 0 ] && [ "$scans" -le 20 ]; then
+    pass 'narrow truncation measures only the visible start of a long CJK label'
+else
+    fail "narrow truncation measures only the visible start of a long CJK label (scanned $scans code points)"
+fi
+
 printf '\nResults: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

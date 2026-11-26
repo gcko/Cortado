@@ -24,5 +24,17 @@ check_render 'battery preserves a measured zero' 'CRIT: 0% ⚡' zero
 check_render 'battery shows absence when pmset fails' 'BAT: --' failed
 check_render 'battery shows absence when the percentage is missing' 'BAT: --' malformed
 
+# Exercise standalone module calls with the stdout wrapper disabled.
+standalone=$(export PATH="$TEST_BASE/bin:$PATH" TEST_SAMPLE=zero USE_ICONS=false
+    # shellcheck source=modules/utils.sh
+    . "$PROJECT_ROOT/modules/utils.sh"
+    # shellcheck source=modules/battery.sh
+    . "$PROJECT_ROOT/modules/battery.sh"
+    # shellcheck disable=SC2329 # This replaces a helper called by the sourced module.
+    safe_int() { return 1; }
+    module_battery
+)
+assert_eq 'standalone battery uses the reply helper for critical charge' 'CRIT: 0% ⚡' "$standalone"
+
 printf '\nResults: %s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

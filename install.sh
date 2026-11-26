@@ -303,6 +303,78 @@ _stage_release_archive() {
     fi
 }
 
+_copy_staged_release() {
+    local extract_dir="$1" entry
+    # Publish VERSION last so a failed copy can be retried.
+    for entry in "$extract_dir/"*; do
+        [ "${entry##*/}" != VERSION ] || continue
+        cp -R "$entry" "$SCRIPT_DIR/" || return 1
+    done
+    cp "$extract_dir/VERSION" "$SCRIPT_DIR/"
+}
+
+_publish_release_archive() {
+    local tag="$1" tmp_dir extract_dir backup_dir previous_traps rc=1
+    if ! tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/cortado-update.XXXXXX"); then
+        print_error "Could not create a temporary directory for the update."
+        return 1
+    fi
+    previous_traps=$(trap -p EXIT HUP INT TERM)
+    trap 'rm -rf -- "$tmp_dir"' EXIT
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+
+    extract_dir="$tmp_dir/Cortado-${tag#v}"
+    if _stage_release_archive "$tag" "$tmp_dir" "$extract_dir"; then
+        if ! backup_dir=$(mktemp -d "$SCRIPT_DIR.backup.XXXXXX"); then
+            print_error "Could not create a source backup in the parent of $SCRIPT_DIR."
+        elif ! cp -R "$SCRIPT_DIR/." "$backup_dir/"; then
+            print_error "Could not back up the source to $backup_dir."
+        elif ! _copy_staged_release "$extract_dir"; then
+            print_error "Could not copy the release to $SCRIPT_DIR. The source backup is at $backup_dir."
+        else
+            rm -rf -- "$backup_dir"
+            rc=0
+        fi
+    fi
+
+    rm -rf -- "$tmp_dir"
+    trap - EXIT HUP INT TERM
+    eval "$previous_traps"
+    return "$rc"
+}
+
+# Refresh only the runtime managed by this installer, preserving its config
+# and the statusLine command that Claude Code already uses.
+_refresh_managed_runtime() {
+    local desired_version="$1" dest installed_version source_dir
+    [ -f "$CORTADO_DIR/cortado.sh" ] && [ -f "$SETTINGS_FILE" ] || return 0
+    dest=$(CDPATH='' cd -- "$CORTADO_DIR" && pwd -P) || return 1
+    source_dir=$(CDPATH='' cd -- "$SCRIPT_DIR" && pwd -P) || return 1
+    if [ "$source_dir" = "$dest" ] || _is_homebrew_prefix "$dest"; then
+        return 0
+    fi
+    # shellcheck disable=SC2016 # $path is a jq variable.
+    if ! jq -e --arg path "$dest/cortado.sh" --arg configured "$CORTADO_DIR/cortado.sh" '
+        .statusLine | select(.type == "command") | .command as $command
+        | [$path, $configured, ($path | @sh), ($configured | @sh)] | index($command) != null
+    ' "$SETTINGS_FILE" >/dev/null 2>&1; then
+        return 0
+    fi
+    installed_version=
+    if [ -f "$dest/VERSION" ]; then
+        installed_version=$(tr -d '[:space:]' < "$dest/VERSION")
+    fi
+    if [ "$installed_version" != "$desired_version" ]; then
+        if ! copy_runtime_files "$source_dir" "$dest"; then
+            print_error "Could not refresh the installed Cortado runtime at $dest."
+            return 1
+        fi
+        print_success "Refreshed the installed Cortado runtime at $dest"
+    fi
+}
+
 # Perform the update from the latest GitHub *release* tag (not unpinned main).
 do_update() {
     print_info "Updating Cortado..."
@@ -329,6 +401,9 @@ do_update() {
         _cortado_git stash -q 2>/dev/null
         if _cortado_git fetch origin --tags --force 2>/dev/null \
             && _cortado_git checkout -q "$tag" 2>/dev/null; then
+            if [ "$INSTALL_MODE" = update ]; then
+                _refresh_managed_runtime "${tag#v}" || return 1
+            fi
             print_success "Updated to version $REMOTE_VERSION"
             echo ""
             print_info "Restarting installer with new version..."
@@ -340,28 +415,16 @@ do_update() {
         fi
     else
         print_info "Downloading release $tag..."
-
-        local tmp_dir
-        if ! tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/cortado-update.XXXXXX"); then
-            print_error "Could not create a temporary directory for the update."
-            return 1
+        _publish_release_archive "$tag" || return 1
+        if [ "$INSTALL_MODE" = update ]; then
+            _refresh_managed_runtime "${tag#v}" || return 1
         fi
-        local extract_dir="$tmp_dir/Cortado-${tag#v}"
-        if ! _stage_release_archive "$tag" "$tmp_dir" "$extract_dir"; then
-            rm -rf "$tmp_dir"
-            return 1
-        fi
-
-        cp -r "$SCRIPT_DIR" "$SCRIPT_DIR.backup.$$"
-        cp -r "$extract_dir"/* "$SCRIPT_DIR/"
-        rm -rf "$SCRIPT_DIR.backup.$$"
 
         print_success "Updated to version ${tag#v}"
         echo ""
         print_info "Restarting installer with new version..."
         echo ""
 
-        rm -rf "$tmp_dir"
         _reexec_installer "$@"
     fi
 }
@@ -1086,6 +1149,9 @@ show_statusline_preview() {
 generate_config() (
     local config_file="$1"
     umask 077
+    # umask covers a new file; chmod covers one that already existed.
+    : >> "$config_file" || return 1
+    chmod 600 "$config_file" || return 1
 
     cat > "$config_file" << 'HEADER' || return 1
 # =============================================================================
@@ -1151,7 +1217,7 @@ HEADER
     echo "MODULE_ORDER=\"$order_str\"" >> "$config_file" || return 1
 
     # Write footer with basic settings
-    cat >> "$config_file" << 'FOOTER'
+    cat >> "$config_file" << 'FOOTER' || return 1
 
 # =============================================================================
 # Display Settings
@@ -1475,12 +1541,13 @@ copy_runtime_files() {
 
     mkdir -p "$dest/modules" "$dest/lib" || return 1
     cp "$src/cortado.sh" "$dest/" || return 1
-    chmod +x "$dest/cortado.sh"
+    chmod +x "$dest/cortado.sh" || return 1
+    cp "$src/modules/"*.sh "$dest/modules/" || return 1
+    cp "$src/lib/"*.sh "$dest/lib/" || return 1
+    # VERSION goes last, so a partial copy never looks current.
     if [ -f "$src/VERSION" ]; then
         cp "$src/VERSION" "$dest/" || return 1
     fi
-    cp "$src/modules/"*.sh "$dest/modules/" || return 1
-    cp "$src/lib/"*.sh "$dest/lib/" || return 1
     return 0
 }
 
@@ -2076,6 +2143,10 @@ main() {
         else
             local ver=$(get_local_version)
             if [ "$INSTALL_MODE" = "update" ]; then
+                if [ "$ver" = "${REMOTE_TAG#v}" ] && [ -f "$SCRIPT_DIR/VERSION" ] &&
+                    ! _is_homebrew_prefix "$SCRIPT_DIR"; then
+                    _refresh_managed_runtime "$ver" || exit 1
+                fi
                 print_success "Already up to date ($ver)"
             else
                 print_success "You have the latest version ($ver)"
