@@ -89,6 +89,24 @@ if [ "${TEST_DEAF_READER:-false}" = true ]; then
     printf '%s\n' "$CORTADO_STDERR_READER" > "$CLAUDE_CONFIG_DIR/deaf-reader.pid"
     kill -TERM "$$"
 fi
+if [ "${TEST_HELD_CAPTURE:-false}" = true ]; then
+    # A background process from this module keeps the capture's write end
+    # open in its own session, outside the render's process group, so the
+    # reader's pipeline never sees EOF. Then interrupt the render.
+    perl -MPOSIX=setsid -e '
+        setsid();
+        open(my $pid, ">", $ARGV[0]) or exit 1;
+        print {$pid} "$$\n";
+        close($pid);
+        sleep 30;
+    ' "$CLAUDE_CONFIG_DIR/holder.pid" &
+    for ((held = 0; held < 200; held++)); do
+        [ ! -s "$CLAUDE_CONFIG_DIR/holder.pid" ] || break
+        sleep 0.02
+    done
+    printf '%s\n' 'diagnostic before the held interruption' >&2
+    kill -TERM "$$"
+fi
 if [ "${TEST_MODEL_FLOOD:-false}" = true ]; then
     module_model() {
         local i
@@ -516,6 +534,22 @@ else
     fail 'The TERM fixture started a reader that ignores TERM'
 fi
 assert_eq 'A render stopped with TERM leaves no reader process' '' "$group_left"
+
+# A reader whose pipeline is still reading (another process holds the write
+# end open) is stopped with everything it started when the render is TERMed.
+held_config="$(mktemp -d "$TEST_BASE/held.XXXXXX")"
+printf '%s\n' 'LAYOUT_MODE="none"' 'MODULE_ORDER="model"' 'DEBUG_MODE=true' 'TEST_HELD_CAPTURE=true' \
+    > "$held_config/cortado.conf"
+chmod 600 "$held_config/cortado.conf" || exit 1
+render_group "$SOURCE_TREE" "$held_config" 20
+if [ -s "$held_config/holder.pid" ]; then
+    kill -KILL "$(cat "$held_config/holder.pid")" 2>/dev/null
+    pass 'The held-capture fixture kept the write end open outside the render'
+else
+    fail 'The held-capture fixture kept the write end open outside the render'
+fi
+assert_eq 'A render stopped with TERM mid-capture exits with 143' 143 "$group_rc"
+assert_eq 'A render stopped with TERM mid-capture leaves no reader pipeline' '' "$group_left"
 
 # A failing module's stderr and its exit status both reach the debug log.
 FAILING_TREE="$TEST_BASE/failing-module"

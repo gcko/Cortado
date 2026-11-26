@@ -283,6 +283,35 @@ start_module_stderr() {
     CORTADO_STDERR_READER=$!
 }
 
+# stop_module_stderr - stop the reader and everything it started (dd, or tee,
+# head, cat and wc), which can still be reading from a writer that outlives
+# the render. The reader is stopped first so it cannot start anything more,
+# and its descendants are read from ps while they are still its children.
+# Each gets TERM, then KILL: a reader forked a moment ago can still carry the
+# main shell's TERM trap, which defers TERM and then drops it.
+stop_module_stderr() {
+    local reader="$CORTADO_STDERR_READER" tree members pid ppid grew
+    [ -n "$reader" ] || return 0
+    kill -STOP "$reader" 2>/dev/null || :
+    members=" $reader "
+    tree=$(ps -A -o pid= -o ppid= 2>/dev/null) || tree=
+    grew=true
+    while [ "$grew" = true ]; do
+        grew=false
+        while read -r pid ppid; do
+            case "$members" in
+                *" $pid "*) ;;
+                *" $ppid "*) members="$members$pid "; grew=true ;;
+            esac
+        done <<< "$tree"
+    done
+    # shellcheck disable=SC2086 # One word per process id.
+    kill -TERM $members 2>/dev/null
+    # shellcheck disable=SC2086
+    kill -KILL $members 2>/dev/null
+    return 0
+}
+
 log_module_stderr() {
     local module_name="$1" dir="$CORTADO_STDERR_CAPTURE" reader="$CORTADO_STDERR_READER"
     [ -n "$reader" ] || return 0
@@ -329,18 +358,18 @@ with_module_stderr() {
     done
     # KILL, because a TERM that lands while the new reader still holds
     # main's TERM trap is deferred and then dropped when the subshell resets it.
-    kill -KILL "$CORTADO_STDERR_READER" 2>/dev/null
+    stop_module_stderr
     "$@" 2>/dev/null
 }
 
 cleanup_module_stderr() {
-    if [ -n "$CORTADO_STDERR_READER" ]; then
-        # TERM, then KILL: a reader forked a moment ago can still carry the
-        # main shell's TERM trap, which defers TERM and then drops it, and a
-        # reader waiting in its FIFO open would then wait forever.
-        kill "$CORTADO_STDERR_READER" 2>/dev/null || :
-        kill -KILL "$CORTADO_STDERR_READER" 2>/dev/null || :
-    fi
+    # A reader waiting in its FIFO open would wait forever, and its pipeline
+    # may still be reading from a writer that outlives this render. The
+    # shell may still write to the capture as it exits, so stderr goes
+    # nowhere first: with the reader gone, that write would end the render
+    # with SIGPIPE.
+    exec 2>/dev/null
+    stop_module_stderr
     rm -rf -- "$CORTADO_STDERR_CAPTURE" 2>/dev/null || :
 }
 
