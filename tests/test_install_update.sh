@@ -32,6 +32,23 @@ INSTALL_MODE="interactive"
 parse_args --check-update
 assert_eq "parse_args --check-update" "check-update" "$INSTALL_MODE"
 
+# --- the generated config documents CACHE_MAX_AGE as cortado.conf does ---
+# comment_above <key> <file>: the comment lines directly above <key>=.
+comment_above() {
+    awk -v key="$1=" '
+        /^#/ { block = block $0 "\n"; next }
+        index($0, key) == 1 { printf "%s", block; found = 1; exit }
+        { block = "" }
+        END { exit !found }
+    ' "$2"
+}
+generated_conf="$CLAUDE_CONFIG_DIR/generated.conf"
+generate_config "$generated_conf" || exit 1
+shipped_comment=$(comment_above CACHE_MAX_AGE "$REPO_ROOT/cortado.conf") || exit 1
+assert_contains "cortado.conf documents CACHE_MAX_AGE" "GIT_CACHE_TTL" "$shipped_comment"
+assert_eq "the generated config documents CACHE_MAX_AGE as cortado.conf does" \
+    "$shipped_comment" "$(comment_above CACHE_MAX_AGE "$generated_conf")"
+
 # --- explicit update checks against a stubbed release API ---
 mkdir -p "$CLAUDE_CONFIG_DIR/bin"
 cat > "$CLAUDE_CONFIG_DIR/bin/curl" <<'STUB'

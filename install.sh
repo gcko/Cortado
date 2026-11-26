@@ -1596,9 +1596,13 @@ PROGRESS_BAR_WIDTH=8
 # Advanced Settings
 # =============================================================================
 
-# Default cache TTL (seconds) for cache_get when the caller omits max_age.
-# Built-in fallback is 60. Git, rate limits, and updates pass their own
-# seconds and ignore this. Weather does not call cache_get.
+# Default cache TTL (seconds) for cache_get() when the caller omits max_age.
+# Built-in fallback is also 60 (modules/utils.sh). Only rate-limits and update
+# call cache_get, and both pass their own seconds (RATE_CACHE_TTL,
+# UPDATE_CHECK_INTERVAL), so no shipped module reads this today. Git uses
+# GIT_CACHE_TTL. Weather (WEATHER_CACHE_TTL), network, CPU, load, brightness,
+# processes, Docker and Node.js refresh in the background on their own TTLs.
+# Digits only; when cache_get uses this value, anything else is a miss.
 CACHE_MAX_AGE=60
 
 # Cache files live under CLAUDE_CONFIG_DIR (default: ~/.claude/cortado-cache).
