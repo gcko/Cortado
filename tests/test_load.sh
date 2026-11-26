@@ -10,17 +10,25 @@ cat > "$TEST_BASE/bin/sysctl" <<'STUB'
 #!/bin/bash
 [ "$*" = "-n hw.ncpu" ] || exit 2
 case "$TEST_SAMPLE" in
-    no-cpus) exit 1 ;;
-    bad-cpus) printf '%s\n' 0 ;;
+    no-cpus|getconf-cpus) exit 1 ;;
+    bad-cpus|getconf-bad) printf '%s\n' 0 ;;
     *) printf '%s\n' 4 ;;
 esac
 STUB
 cat > "$TEST_BASE/bin/nproc" <<'STUB'
 #!/bin/bash
-[ "$TEST_SAMPLE" != no-cpus ] || exit 1
+case "$TEST_SAMPLE" in no-cpus|getconf-cpus) exit 1 ;; esac
 printf '%s\n' 4
 STUB
-chmod +x "$TEST_BASE/bin/sysctl" "$TEST_BASE/bin/nproc"
+cat > "$TEST_BASE/bin/getconf" <<'STUB'
+#!/bin/bash
+[ "$*" = _NPROCESSORS_ONLN ] || exit 2
+case "$TEST_SAMPLE" in
+    getconf-cpus|getconf-bad) printf '%s\n' 8 ;;
+    *) exit 1 ;;
+esac
+STUB
+chmod +x "$TEST_BASE/bin/sysctl" "$TEST_BASE/bin/nproc" "$TEST_BASE/bin/getconf"
 cat > "$TEST_BASE/bin/uptime" <<'STUB'
 #!/bin/bash
 case "$TEST_SAMPLE" in
@@ -31,7 +39,7 @@ case "$TEST_SAMPLE" in
             printf '%s\n' '10:00  up 1 day, 1 user, load averages: 1,25 0,75 0,50'
         fi ;;
     high) printf '%s\n' '10:00  up 1 day, 1 user, load averages: 16.00 12.00 10.00' ;;
-    no-cpus|bad-cpus) printf '%s\n' '10:00  up 1 day, 1 user, load averages: 6.00 5.00 4.00' ;;
+    no-cpus|bad-cpus|getconf-cpus|getconf-bad) printf '%s\n' '10:00  up 1 day, 1 user, load averages: 6.00 5.00 4.00' ;;
     partial) printf '%s\n' '10:00  up 1 day, 1 user, load averages: 1.25 n/a' ;;
     malformed) printf '%s\n' '10:00  up 1 day, 1 user, load averages: n/a' ;;
     *) exit 1 ;;
@@ -77,6 +85,10 @@ check_load 'load with an unknown CPU count shows every average without a severit
     no-cpus '' 'LOAD_SHOW_ALL=true'
 check_load 'load with an invalid CPU count shows the average without a severity' 'LOAD: 6.00' bad-cpus ''
 RENDER_OS=linux check_load 'load with nproc failing on Linux shows the average without a severity' 'LOAD: 6.00' no-cpus ''
+# 6.00 is [OK] against getconf's 8 CPUs; an assumed 4 would make it [WARN].
+check_load 'load falls back to getconf when sysctl fails' 'LOAD: 6.00 [OK]' getconf-cpus ''
+check_load 'load falls back to getconf when sysctl gives an invalid count' 'LOAD: 6.00 [OK]' getconf-bad ''
+RENDER_OS=linux check_load 'load falls back to getconf when nproc fails on Linux' 'LOAD: 6.00 [OK]' getconf-cpus ''
 check_load 'load with an unknown CPU count ignores configured thresholds' 'LOAD: 6.00' no-cpus '' \
     'LOAD_WARNING_THRESHOLD=2' 'LOAD_CRITICAL_THRESHOLD=4'
 

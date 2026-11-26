@@ -27,12 +27,17 @@
 _load_probe() {
     local os="$1" num_cpus uptime_output load1 load5 load15
     local load_number='^[0-9]+([.][0-9]+)?$'
-    # An unknown CPU count is recorded as --, never assumed (#83).
+    # Ask the platform tool, then POSIX getconf. An unknown CPU count is
+    # recorded as --, never assumed (#83).
+    local cpu_count='^[1-9][0-9]{0,5}$'
     case "$os" in
-        darwin) num_cpus=$(sysctl -n hw.ncpu) || num_cpus=-- ;;
-        *) num_cpus=$(nproc) || num_cpus=-- ;;
+        darwin) num_cpus=$(sysctl -n hw.ncpu) || num_cpus= ;;
+        *) num_cpus=$(nproc) || num_cpus= ;;
     esac
-    [[ "$num_cpus" =~ ^[1-9][0-9]{0,5}$ ]] || num_cpus=--
+    if ! [[ "$num_cpus" =~ $cpu_count ]]; then
+        num_cpus=$(getconf _NPROCESSORS_ONLN) || num_cpus=
+    fi
+    [[ "$num_cpus" =~ $cpu_count ]] || num_cpus=--
 
     uptime_output=$(LC_ALL=C uptime) || return 1
     case "$uptime_output" in
