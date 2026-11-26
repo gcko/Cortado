@@ -56,6 +56,12 @@ case "$TEST_LOAD" in
     normal) printf '%s\n' '10:00  up 1 day, 1 user, load averages: 1.25 0.75 0.50' ;;
     malformed) printf '%s\n' '10:00  up 1 day, 1 user' ;;
     garbage) printf '%s\n' '10:00  up 1 day, 1 user, load averages: n/a' ;;
+    locale)
+        if [ "${LC_ALL:-}" = C ]; then
+            printf '%s\n' '10:00  up 1 day, 1 user, load averages: 1.25 0.75 0.50'
+        else
+            printf '%s\n' '10:00  up 1 day, 1 user, load averages: 1,25 0,75 0,50'
+        fi ;;
     *) exit 1 ;;
 esac
 STUB
@@ -65,6 +71,9 @@ TEST_LOAD=failed check_render 'uptime marks a missing load average when uptime f
 TEST_LOAD=malformed check_render 'uptime marks a missing load average when uptime prints none' 'UP: 1d 1h [--]' normal '' 'UPTIME_SHOW_LOAD=true'
 TEST_LOAD=garbage check_render 'uptime marks a non-numeric load average as missing' 'UP: 1d 1h [--]' normal '' 'UPTIME_SHOW_LOAD=true'
 TEST_LOAD=failed check_render 'uptime without load enabled shows no load part' 'UP: 1d 1h' normal ''
+# Exporting a locale from the config is Bash, so it needs the environment's opt-in (#33).
+CORTADO_CONF_ALLOW_BASH=1 TEST_LOAD=locale check_render 'uptime reads the load average independently of the caller locale' \
+    'UP: 1d 1h [1.25]' normal '' 'UPTIME_SHOW_LOAD=true' 'export LC_ALL=POSIX'
 
 # Linux reads /proc/uptime. The cut stub stands in for it on every host.
 RENDER_OS=linux
