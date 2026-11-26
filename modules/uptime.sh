@@ -15,7 +15,7 @@
 # Configuration options:
 #   UPTIME_ICON       - Icon for uptime (default: ⏱️)
 #   UPTIME_STYLE      - Display style: "short", "long", "days" (default: short)
-#   UPTIME_SHOW_LOAD  - Show load average (default: false)
+#   UPTIME_SHOW_LOAD  - Show load average (default: false); [--] when unreadable
 # =============================================================================
 
 module_uptime() {
@@ -23,37 +23,39 @@ module_uptime() {
     local style="${UPTIME_STYLE:-short}"
     local show_load="${UPTIME_SHOW_LOAD:-false}"
 
-    local uptime_str=""
+    # Only a whole number of seconds is a reading; anything else shows -- (#82).
+    local uptime_secs=""
 
     if [ "${CORTADO_OS:-}" = darwin ]; then
         # macOS: parse boot time
-        local boot_time=$(sysctl -n kern.boottime 2>/dev/null | awk '{print $4}' | tr -d ',')
-        if [ -n "$boot_time" ]; then
-            local now=$(date +%s)
-            local uptime_secs=$((now - boot_time))
-            uptime_str=$(format_uptime "$uptime_secs" "$style")
+        local boot_time now
+        boot_time=$(sysctl -n kern.boottime 2>/dev/null | awk '{print $4}' | tr -d ',')
+        now=$(date +%s 2>/dev/null)
+        if [[ "$boot_time" =~ ^[1-9][0-9]{0,11}$ && "$now" =~ ^[1-9][0-9]{0,11}$ ]] &&
+            [ "$boot_time" -le "$now" ]; then
+            uptime_secs=$((now - boot_time))
         fi
     else
         # Linux: use /proc/uptime
-        local uptime_secs=$(cut -d. -f1 /proc/uptime 2>/dev/null)
-        if [ -n "$uptime_secs" ]; then
-            uptime_str=$(format_uptime "$uptime_secs" "$style")
-        fi
+        uptime_secs=$(cut -d. -f1 /proc/uptime 2>/dev/null)
+        [[ "$uptime_secs" =~ ^(0|[1-9][0-9]{0,11})$ ]] || uptime_secs=""
     fi
 
-    if [ -z "$uptime_str" ]; then
+    if [ -z "$uptime_secs" ]; then
+        echo "$icon --"
         return
     fi
 
+    local uptime_str=$(format_uptime "$uptime_secs" "$style")
     local result="$icon $uptime_str"
 
     # Add load average if requested
     if [ "$show_load" = "true" ]; then
         # macOS prints "load averages:" (plural), Linux "load average:" — match both.
+        # A missing or non-numeric average keeps its place as [--].
         local load=$(uptime 2>/dev/null | awk -F'load averages?:' '{print $2}' | awk '{print $1}' | tr -d ',')
-        if [ -n "$load" ]; then
-            result="$result [$load]"
-        fi
+        [[ "$load" =~ ^[0-9]+([.][0-9]+)?$ ]] || load=--
+        result="$result [$load]"
     fi
 
     echo "$result"

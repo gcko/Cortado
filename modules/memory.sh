@@ -77,12 +77,10 @@ module_memory() {
         local total=$(grep MemTotal /proc/meminfo 2>/dev/null | awk '{print $2}')
         local avail=$(grep MemAvailable /proc/meminfo 2>/dev/null | awk '{print $2}')
 
-        if [ -n "$total" ] && [ -n "$avail" ]; then
-            # Empty or zero MemTotal would crash the raw divisions below
-            safe_int_reply "$total" 0
-            if [ "$REPLY" -eq 0 ]; then
-                return
-            fi
+        # Both counters must be whole kB values, with a positive total that
+        # covers what is available; anything else is no reading (#82).
+        if [[ "$total" =~ ^[1-9][0-9]{0,15}$ && "$avail" =~ ^(0|[1-9][0-9]{0,15})$ ]] &&
+            [ "$avail" -le "$total" ]; then
             local used=$((total - avail))
             safe_percent_reply "$used" "$total"
             mem_pct=$REPLY
@@ -92,6 +90,7 @@ module_memory() {
     fi
 
     if [ -z "$mem_pct" ]; then
+        printf '%s --\n' "$icon"
         return
     fi
 

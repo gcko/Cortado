@@ -46,5 +46,32 @@ check_render 'memory shows absence for a zero page size' 'MEM: --' bad-page
 check_render 'memory ignores a size from a failed sysctl' 'MEM: --' failed-size
 check_render 'memory shows absence when counted pages exceed physical memory' 'MEM: --' oversized
 
+# Linux reads /proc/meminfo. The grep stub stands in for it on every host.
+RENDER_OS=linux
+cat > "$TEST_BASE/bin/grep" <<'STUB'
+#!/bin/bash
+if [ "${2:-}" = /proc/meminfo ]; then
+    case "$TEST_SAMPLE:$1" in
+        linux-normal:MemTotal|linux-no-available:MemTotal) printf '%s\n' 'MemTotal:       16777216 kB' ;;
+        linux-normal:MemAvailable) printf '%s\n' 'MemAvailable:   12582912 kB' ;;
+        linux-zero-total:MemTotal) printf '%s\n' 'MemTotal:              0 kB' ;;
+        linux-zero-total:MemAvailable) printf '%s\n' 'MemAvailable:          0 kB' ;;
+        linux-over:MemTotal) printf '%s\n' 'MemTotal:        1048576 kB' ;;
+        linux-over:MemAvailable) printf '%s\n' 'MemAvailable:    2097152 kB' ;;
+        linux-garbage:*) printf '%s\n' "$1: n/a kB" ;;
+        *) exit 1 ;;
+    esac
+    exit 0
+fi
+exec /usr/bin/grep "$@"
+STUB
+chmod 700 "$TEST_BASE/bin/grep"
+check_render 'memory reads MemTotal and MemAvailable on Linux' 'MEM: 25% [OK]' linux-normal
+check_render 'memory shows absence when /proc/meminfo is unreadable' 'MEM: --' linux-failed
+check_render 'memory shows absence when MemAvailable is missing' 'MEM: --' linux-no-available
+check_render 'memory shows absence for a zero MemTotal' 'MEM: --' linux-zero-total
+check_render 'memory shows absence for non-numeric counters' 'MEM: --' linux-garbage
+check_render 'memory shows absence when more is available than installed' 'MEM: --' linux-over
+
 printf '\nResults: %s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
