@@ -194,12 +194,15 @@ Project config can turn a registered module off. Project order can reorder or om
 ## Testing
 
 Regression tests live in `tests/` and share the Bash assertions in `tests/lib/assert.sh`. Each suite runs standalone and sandboxes `CLAUDE_CONFIG_DIR` and `CACHE_DIR`. Use `/bin/bash` to exercise Bash 3.2 on macOS.
+
+`tests/run-suites.sh` runs suites in parallel, `CORTADO_TEST_JOBS` at a time (default: the core count), each with its own `TMPDIR` and a 300 s limit (`SUITE_TIMEOUT`). It prints a PASS, FAIL or TIMEOUT line per suite, then each failing suite's output as one block, and exits non-zero on any failure. Suites must stay safe to run side by side: no fixed paths outside their sandbox, ports, or process patterns another suite could match. A suite that calls jq or feeds cortado a payload field belongs in `tests/jq-suites.txt` (or there as a `!` exclusion with a reason), so the Apple jq pass runs it; `tests/test_run_suites.sh` fails otherwise.
 ```bash
 /bin/bash tests/test_utils.sh           # utils.sh helpers
 /bin/bash tests/test_rate_limits.sh     # rate-limit parsers/backoff
 /bin/bash tests/test_config_cli.sh      # cortado config CLI and Barista migration
 /bin/bash tests/test_install_update.sh  # installer update flags, runtime copy, migration
-/bin/bash tests/run-jq-variants.sh      # all suites with Homebrew and Apple jq on macOS
+/bin/bash tests/run-suites.sh           # all suites in parallel, or the suites named as arguments
+/bin/bash tests/run-jq-variants.sh      # all suites with Homebrew jq, then the JSON suites with Apple jq on macOS
 /bin/bash tests/render_timing.sh        # p50 and p95 for default renders with fresh caches, then while a weather request hangs
 /bin/bash tests/all_modules_timing.sh   # p50 and p95 with all modules enabled and warm probe caches
 ```
@@ -227,10 +230,8 @@ DEBUG_MODE="true"  # In config
 Run the local checks below from the repository root before opening a pull request and again before merging. Paste their output into the pull request's `## Verification` section. This is the canonical local gate.
 
 ```bash
-# 1. Every regression suite, each standalone
-fail=0
-for t in tests/test_*.sh; do /bin/bash "$t" >/dev/null 2>&1 || { echo "FAIL: $t"; fail=1; }; done
-[ "$fail" -eq 0 ] && echo "tests: all green"
+# 1. Every regression suite, each standalone, in parallel (CORTADO_TEST_JOBS caps the jobs)
+/bin/bash tests/run-suites.sh && echo "tests: all green"
 
 # 2. Bash syntax on every shipped and test script
 for f in cortado.sh install.sh lib/*.sh modules/*.sh tests/*.sh tests/lib/*.sh; do /bin/bash -n "$f" || echo "SYNTAX: $f"; done

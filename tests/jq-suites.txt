@@ -1,0 +1,48 @@
+# Suites whose results depend on how jq parses JSON. On macOS the Apple jq
+# pass (/usr/bin/jq) runs only these; every suite still runs with the jq on
+# PATH. tests/test_run_suites.sh fails when a suite calls jq, uses the JSON
+# helpers, loads a payload-reading module (payload, context, cost, model,
+# rate-limits) or feeds a payload field those modules read, and is neither
+# listed here nor excluded with a reason.
+#
+# One suite per line. "!name reason" excludes a suite the guard would
+# otherwise demand; the reason is required.
+
+# Payload, context, cost, model and rate-limit code paths
+test_context.sh
+test_cost.sh
+test_model.sh
+test_payload_parse.sh
+test_rate_limits.sh
+test_rate_limits_concurrency.sh
+test_rate_limits_credentials.sh
+test_rate_limits_payload.sh
+test_status_render.sh
+test_ttl_validation.sh
+test_golden_output.sh
+test_utils.sh
+
+# Renders whose assertions read payload fields (model, workspace, session)
+test_config_cli.sh
+test_config_writer.sh
+test_debug_log.sh
+test_directory.sh
+test_layout.sh
+test_module_catalog.sh
+test_module_errors.sh
+test_project_config.sh
+test_timezone.sh
+test_version.sh
+test_git_cache.sh
+
+# The installer and update check parse JSON with jq
+test_install_archive_update.sh
+test_install_settings.sh
+test_install_update.sh
+test_update.sh
+
+!test_cpu.sh            only the default {"cwd":"/nonexistent"} payload; the cpu module never reads it
+!test_processes.sh      only the default {"cwd":"/nonexistent"} payload; the processes module never reads it
+!test_node.sh           names jq only in its restricted PATH; the node module never reads the payload
+!test_probe_refresh.sh  context_window payloads only prove that weather and network ignore the payload
+!test_run_suites.sh     tests the runner and this list with fake suites; it never parses JSON
