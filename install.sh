@@ -1712,7 +1712,8 @@ do_install() (
     fi
 
     local pending_backup="" runtime_stage="" runtime_promoted=false runtime_committed=false
-    # shellcheck disable=SC2329 # Called by the EXIT trap in this subshell.
+    # Older ShellCheck (CI's Ubuntu) reports the trap-only body as unreachable (SC2317).
+    # shellcheck disable=SC2317,SC2329 # Called by the EXIT trap in this subshell.
     cleanup_install() {
         if [ -n "$runtime_stage" ]; then
             if [ "$runtime_committed" = false ]; then
