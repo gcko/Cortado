@@ -709,8 +709,10 @@ assert_eq "settings-only install preserves unrelated settings" "false" \
     "$(jq -r '.includeCoAuthoredBy' "$settings")"
 assert_statusline_runs 'updated settings render through sh with a literal $ in the path' "$settings"
 
+# GNU syntax first: GNU stat -f succeeds (it reports the filesystem), so a BSD-first
+# fallback would never run there. BSD stat rejects -c and falls through.
 file_mode() {
-    stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1"
+    stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1"
 }
 
 config_dir="$TEST_BASE/group-write-umask"

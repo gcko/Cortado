@@ -33,7 +33,8 @@ standalone=$(export PATH="$TEST_BASE/bin:$PATH" TEST_SAMPLE=zero USE_ICONS=false
     . "$PROJECT_ROOT/modules/utils.sh"
     # shellcheck source=modules/battery.sh
     . "$PROJECT_ROOT/modules/battery.sh"
-    # shellcheck disable=SC2329 # This replaces a helper called by the sourced module.
+    # Older ShellCheck (CI's Ubuntu) reports this indirectly called body as unreachable (SC2317).
+    # shellcheck disable=SC2317,SC2329 # This replaces a helper called by the sourced module.
     safe_int() { return 1; }
     module_battery
 )

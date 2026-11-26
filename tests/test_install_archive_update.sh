@@ -424,6 +424,12 @@ for scenario in managed managed-stale managed-obsolete; do
         "$(ls "$update_sandbox/config/cortado/modules" 2>/dev/null | tr '\n' ' ' | sed 's/ $//')"
 done
 
+# GNU syntax first: GNU stat -f succeeds (it reports the filesystem), so a BSD-first
+# fallback would never run there. BSD stat rejects -c and falls through.
+file_mode() {
+    stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1"
+}
+
 caller_umask=$(umask)
 umask 002
 run_archive_update managed
@@ -433,7 +439,7 @@ for path in "$update_sandbox/config/cortado" "$update_sandbox/config/cortado/mod
     "$update_sandbox/config/cortado/lib" "$update_sandbox/config/cortado/cortado.sh" \
     "$update_sandbox/config/cortado/VERSION" "$update_sandbox/config/cortado/modules/model.sh" \
     "$update_sandbox/config/cortado/lib/config-tui.sh"; do
-    mode=$(stat -f '%Lp' "$path" 2>/dev/null || stat -c '%a' "$path")
+    mode=$(file_mode "$path")
     if [ -n "$mode" ] && (( (8#$mode & 8#022) == 0 )); then
         pass "a refresh under umask 002 publishes ${path##*/config/} without group or other write"
     else
@@ -441,8 +447,7 @@ for path in "$update_sandbox/config/cortado" "$update_sandbox/config/cortado/mod
     fi
 done
 assert_eq 'a refresh keeps the generated config owner-only' 600 \
-    "$(stat -f '%Lp' "$update_sandbox/config/cortado/cortado.conf" 2>/dev/null ||
-        stat -c '%a' "$update_sandbox/config/cortado/cortado.conf")"
+    "$(file_mode "$update_sandbox/config/cortado/cortado.conf")"
 
 run_archive_update managed --check
 assert_eq 'an update accepted from --check exits 0' 0 "$update_status"
