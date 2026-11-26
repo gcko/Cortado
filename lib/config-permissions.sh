@@ -67,8 +67,13 @@ _trusted_config_path() (
 
     [[ "$path" = /* ]] || path="$PWD/$path"
     while :; do
-        # A trailing slash would make the path its own parent below. Keep "/".
-        while [[ "$path" = */ && "$path" != / ]]; do path="${path%/}"; done
+        if [[ "$path" = */ && "$path" != / ]]; then
+            # A trailing slash names a directory, so a file read fails with ENOTDIR.
+            [[ "$scope" = module-directory ]] ||
+                { _config_permission_error 'target ends in a slash, so it is not a regular file'; return; }
+            # Strip it so the path is not its own parent below. Keep "/".
+            while [[ "$path" = */ && "$path" != / ]]; do path="${path%/}"; done
+        fi
         # Resolve directory symlinks with Bash, then follow any file symlink.
         CDPATH='' builtin cd -P -- "${path%/*}/" ||
             { _config_permission_error 'could not resolve the parent directory'; return; }
@@ -103,13 +108,10 @@ config_refusal_message() {
 
 # Set REPLY to the checked path on success, or the diagnostic on failure.
 check_trusted_config() {
-    local checked noun=config
-    case "${2:-user}" in
-        module) noun=module ;;
-        module-directory) noun='module directory' ;;
-    esac
+    local checked
+    # Module callers discard this diagnostic, so it always names a config.
     if ! checked=$(_trusted_config_path "$1" "${2:-user}" 2>/dev/null); then
-        printf -v REPLY 'cortado: refusing to source %s %q: %s' "$noun" "$1" "$checked"
+        printf -v REPLY 'cortado: refusing to source config %q: %s' "$1" "$checked"
         printf '%s\n' "$REPLY" >&2
         return 1
     fi

@@ -42,6 +42,8 @@ CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 # =============================================================================
 
 CONFIG_REFUSALS=()
+# The order used when no trusted config sets MODULE_ORDER; cortado config shares it.
+CORTADO_DEFAULT_MODULE_ORDER="sandbox,version,update,directory,context,git,project,model,cost,rate-limits,time,battery"
 
 # Load Bash config only after verifying its target and parent.
 load_config() {
@@ -913,7 +915,8 @@ render_statusline() {
     # This allows project-specific statusline customization
     # Uses safe parser — project configs are untrusted and must not be sourced
     local trusted_theme="${COLOR_THEME:-default}"
-    local trusted_module_order="${MODULE_ORDER%%$'\n'*}"
+    local trusted_module_order="${MODULE_ORDER:-}"
+    trusted_module_order="${trusted_module_order%%$'\n'*}"
     trusted_module_order=${trusted_module_order// /}
     if [ -n "$current_dir" ] && [ -d "$current_dir" ]; then
         local dir_config="$current_dir/.cortado.conf"
@@ -950,11 +953,8 @@ render_statusline() {
         remove_render_spaces render_separator
     fi
 
-    # Default module order if not specified
-    local DEFAULT_ORDER="sandbox,version,update,directory,context,git,project,model,cost,rate-limits,time,battery"
-
     # Use custom order if specified, otherwise use default
-    local module_order="${MODULE_ORDER:-$DEFAULT_ORDER}"
+    local module_order="${MODULE_ORDER:-$CORTADO_DEFAULT_MODULE_ORDER}"
 
     if [ "${DEBUG_MODE:-false}" = "true" ]; then
         validate_module_order "$module_order"

@@ -155,7 +155,8 @@ _cfg_load_into_shell() {
         _CFG_PROJECT_ORIGINAL=()
         [ ! -f "$path" ] || load_config_safe "$path" _cfg_load_project_value
     else
-        load_config "$SCRIPT_DIR/cortado.conf" packaged
+        # cortado.sh already reported a packaged refusal at startup.
+        load_config "$SCRIPT_DIR/cortado.conf" packaged 2>/dev/null
         if [[ -e "$path" || -L "$path" ]]; then
             # The trust check follows a link itself; source exactly what it judged.
             if check_trusted_config "$path" 2>/dev/null; then
@@ -170,6 +171,8 @@ _cfg_load_into_shell() {
                 fi
             fi
         fi
+        # Start from the order the renderer falls back to, never an empty one.
+        MODULE_ORDER="${MODULE_ORDER:-${CORTADO_DEFAULT_MODULE_ORDER:-}}"
         # The global editor fills catalog defaults for missing flags. In project
         # scope, an unset flag has the same meaning as it does in the renderer.
         local mod_def name var def
@@ -561,8 +564,7 @@ _cfg_show() {
     echo "Config file: $path"
     if [ "$scope" = "global" ] && [ "$_CFG_GLOBAL_CONFIG_REFUSED" = true ]; then
         echo "Saved settings are inactive. The statusline ignores this file."
-    fi
-    if [ ! -f "$path" ]; then
+    elif [[ ! -e "$path" && ! -L "$path" ]]; then
         echo "(file does not exist yet — defaults will be used until saved)"
     fi
     echo ""
@@ -933,11 +935,16 @@ cortado_config_main() {
         return 0
     fi
 
-    # Pre-rename fallback for project scope (the global barista.conf is carried over
-    # by cortado.sh at startup). Load valid legacy settings, then write the new
-    # name only if an edit succeeds.
+    # Pre-rename fallbacks. cortado.sh copies a trusted global barista.conf at
+    # startup when it can; otherwise the renderer keeps reading barista.conf,
+    # so show and edit that file. A project's legacy settings are loaded, and
+    # an edit writes the new name.
     local load_path="$path"
-    if [ "$scope" = "project" ] && [ ! -f "$path" ] && [ -f "${PWD}/.barista.conf" ]; then
+    if [ "$scope" = "global" ] && [[ ! -e "$path" && ! -L "$path" ]] &&
+       [[ -e "${path%/*}/barista.conf" || -L "${path%/*}/barista.conf" ]]; then
+        path="${path%/*}/barista.conf"
+        load_path="$path"
+    elif [ "$scope" = "project" ] && [ ! -f "$path" ] && [ -f "${PWD}/.barista.conf" ]; then
         load_path="${PWD}/.barista.conf"
     fi
 

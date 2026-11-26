@@ -37,7 +37,7 @@ EOF
 chmod +x "$TEST_BASE/no-grep/pmset"
 
 SOURCE_TREE="$TEST_BASE/source"
-mkdir "$SOURCE_TREE"
+mkdir -m 700 "$SOURCE_TREE"
 cp "$PROJECT_ROOT/cortado.sh" "$PROJECT_ROOT/cortado.conf" "$SOURCE_TREE/"
 cp -R "$PROJECT_ROOT/modules" "$PROJECT_ROOT/lib" "$SOURCE_TREE/"
 cp "$SCRIPT_DIR/module-error-fixture.sh" "$SOURCE_TREE/modules/zz-runtime-test.sh" || exit 1
@@ -345,7 +345,7 @@ render "$SOURCE_TREE" "$PATH" clean 'MODULE_ORDER=version' 'MODULE_VERSION=true'
 assert_eq 'Version receives the original payload as its only argument' "payload=$PAYLOAD" "$out"
 
 INCOMPLETE_TREE="$TEST_BASE/incomplete"
-mkdir "$INCOMPLETE_TREE"
+mkdir -m 700 "$INCOMPLETE_TREE"
 cp "$PROJECT_ROOT/cortado.sh" "$PROJECT_ROOT/cortado.conf" "$INCOMPLETE_TREE/" || exit 1
 cp -R "$PROJECT_ROOT/modules" "$PROJECT_ROOT/lib" "$INCOMPLETE_TREE/" || exit 1
 rm "$INCOMPLETE_TREE/modules/utils.sh" || exit 1

@@ -224,7 +224,7 @@ If the installer updates by downloading an archive, it verifies `Cortado-source.
 
 Cortado can read your existing Barista settings.
 
-- **User config.** When there is no `$CLAUDE_CONFIG_DIR/cortado.conf`, Cortado and the installer copy a trusted `barista.conf`, keeping its permissions and leaving the original in place. Cortado uses the trusted legacy file in place if the destination directory fails the permission check or the copy fails. A dangling `cortado.conf` symlink counts as an existing destination.
+- **User config.** When there is no `$CLAUDE_CONFIG_DIR/cortado.conf`, Cortado and the installer copy a trusted `barista.conf`, keeping its permissions and leaving the original in place. Cortado uses the trusted legacy file in place if the destination directory fails the permission check or the copy fails, and `cortado config` then shows and edits `barista.conf`. A dangling `cortado.conf` symlink counts as an existing destination.
 - **Project config.** Cortado reads a project's `.barista.conf` when there's no `.cortado.conf` next to it. The first successful save with `cortado config --project` writes the allowed settings to `.cortado.conf` and leaves `.barista.conf` in place.
 - **Install location.** The installer puts Cortado in `$CLAUDE_CONFIG_DIR/cortado/` and points `statusLine` in `settings.json` at `cortado/cortado.sh`. Your previous `statusLine` command is backed up, so `./install.sh --uninstall` can switch back to Barista.
 - **Cache and logs.** These move to `cortado-cache/` and `cortado.log` and are rebuilt automatically. `.usage_history` keeps its name.
@@ -521,7 +521,7 @@ MODULE_MYCUSTOM="true"
 MODULE_ORDER="model,mycustom"
 ```
 
-Then make the files private. A shell with umask `002`, the default on Ubuntu, creates them group-writable, and Cortado skips a group- or world-writable module, module directory, Claude config directory or `cortado.conf` without a word on the statusline. With `DEBUG_MODE="true"`, `cortado.log` names what it refused.
+Then make the files private. A shell with umask `002`, the default on Ubuntu, creates them group-writable. Cortado skips a group- or world-writable module or module directory and leaves it off the statusline with no notice; with `DEBUG_MODE="true"`, `cortado.log` names what it refused. A refused `cortado.conf`, including one in a group- or world-writable Claude config directory, shows `Config refused` at the start of the statusline instead; see [Config file not loading](#config-file-not-loading).
 
 ```bash
 dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"

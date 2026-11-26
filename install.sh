@@ -64,10 +64,8 @@ setup_colors() {
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/semver.sh
 . "$SCRIPT_DIR/lib/semver.sh"
-if [ -r "$SCRIPT_DIR/lib/config-permissions.sh" ]; then
-    # shellcheck source=lib/config-permissions.sh
-    . "$SCRIPT_DIR/lib/config-permissions.sh"
-fi
+# shellcheck source=lib/config-permissions.sh
+. "$SCRIPT_DIR/lib/config-permissions.sh"
 # shellcheck source=lib/module-registry.sh
 . "$SCRIPT_DIR/lib/module-registry.sh"
 

@@ -144,6 +144,8 @@ assert_eq 'control: a packaged MODULE_ORDER reaches a user module' '🤖 Opus | 
     "$(recipe_render 2>/dev/null)"
 chmod 702 "$CLAUDE_CONFIG_DIR"
 assert_eq 'a world-writable config parent cannot supply modules' '🤖 Opus' "$(recipe_render 2>/dev/null)"
+chmod 770 "$CLAUDE_CONFIG_DIR"
+assert_eq 'a group-writable config parent cannot supply modules' '🤖 Opus' "$(recipe_render 2>/dev/null)"
 chmod 700 "$CLAUDE_CONFIG_DIR"
 restore_order
 

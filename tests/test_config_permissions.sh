@@ -190,6 +190,12 @@ for stat_case in failed empty malformed-mode missing-owner foreign; do
     write_override "$config"
     PATH="$TEST_BASE/bin:$PATH" TEST_STAT_CASE="$stat_case" TEST_METADATA_PATH="$config" render
     assert_refused "Config metadata $stat_case"
+    case "$stat_case" in
+        empty|malformed-mode|missing-owner)
+            assert_file_contains "Config metadata $stat_case is reported as invalid" \
+                'invalid permission metadata' "$TEST_BASE/stderr"
+            ;;
+    esac
 done
 
 new_sandbox
@@ -203,6 +209,8 @@ assert_contains 'A total metadata outage still displays the model' Opus "$render
 assert_not_contains 'A total metadata outage ignores the refused override' OVERRIDE "$rendered"
 assert_eq 'Both config refusals produce one short notice' 1 \
     "$(grep -oF 'Config refused' "$TEST_BASE/stdout" | wc -l | tr -d ' ')"
+assert_contains 'A total metadata outage joins the notice with the default separator' \
+    'Config refused | ' "$rendered"
 assert_file_contains 'A metadata outage explains the reason on stderr' \
     'could not read permission metadata' "$TEST_BASE/stderr"
 
@@ -627,6 +635,106 @@ assert_not_contains 'A trusted link target saves without an inactive warning' \
     'Saved settings are inactive' "$(cat "$TEST_BASE/config.err")"
 render
 assert_eq 'The renderer sources the saved private link target' 'SAVED Opus' "$rendered"
+
+new_sandbox
+ln -s "$TEST_BASE/safe target/override/" "$config"
+render
+assert_refused 'A link target with a trailing slash'
+assert_contains 'A link target with a trailing slash shows the refusal notice' 'Config refused' "$rendered"
+assert_file_contains 'A link target with a trailing slash is not a regular file' \
+    'not a regular file' "$TEST_BASE/stderr"
+assert_rc 'The writer also refuses a link target with a trailing slash' 1 config_cmd --set MODEL_ICON=SAVED
+
+new_sandbox
+ln -s absent "$config"
+assert_rc 'Show runs for a dangling user config link' 0 config_cmd --show
+assert_file_contains 'Show flags a dangling user config link as inactive' \
+    'Saved settings are inactive' "$TEST_BASE/config.out"
+assert_not_contains 'Show does not call a dangling user config link missing' \
+    'does not exist yet' "$(cat "$TEST_BASE/config.out")"
+
+# The renderer keeps using barista.conf in place when it cannot publish a
+# copy, so cortado config must show and edit that same file.
+mkdir -m 700 "$TEST_BASE/legacy private" || exit 1
+legacy_target="$TEST_BASE/legacy private/barista.conf"
+printf '%s\n' 'MODULE_ORDER="model"' 'MODULE_MODEL="true"' 'USE_ICONS="true"' \
+    'MODEL_ICON="LEGACY"' 'COLOR_THEME="vibrant"' > "$legacy_target" && chmod 600 "$legacy_target" || exit 1
+new_sandbox
+chmod 770 "$CLAUDE_CONFIG_DIR"
+ln -s "$legacy_target" "$CLAUDE_CONFIG_DIR/barista.conf"
+render
+assert_eq 'A trusted legacy link renders in a writable config directory' 'LEGACY Opus' "$rendered"
+assert_rc 'Show runs for a trusted legacy link' 0 config_cmd --show
+assert_file_contains 'Show reads the legacy file the renderer uses' 'COLOR_THEME=vibrant' "$TEST_BASE/config.out"
+assert_not_contains 'Show does not call the legacy settings missing' \
+    'does not exist yet' "$(cat "$TEST_BASE/config.out")"
+assert_rc 'A save edits the legacy file the renderer uses' 0 config_cmd --set MODEL_ICON=EDITED
+assert_file_contains 'The legacy save edits the link target' 'MODEL_ICON="EDITED"' "$legacy_target"
+assert_rc 'The legacy save creates no shadowing cortado.conf' 1 test -e "$config"
+assert_not_contains 'The legacy save is not reported inactive' \
+    'Saved settings are inactive' "$(cat "$TEST_BASE/config.err")"
+render
+assert_eq 'The renderer shows the edited legacy setting' 'EDITED Opus' "$rendered"
+
+new_sandbox
+printf '%s\n' 'COLOR_THEME=minimal' 'MODEL_ICON=REFUSED' > "$CLAUDE_CONFIG_DIR/barista.conf"
+chmod 620 "$CLAUDE_CONFIG_DIR/barista.conf"
+assert_rc 'Show runs for a refused legacy file' 0 config_cmd --show
+assert_file_contains 'Show flags a refused legacy file as inactive' \
+    'Saved settings are inactive' "$TEST_BASE/config.out"
+assert_file_contains 'Show reads a refused legacy file as literal settings' 'COLOR_THEME=minimal' "$TEST_BASE/config.out"
+assert_not_contains 'Show does not call a refused legacy file missing' \
+    'does not exist yet' "$(cat "$TEST_BASE/config.out")"
+assert_rc 'The writer refuses a group-writable legacy file' 1 config_cmd --set MODEL_ICON=EDITED
+assert_file_contains 'The legacy refusal gives the chmod hint' \
+    "chmod go-w $CLAUDE_CONFIG_DIR/barista.conf" "$TEST_BASE/config.err"
+assert_rc 'A refused legacy save creates no cortado.conf' 1 test -e "$config"
+
+# A checkout others can write refuses its packaged config. The editor must
+# still start from the renderer's default order and report the refusal once.
+shared_checkout="$TEST_BASE/shared checkout"
+mkdir "$shared_checkout" && chmod 775 "$shared_checkout" || exit 1
+cp "$REPO_ROOT/cortado.sh" "$REPO_ROOT/cortado.conf" "$REPO_ROOT/VERSION" "$shared_checkout/" || exit 1
+chmod 644 "$shared_checkout/cortado.conf" || exit 1
+ln -s "$REPO_ROOT/modules" "$shared_checkout/modules" || exit 1
+ln -s "$REPO_ROOT/lib" "$shared_checkout/lib" || exit 1
+default_order='sandbox,version,update,directory,context,git,project,model,cost,rate-limits,time,battery'
+new_sandbox
+shared_status=0
+/bin/bash "$shared_checkout/cortado.sh" config --show > "$TEST_BASE/config.out" 2> "$TEST_BASE/config.err" ||
+    shared_status=$?
+assert_eq 'Show runs when the packaged config is refused' 0 "$shared_status"
+assert_eq 'Show uses the renderer default order when the packaged config is refused' \
+    "MODULE_ORDER=$default_order" "$(grep '^MODULE_ORDER=' "$TEST_BASE/config.out")"
+assert_eq 'Show reports the packaged refusal once' 1 "$(grep -c 'refusing to source' "$TEST_BASE/config.err")"
+shared_status=0
+/bin/bash "$shared_checkout/cortado.sh" config --toggle cpu > "$TEST_BASE/config.out" 2> "$TEST_BASE/config.err" ||
+    shared_status=$?
+assert_eq 'A toggle saves when the packaged config is refused' 0 "$shared_status"
+assert_eq 'A toggle keeps the default order and appends the module' \
+    "MODULE_ORDER=\"$default_order,cpu\"" "$(grep '^MODULE_ORDER=' "$config")"
+
+# Bash 4+ reports unset variables in pattern expansions under nounset.
+nounset_bash=""
+for candidate in /bin/bash "$(type -P bash)" /opt/homebrew/bin/bash /usr/local/bin/bash; do
+    if [ -x "$candidate" ] && [ "$("$candidate" -c "echo \"\${BASH_VERSINFO[0]}\"")" -ge 4 ] 2>/dev/null; then
+        nounset_bash="$candidate"
+        break
+    fi
+done
+if [ -n "$nounset_bash" ]; then
+    new_sandbox
+    printf '%s\n' 'set -u' 'MODEL_ICON=NOUNSET' > "$config"
+    chmod 600 "$config"
+    nounset_status=0
+    printf '%s\n' '{"model":{"display_name":"Opus"}}' | "$nounset_bash" "$shared_checkout/cortado.sh" \
+        > "$TEST_BASE/stdout" 2> "$TEST_BASE/stderr" || nounset_status=$?
+    assert_eq 'A nounset user config without MODULE_ORDER renders under Bash 4+' 0 "$nounset_status"
+    assert_not_contains 'A nounset user config without MODULE_ORDER is not unbound' \
+        'MODULE_ORDER: unbound variable' "$(cat "$TEST_BASE/stderr")"
+else
+    printf '  SKIP: no Bash 4+ for the nounset MODULE_ORDER case\n'
+fi
 
 partial_source="$TEST_BASE/partial-source"
 mkdir -p "$partial_source/lib"
