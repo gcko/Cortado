@@ -15,6 +15,7 @@ Barista becomes Cortado: a new name, a new home at gcko/Cortado, and the Apache 
 - Cortado refuses a config file it can't prove is yours (#68, #103). A file that others can write, or that sits in a directory others can write, is skipped, and the statusline starts with `Config refused`. `cortado config --show` says which file and why.
 - A project's `.cortado.conf` can only change display settings and turn modules off (#39).
 - Cortado supports macOS and Linux, including WSL. On other platforms the statusline reads `cortado: unsupported platform` (#84).
+- Cortado now needs Perl, for background probes and cache metadata. macOS and most Linux distributions include it. `bc` is now needed only by the optional temperature module.
 
 ### New
 
