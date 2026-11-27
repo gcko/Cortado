@@ -203,7 +203,8 @@ render /usr/bin/env PATH="$shim_dir:$PATH" READLINK_CASE=pass \
     /bin/bash -c 'cd "$1" && exec /bin/bash "$2"' -- "$decoy" "$decoy/cortado-raced"
 assert_eq 'a readable link through the shim renders the line' "$EXPECTED_LINE" "$rendered"
 
-# A chain of 40 links is followed; the hop limit is above any kernel's.
+# A chain of 30 links is followed. The hop limit (40) matches Linux's and is
+# above macOS's (32), so no chain a kernel accepts is refused.
 mkdir -p "$TEST_BASE/long" || exit 1
 ln -s "$TREE/cortado.sh" "$TEST_BASE/long/link0" || exit 1
 i=1
@@ -213,6 +214,14 @@ while [ "$i" -lt 30 ]; do
 done
 render /bin/bash "$TEST_BASE/long/link29"
 assert_eq 'a chain of 30 links renders the line' "$EXPECTED_LINE" "$rendered"
+
+# A link whose target ends in a newline, in a chain: the readlink sentinel keeps
+# the newline, so the next hop names the real file.
+mkdir -p "$TEST_BASE/nl" || exit 1
+ln -s "$TREE/cortado.sh" "$TEST_BASE/nl/mid"$'\n' || exit 1
+ln -s "mid"$'\n' "$TEST_BASE/nl/start" || exit 1
+render /bin/bash "$TEST_BASE/nl/start"
+assert_eq 'a link whose target ends in a newline renders the line' "$EXPECTED_LINE" "$rendered"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

@@ -276,6 +276,19 @@ assert_contains 'uninstall says it removed the command' "Removed the cortado com
 assert_eq 'uninstall keeps other files in ~/.local/bin' 'keep' "$(cat "$bin/other-tool")"
 assert_rc 'uninstall keeps ~/.local/bin' 0 test -d "$bin"
 
+# With the config directory gone there is nothing to compare the link with:
+# uninstall keeps it and says why, instead of calling it someone else's.
+new_home
+install --minimal
+rm -rf "$cfg"
+uninstall
+assert_eq 'uninstall without the config directory completes' 0 "$uninstall_status"
+assert_rc 'uninstall without the config directory keeps the link' 0 test -L "$cmd"
+assert_contains 'uninstall without the config directory says it could not check' \
+    "Left $cmd as it is: could not check it, because $cfg is missing" "$out"
+assert_not_contains 'uninstall without the config directory does not blame another installer' \
+    'it was not made by this installer' "$out"
+
 # With a backup, options 1 and 2 remove it, and Cancel keeps it.
 for answers in '1\nn\n' '2\n' '3\n'; do
     new_home

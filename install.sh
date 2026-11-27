@@ -8,14 +8,14 @@
 # Usage:
 #   ./install.sh                Install with interactive module selection
 #   ./install.sh --uninstall    Uninstall and restore previous statusline
-#
-# Installing also links ~/.local/bin/cortado to the installed runtime, and
-# --uninstall removes that link (only that link, and only when it made it).
 #   ./install.sh --force        Install with all defaults (no prompts)
 #   ./install.sh --defaults     Install with core modules enabled
 #   ./install.sh --no-emoji     Disable emojis in installer and config
 #   ./install.sh --no-color     Disable colors in installer output
 #   ./install.sh --minimal      Quick install with minimal modules
+#
+# Installing also links ~/.local/bin/cortado to the installed runtime, and
+# --uninstall removes a link to this install's cortado.sh and nothing else.
 # =============================================================================
 
 # Do NOT use set -e - we handle errors explicitly
@@ -2152,7 +2152,11 @@ remove_cortado_command() {
     esac
     cmd="${HOME%/}/.local/bin/cortado"
     [ -e "$cmd" ] || [ -L "$cmd" ] || return 0
-    if _cortado_command_target && _cortado_command_is_ours "$cmd" "$REPLY"; then
+    # Without the config directory there is no runtime path to compare with,
+    # so say that rather than claiming the link is someone else's.
+    if ! _cortado_command_target; then
+        print_warning "Left $cmd as it is: could not check it, because $CLAUDE_DIR is missing"
+    elif _cortado_command_is_ours "$cmd" "$REPLY"; then
         if rm -f -- "$cmd"; then
             print_success "Removed the cortado command: $cmd"
         else

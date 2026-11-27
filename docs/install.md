@@ -131,4 +131,4 @@ The next update clears a lock left by an installer that is no longer running. Th
 ./install.sh --uninstall
 ```
 
-The installer offers to restore the statusline you had before, if it backed one up. It removes `~/.local/bin/cortado` only when that is the link it created for this install, and leaves `~/.local/bin` and everything else in it.
+The installer offers to restore the statusline you had before, if it backed one up. It removes `~/.local/bin/cortado` only when it is a link to this install's `cortado.sh`, and leaves `~/.local/bin` and everything else in it.
