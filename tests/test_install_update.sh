@@ -757,7 +757,7 @@ run_git_update
 assert_new_runtime "a successful refresh"
 assert_rc "a successful refresh carries the generated config" 0 cmp "${cfg%/config}/conf.before" "$active/cortado.conf"
 assert_eq "a successful refresh leaves exactly the release and the user's files" \
-    "VERSION cortado.conf cortado.sh lib modules notes.txt" "$(LC_ALL=C ls -A "$active" | tr '\n' ' ' | sed 's/ $//')"
+    "VERSION cortado.conf cortado.sh install.sh lib modules notes.txt" "$(LC_ALL=C ls -A "$active" | tr '\n' ' ' | sed 's/ $//')"
 assert_eq "a successful refresh drops group write from a 0775 runtime" 755 "$(file_mode "$active")"
 assert_eq "a successful refresh drops group write from a carried 0664 file" 644 "$(file_mode "$active/notes.txt")"
 
@@ -791,9 +791,10 @@ rm "$active/cortado.sh"
 run_git_update
 assert_new_runtime "a current VERSION without cortado.sh"
 
-# current_runtime: the swap runtime already holds every file the release ships.
+# current_runtime: the swap runtime already holds every file the release ships,
+# including the installer that cortado update runs.
 current_runtime() {
-    cp "$swap_src/cortado.sh" "$swap_src/VERSION" "$active/" &&
+    cp "$swap_src/cortado.sh" "$swap_src/install.sh" "$swap_src/VERSION" "$active/" &&
         cp "$swap_src/lib/"*.sh "$active/lib/" &&
         cp "$swap_src/modules/"*.sh "$active/modules/" || exit 1
 }

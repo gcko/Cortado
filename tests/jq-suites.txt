@@ -40,6 +40,7 @@ test_git_cache.sh
 test_symlink.sh
 
 # The installer and update check parse JSON with jq
+test_cortado_lifecycle.sh
 test_install_archive_update.sh
 test_install_command.sh
 test_install_settings.sh
