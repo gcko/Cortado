@@ -2,7 +2,34 @@
 
 All notable changes to Cortado, newest first.
 
-Cortado is a fork of [Barista](https://github.com/pstuart/Barista) by Patrick D. Stuart. The versions below, up to 1.8.0, are Barista releases. Cortado's own releases will be added above them.
+Cortado is a fork of [Barista](https://github.com/pstuart/Barista) by Patrick D. Stuart. 2.0.0 is Cortado's first release of its own. The versions from 1.8.0 down are Barista releases.
+
+## 2.0.0
+
+Barista becomes Cortado: a new name, a new home at gcko/Cortado, and the Apache 2.0 license. This release also changes how config files are read, so check the breaking changes before you upgrade.
+
+### Breaking changes
+
+- Barista is renamed Cortado (#1). It installs to `~/.claude/cortado/` and reads `cortado.conf`. Your Barista settings carry over the first time it runs: see [Migrating from Barista](docs/migrating-from-barista.md).
+- Config files are read as data and never run (#96). Cortado skips a line that runs a command or expands a variable, and the statusline shows `Config partly read`. `cortado config --migrate --dry-run` lists those lines. Setting `CORTADO_CONF_ALLOW_BASH=1` in Claude Code's environment keeps the old behaviour for your user config for now: see [Upgrading from a config that runs Bash](docs/configuration.md#upgrading-from-a-config-that-runs-bash).
+- Cortado refuses a config file it can't prove is yours (#68, #103). A file that others can write, or that sits in a directory others can write, is skipped, and the statusline starts with `Config refused`. `cortado config --show` says which file and why.
+- A project's `.cortado.conf` can only change display settings and turn modules off (#39).
+- Cortado supports macOS and Linux, including WSL. On other platforms the statusline reads `cortado: unsupported platform` (#84).
+
+### New
+
+- Rate limits come from the data Claude Code sends, so they need no credential (#10).
+- Shows how much of your spend limit is used, when Claude Code sends one (#67).
+- A reading Cortado doesn't have shows `--`, never a stale, dropped or made-up value. A cached rate-limit reading that is out of date shows its age (#45, #52, #60, #66, #100).
+- A custom module is one file in `cortado-modules/`: see [Writing a custom module](docs/custom-modules.md) (#71).
+- `cortado config --set` and the menu change only the settings you changed, and keep everything else in the file (#72, #103).
+
+### Fixes and speed
+
+- Each render parses the payload once and runs slow network and system probes in the background, so a slow probe never freezes the line (#50, #61, #69, #102).
+- `./install.sh --update` checks the release archive against its checksum, can't hang, and keeps your config if it is interrupted or runs twice at once (#62, #101).
+- Two sessions at once never garble each other's cache or temp files (#40), and an install path with a space works (#41).
+- An update check that fails says so, instead of reporting that you have the latest version (#43).
 
 ## 1.8.0
 
