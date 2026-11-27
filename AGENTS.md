@@ -377,7 +377,7 @@ The installer (`install.sh`) provides:
 - Multiple presets (minimal, developer, etc.)
 - Auto-update checking from GitHub
 - Backup/restore of previous statusline
-- Copies `cortado.sh`, `VERSION`, `modules/`, and `lib/` (required for `cortado config`)
+- Copies `cortado.sh`, `VERSION`, `modules/`, `lib/` (required for `cortado config` and `cortado setup`) and `install.sh` (which `cortado update` and `cortado uninstall` run)
 
 `./install.sh --check-update`, `./install.sh --check`, and `./install.sh --update` exit with status 1 and print `Could not determine the latest version` if they cannot find a release.
 

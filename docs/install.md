@@ -38,11 +38,23 @@ It installs Cortado in `$CLAUDE_CONFIG_DIR/cortado/` (usually `~/.claude/cortado
 
 ### The `cortado` command
 
-Every install (interactive, `--defaults`, `--minimal` or `--force`) also creates `~/.local/bin/cortado`, a symbolic link to the installed `cortado.sh`, so `cortado config`, `cortado version` and `cortado help` work from any terminal. The installer creates `~/.local/bin` if it is missing.
+Every install (interactive, `--defaults`, `--minimal` or `--force`) also creates `~/.local/bin/cortado`, a symbolic link to the installed `cortado.sh`, so `cortado config`, `cortado setup`, `cortado update`, `cortado uninstall`, `cortado version` and `cortado help` work from any terminal. The installer creates `~/.local/bin` if it is missing.
 
 - If `~/.local/bin` is not on your `PATH`, the installer says so and prints the line to add: `export PATH="$HOME/.local/bin:$PATH"`, in `~/.zshrc` for zsh, or in `~/.bashrc` for bash (`~/.bash_profile` on macOS). Open a new terminal afterwards.
 - The installer never replaces a `cortado` it did not make. A file, a directory, or a link to anything other than this install's `cortado.sh` is left as it is, and the installer says so and carries on. Running the installer again leaves its own link in place.
 - `cortado` runs with the same settings as the statusline. If you set `CLAUDE_CONFIG_DIR` for Claude Code, set it in your shell too.
+
+### Pointing Claude Code at Cortado: `cortado setup`
+
+`cortado setup` sets `statusLine` in `$CLAUDE_CONFIG_DIR/settings.json` (usually `~/.claude/settings.json`) to the copy of Cortado it runs from. From a clone, run `./cortado.sh setup`.
+
+- It changes only `statusLine` and keeps every other setting. A missing `settings.json` is created.
+- It saves the `statusLine` it replaces where the installer does, so `cortado uninstall` can restore it. If a saved one is already there, it keeps that one: the statusline you had before Cortado.
+- Running it again when Claude Code already runs this copy changes nothing.
+- It refuses a `settings.json` that is not one JSON object (or not a regular file), says why, and changes nothing.
+- From a Homebrew install it writes the stable `opt` path (for example `/opt/homebrew/opt/cortado/...`), never the versioned `Cellar` path that `brew upgrade` removes. If the `opt` link does not lead to this copy, it changes nothing and says so.
+
+Restart Claude Code to see the change.
 
 ## Installer options
 
@@ -65,11 +77,18 @@ Every install (interactive, `--defaults`, `--minimal` or `--force`) also creates
 ./install.sh --help          # Show all options
 ```
 
-The update options work for a source install (a git clone). Homebrew does not ship them.
+The update options work for a source install (a git clone) and for the installed copy. Homebrew does not ship them.
 
 ## Updating
 
-`./install.sh --check-update` and `./install.sh --update` use the latest published [release](https://github.com/gcko/Cortado/releases) on GitHub, not the `main` branch. The statusline's `update` module checks the same repository. The installer also checks for a newer release each time you run it, unless you pass `--skip-update-check`.
+```bash
+cortado update               # from any terminal
+./install.sh --update        # from the clone
+```
+
+`cortado update` runs the installed copy's own `install.sh --update`, so it needs no clone. It accepts `--no-color` and `--no-emoji`. On a Homebrew install it changes nothing and says to run `brew upgrade cortado`. A copy installed before `cortado update` existed has no `install.sh`; it says so, and one `./install.sh --update` from the clone adds it.
+
+`./install.sh --check-update`, `./install.sh --update` and `cortado update` use the latest published [release](https://github.com/gcko/Cortado/releases) on GitHub, not the `main` branch. The statusline's `update` module checks the same repository. The installer also checks for a newer release each time you run it, unless you pass `--skip-update-check`.
 
 - If the installer cannot find a release, these commands exit with status 1 and print `Could not determine the latest version`.
 - The installer refuses to `--update` a Homebrew Cellar or opt prefix.
@@ -77,7 +96,7 @@ The update options work for a source install (a git clone). Homebrew does not sh
 
 ### The installed copy
 
-When `settings.json` runs the installed copy at `~/.claude/cortado/cortado.sh`, `--update` refreshes that copy too:
+`cortado update` always replaces the installed copy this way. From the clone, when `settings.json` runs the installed copy at `~/.claude/cortado/cortado.sh`, `--update` refreshes that copy too:
 
 - It builds the new copy beside the old one, carries over your `cortado.conf` and any other files you added, then swaps the two.
 - If a step fails, or Ctrl-C, TERM or HUP interrupts the update, the old copy goes back in place. If it can't go back, the installer leaves it unchanged and prints where it is.
@@ -105,7 +124,7 @@ The next update clears a lock left by an installer that is no longer running. Th
    chmod +x "$CLAUDE_DIR/cortado/cortado.sh"
    ```
 
-2. Point Claude Code at it. Edit `settings.json` in the same directory:
+2. Point Claude Code at it. Run `"$CLAUDE_DIR/cortado/cortado.sh" setup`, or edit `settings.json` in the same directory:
 
    ```json
    {
@@ -128,7 +147,8 @@ The next update clears a lock left by an installer that is no longer running. Th
 ## Uninstall
 
 ```bash
-./install.sh --uninstall
+cortado uninstall            # from any terminal
+./install.sh --uninstall     # from the clone
 ```
 
-The installer offers to restore the statusline you had before, if it backed one up. It removes `~/.local/bin/cortado` only when it is a link to this install's `cortado.sh`, and leaves `~/.local/bin` and everything else in it.
+`cortado uninstall` runs the installed copy's `install.sh --uninstall`. The installer offers to restore the statusline you had before, if it backed one up. It removes `~/.local/bin/cortado` only when it is a link to this install's `cortado.sh`, and leaves `~/.local/bin` and everything else in it.

@@ -96,6 +96,12 @@ _installer_lib_missing() {
     _installer_lib_missing "$SCRIPT_DIR/lib/module-registry.sh"
     return 1 2>/dev/null || exit 1
 }
+# Exits when run, returns when sourced (return fails outside a sourced file).
+# shellcheck source=lib/statusline-settings.sh disable=SC2317
+{ [ -r "$SCRIPT_DIR/lib/statusline-settings.sh" ] && . "$SCRIPT_DIR/lib/statusline-settings.sh"; } || {
+    _installer_lib_missing "$SCRIPT_DIR/lib/statusline-settings.sh"
+    return 1 2>/dev/null || exit 1
+}
 
 CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 case "$CLAUDE_DIR" in
@@ -745,7 +751,7 @@ _publish_managed_runtime() {
         for entry in "$dest"/* "$dest"/.[!.]* "$dest"/..?*; do
             [ -e "$entry" ] || [ -L "$entry" ] || continue
             case "${entry##*/}" in
-                cortado.sh|VERSION|modules|lib) continue ;;
+                cortado.sh|install.sh|VERSION|modules|lib) continue ;;
             esac
             if ! cp -pR "$entry" "$_UPD_RT_STAGE/"; then
                 print_error "Could not carry ${entry##*/} over to the staged runtime."
@@ -828,6 +834,10 @@ _refresh_managed_runtime() {
         for lib_file in "${tree:-$source_dir}"/lib/*.sh; do
             [ -f "$dest/lib/${lib_file##*/}" ] || { runtime_complete=false; break; }
         done
+        # So is the installer that `cortado update` runs.
+        if [ -f "${tree:-$source_dir}/install.sh" ] && [ ! -f "$dest/install.sh" ]; then
+            runtime_complete=false
+        fi
         [ "$runtime_complete" = true ] && return 0
     fi
 
@@ -851,6 +861,40 @@ _refresh_managed_runtime() {
             rc=0
         else
             print_error "Could not refresh the installed Cortado runtime at $dest."
+        fi
+    fi
+    _update_end
+    return "$rc"
+}
+
+# True when this installer runs from the runtime it installs ($CLAUDE_DIR/cortado),
+# as `cortado update` runs it. Sets REPLY to that runtime's physical path.
+_installer_is_runtime() {
+    local source_dir parent
+    source_dir=$(CDPATH='' cd -- "$SCRIPT_DIR" 2>/dev/null && pwd -P) || return 1
+    parent=$(CDPATH='' cd -- "$CLAUDE_DIR" 2>/dev/null && pwd -P) || return 1
+    [ "$source_dir" = "${parent%/}/cortado" ] || return 1
+    REPLY="$source_dir"
+}
+
+# Replace the installed runtime at $2, which this installer runs from, with
+# verified release $1: staged, locked and swapped as a refresh is, carrying
+# over cortado.conf and anything else the release does not own.
+_update_installed_runtime() {
+    local tag="$1" dest="$2" rc=1
+    _update_begin
+    if ! _update_mktemp_dir _UPD_RUNTIME_TMP "${TMPDIR:-/tmp}/cortado-update.XXXXXX"; then
+        _update_take_signal
+        print_error "Could not create a temporary directory for the update."
+        _update_end
+        return 1
+    fi
+    _update_take_signal
+    if _stage_release_tree "$tag" "$_UPD_RUNTIME_TMP"; then
+        if _publish_managed_runtime "$REPLY" "$dest" "${tag#v}"; then
+            rc=0
+        else
+            print_error "Could not update the installed Cortado runtime at $dest."
         fi
     fi
     _update_end
@@ -911,7 +955,13 @@ do_update() {
         if _update_refreshes_runtime; then
             refresh=true
         fi
-        _publish_release_archive "$tag" "$refresh" || return 1
+        if _installer_is_runtime; then
+            # Run from the installed copy (cortado update): replace that copy
+            # with the verified release as a whole, never by copying over it.
+            _update_installed_runtime "$tag" "$REPLY" || return 1
+        else
+            _publish_release_archive "$tag" "$refresh" || return 1
+        fi
 
         print_success "Updated to version ${tag#v}"
         echo ""
@@ -1866,17 +1916,13 @@ backup_existing_statusline() {
     local snapshot="$1"
     print_info "Backing up existing statusline configuration..."
 
-    local timestamp=$(date +%Y%m%d_%H%M%S)
-    # Keep JSON backslashes literal even when Bash enables xpg_echo.
-    local manifest="{\"timestamp\": \"$timestamp\", \"files\": [], \"settings_statusline\": null}"
-
-    if [ -f "$SETTINGS_FILE" ]; then
-        local statusline_config=$(jq '.statusLine // null' "$SETTINGS_FILE" 2>/dev/null)
-        if [ "$statusline_config" != "null" ] && [ -n "$statusline_config" ]; then
-            manifest=$(printf '%s\n' "$manifest" | jq --argjson config "$statusline_config" '.settings_statusline = $config' 2>/dev/null) || return 1
-            print_success "Backed up statusLine config from settings.json"
-        fi
-    fi
+    local timestamp=$(date +%Y%m%d_%H%M%S) manifest status=0
+    manifest=$(statusline_backup_manifest "$SETTINGS_FILE" "$timestamp") || status=$?
+    case "$status" in
+        0) print_success "Backed up statusLine config from settings.json" ;;
+        1) ;;
+        *) return 1 ;;
+    esac
 
     if [ -d "$CORTADO_DIR" ]; then
         local backup_modular="$snapshot/cortado"
@@ -2167,7 +2213,7 @@ remove_cortado_command() {
     fi
 }
 
-# Copy runtime files (script, VERSION, modules, lib) into an install prefix.
+# Copy runtime files (script, install.sh, VERSION, modules, lib) into an install prefix.
 # Testable without writing settings.json.
 copy_runtime_files() {
     local src="${1:-$SCRIPT_DIR}"
@@ -2183,6 +2229,12 @@ copy_runtime_files() {
     chmod +x "$dest/cortado.sh" || return 1
     cp "$src/modules/"*.sh "$dest/modules/" || return 1
     cp "$src/lib/"*.sh "$dest/lib/" || return 1
+    # The installer rides along, so `cortado update` and `cortado uninstall`
+    # work from the installed copy without the clone.
+    if [ -f "$src/install.sh" ]; then
+        cp "$src/install.sh" "$dest/" || return 1
+        chmod +x "$dest/install.sh" || return 1
+    fi
     # VERSION goes last, so a partial copy never looks current.
     if [ -f "$src/VERSION" ]; then
         cp "$src/VERSION" "$dest/" || return 1
@@ -2237,49 +2289,15 @@ test_statusline_directory() (
     [ -n "$directory" ] && [ "$output" = "Dir: $directory" ]
 )
 
-write_statusline_settings() (
-    local command="$1" result="Created" stage_dir staged_settings
-    local input=()
-    if [ -f "$SETTINGS_FILE" ]; then
-        input=("$SETTINGS_FILE")
-        result="Updated"
-    elif [ -e "$SETTINGS_FILE" ] || [ -L "$SETTINGS_FILE" ]; then
-        print_error "Could not prepare settings.json: expected a regular file" >&2
+# Point settings.json at command $1 (lib/statusline-settings.sh does the work).
+write_statusline_settings() {
+    local message
+    if ! message=$(statusline_settings_write "$CLAUDE_DIR" "$1"); then
+        print_error "$message" >&2
         return 1
     fi
-
-    stage_dir=$(mktemp -d "$CLAUDE_DIR/.settings.XXXXXX") || {
-        print_error "Could not stage settings.json in $CLAUDE_DIR" >&2
-        return 1
-    }
-    trap 'rm -rf "$stage_dir"' EXIT
-    umask 077
-    staged_settings="$stage_dir/settings.json"
-
-    # With no settings file, jq reads the empty object from stdin.
-    if ! jq -s --arg command "$command" '
-        if length == 1 and (.[0] | type == "object") then
-            .[0] | .statusLine = {type: "command", command: $command}
-        else
-            error("expected one settings object")
-        end
-    ' "${input[@]}" <<< '{}' > "$staged_settings" 2>/dev/null; then
-        print_error "Could not prepare settings.json: expected one readable JSON object" >&2
-        return 1
-    fi
-    if ! jq -es --arg command "$command" '
-        length == 1 and (.[0].statusLine == {type: "command", command: $command})
-    ' "$staged_settings" >/dev/null 2>&1; then
-        print_error "Could not verify statusLine in staged settings.json" >&2
-        return 1
-    fi
-    # Use the parent as the destination so mv cannot move inside a settings.json directory.
-    if ! mv -f "$staged_settings" "$CLAUDE_DIR/"; then
-        print_error "Could not replace settings.json in $CLAUDE_DIR" >&2
-        return 1
-    fi
-    print_success "$result settings.json"
-)
+    print_success "$message settings.json"
+}
 
 # =============================================================================
 # MAIN INSTALLATION

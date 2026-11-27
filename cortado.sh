@@ -1305,6 +1305,22 @@ cortado_cli_dispatch() {
             cortado_config_main "$@"
             exit $?
             ;;
+        setup|update|uninstall)
+            if [ ! -f "$SCRIPT_DIR/lib/statusline-settings.sh" ]; then
+                echo "cortado: missing lib/statusline-settings.sh (incomplete install)." >&2
+                echo "Re-run ./install.sh from your Cortado checkout." >&2
+                exit 1
+            fi
+            # shellcheck source=lib/statusline-settings.sh
+            . "$SCRIPT_DIR/lib/statusline-settings.sh"
+            if [ "$1" = setup ]; then
+                shift
+                cortado_setup_main "$@"
+            else
+                cortado_installer_main "$@"
+            fi
+            exit $?
+            ;;
         version|--version|-v)
             if [ -f "$SCRIPT_DIR/VERSION" ]; then
                 tr -d '[:space:]' < "$SCRIPT_DIR/VERSION"
@@ -1319,12 +1335,15 @@ cortado_cli_dispatch() {
 Cortado — modular Claude Code statusline
 
 Usage:
-  cortado.sh                 # statusline (JSON on stdin; Claude Code default)
-  cortado.sh config […]      # post-install config TUI / CLI (see --help)
-  cortado.sh version         # print VERSION
-  cortado.sh help            # this message
+  cortado                    # statusline (JSON on stdin; Claude Code runs this)
+  cortado config […]         # change settings in a menu, or from the command line (see --help)
+  cortado setup              # point Claude Code's statusLine at this copy
+  cortado update             # update this copy to the latest verified release
+  cortado uninstall          # remove Cortado and restore your previous statusLine
+  cortado version            # print the version
+  cortado help               # this message
 
-Install / update: ./install.sh --help
+From a clone, run ./cortado.sh in place of cortado. Installer options: ./install.sh --help
 Source: https://github.com/gcko/Cortado (a fork of pstuart/Barista)
 EOF
             exit 0
