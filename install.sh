@@ -2180,6 +2180,18 @@ install_cortado_command() {
     printf '    bash: add to %s:  %s\n' "$bash_rc" 'export PATH="$HOME/.local/bin:$PATH"'
 }
 
+# An update leaves the installed copy with the command a fresh install makes.
+# Only the copy settings.json runs from this config directory gets one, and
+# only when it is a directory whose cortado.sh runs: no install, another
+# statusLine, or a copy that is a link (into Homebrew, or to a clone) gets none.
+_update_cortado_command() {
+    _managed_runtime_dest || return 0
+    _is_homebrew_prefix "$REPLY" && return 0
+    _cortado_command_target || return 0
+    [ -f "$REPLY" ] && [ -x "$REPLY" ] || return 0
+    install_cortado_command "$REPLY"
+}
+
 # Remove ~/.local/bin/cortado only when it is this installer's own link.
 remove_cortado_command() {
     local cmd
@@ -2827,14 +2839,21 @@ main() {
             print_warning "Could not determine the latest version"
             exit 1
         else
-            local ver=$(get_local_version)
+            local ver=$(get_local_version) current=false
             if [ "$INSTALL_MODE" = "update" ]; then
                 if [ "$ver" = "${REMOTE_TAG#v}" ] && [ -f "$SCRIPT_DIR/VERSION" ] &&
                     ! _is_homebrew_prefix "$SCRIPT_DIR"; then
                     _refresh_managed_runtime "$REMOTE_TAG" || exit 1
+                    current=true
                 fi
                 if [ "$_UPD_REFRESHED" != true ]; then
                     print_success "Already up to date ($ver)"
+                fi
+                # Every update restarts the release's installer, which lands
+                # here, so this is where an update adds the cortado command,
+                # even one an older installer performed.
+                if [ "$current" = true ]; then
+                    _update_cortado_command
                 fi
             else
                 print_success "You have the latest version ($ver)"

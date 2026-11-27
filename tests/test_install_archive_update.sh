@@ -4,6 +4,9 @@
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TEST_BASE=$(mktemp -d) || exit 1
 trap 'rm -rf "$TEST_BASE"' EXIT
+# An update can create ~/.local/bin/cortado, so HOME is a sandbox too.
+export HOME="$TEST_BASE/home"
+mkdir -p "$HOME" || exit 1
 # shellcheck source=tests/lib/assert.sh
 . "$REPO_ROOT/tests/lib/assert.sh" indented
 

@@ -38,7 +38,7 @@ It installs Cortado in `$CLAUDE_CONFIG_DIR/cortado/` (usually `~/.claude/cortado
 
 ### The `cortado` command
 
-Every install (interactive, `--defaults`, `--minimal` or `--force`) also creates `~/.local/bin/cortado`, a symbolic link to the installed `cortado.sh`, so `cortado config`, `cortado setup`, `cortado update`, `cortado uninstall`, `cortado doctor`, `cortado version` and `cortado help` work from any terminal. The installer creates `~/.local/bin` if it is missing.
+Every install (interactive, `--defaults`, `--minimal` or `--force`) also creates `~/.local/bin/cortado`, a symbolic link to the installed `cortado.sh`, so `cortado config`, `cortado setup`, `cortado update`, `cortado uninstall`, `cortado doctor`, `cortado version` and `cortado help` work from any terminal. The installer creates `~/.local/bin` if it is missing. `./install.sh --update` and `cortado update` create the command too when it is missing, so an install made before the command existed gets it from its next update (see [Updating](#updating)).
 
 - If `~/.local/bin` is not on your `PATH`, the installer says so and prints the line to add: `export PATH="$HOME/.local/bin:$PATH"`, in `~/.zshrc` for zsh, or in `~/.bashrc` for bash (`~/.bash_profile` on macOS). Open a new terminal afterwards.
 - The installer never replaces a `cortado` it did not make. A file, a directory, or a link to anything other than this install's `cortado.sh` is left as it is, and the installer says so and carries on. Running the installer again leaves its own link in place.
@@ -96,9 +96,18 @@ cortado update               # from any terminal
 - The installer refuses to `--update` a Homebrew Cellar or opt prefix.
 - When it updates by downloading an archive, it checks `Cortado-source.zip` against the release's `SHA256SUMS` file before replacing any files. Each download has 5 seconds to connect and 60 seconds to finish. A timeout, a missing checksum or a mismatch stops the update.
 
+### The `cortado` command after an update
+
+`./install.sh --update` and `cortado update` also create `~/.local/bin/cortado` when it is missing, with the same rules as an install (see [The `cortado` command](#the-cortado-command)): a `cortado` the installer did not make is left as it is, and the `PATH` line is printed when `~/.local/bin` is not on your `PATH`. A link already in place is left unchanged. This also happens when you are already on the latest release.
+
+- The command is added once the installed copy is on the release, so an update that fails adds none.
+- Only the installed copy that `settings.json` runs, at `cortado/cortado.sh` in your Claude config directory (usually `~/.claude`), gets the command. With no install, a statusline that runs something else, or an installed copy that is a symbolic link, the update creates nothing.
+- A Homebrew install gets none: Homebrew provides its own `cortado`.
+- `--check-update` creates nothing. If you accept the update it offers, run `./install.sh --update` once more to add the command.
+
 ### The installed copy
 
-`cortado update` always replaces the installed copy this way. From the clone, when `settings.json` runs the installed copy at `~/.claude/cortado/cortado.sh`, `--update` refreshes that copy too:
+`cortado update` always replaces the installed copy this way. From the clone, when `settings.json` runs the installed copy at `cortado/cortado.sh` in your Claude config directory, `--update` refreshes that copy too:
 
 - It builds the new copy beside the old one, carries over your `cortado.conf` and any other files you added, then swaps the two.
 - If a step fails, or Ctrl-C, TERM or HUP interrupts the update, the old copy goes back in place. If it can't go back, the installer leaves it unchanged and prints where it is.

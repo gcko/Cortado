@@ -38,12 +38,13 @@ new_case() {
 }
 
 # run <script> <args...>: run a cortado script in the sandbox; stdin from $STDIN_TEXT.
+# RUN_PATH replaces the PATH and RUN_FIXTURE the release the fake curl serves.
 run() {
     local script="$1"
     shift
     out=$(printf '%b' "${STDIN_TEXT:-}" | HOME="$home" CLAUDE_CONFIG_DIR="$cfg" CACHE_DIR="$cfg/cortado-cache" \
-        TMPDIR="$root" PATH="$FAKE_BIN:$BASE_PATH" CURL_CALLS="$root/curl-calls" FIXTURE="$TEST_BASE/release" \
-        /bin/bash "$script" "$@" 2>&1)
+        TMPDIR="$root" PATH="${RUN_PATH:-$FAKE_BIN:$BASE_PATH}" CURL_CALLS="$root/curl-calls" \
+        FIXTURE="${RUN_FIXTURE:-$TEST_BASE/release}" /bin/bash "$script" "$@" 2>&1)
     status=$?
 }
 
@@ -54,6 +55,7 @@ install_sandbox() {
 }
 
 others() { jq -cS 'del(.statusLine)' "$1" 2>/dev/null; }
+link_text() { if [ -L "$1" ]; then readlink "$1"; else printf 'not a link'; fi; }
 statusline() { jq -cS '.statusLine' "$1" 2>/dev/null; }
 # tree_state <dir>: every path under <dir>, with link text and file checksums.
 # Portable: GNU diff -r follows links and fails on dangling or looping ones.
@@ -231,6 +233,7 @@ assert_contains 'Homebrew update says to run brew upgrade' 'brew upgrade cortado
 assert_empty 'Homebrew update makes no request' "$(cat "$root/curl-calls")"
 assert_rc 'Homebrew update changes nothing in the prefix' 0 diff -r "$root/brew.before" "$brew"
 assert_rc 'Homebrew update creates no config directory' 1 test -e "$cfg"
+assert_rc 'Homebrew update creates no cortado command' 1 test -e "$home/.local"
 
 # --- a fake verified release ------------------------------------------------------
 release="$TEST_BASE/release"
@@ -268,8 +271,13 @@ printf '# retired\n' > "$runtime/modules/zz-retired.sh"
 printf 'mine\n' > "$runtime/my-notes.txt"
 cp "$runtime/cortado.conf" "$root/conf.before"
 cp "$settings" "$root/settings.before"
+assert_rc 'the command exists before the update' 0 test -L "$cmd"
+link_before="$(ls -id "$cmd" | awk '{print $1}') $(link_text "$cmd")"
 run "$cmd" update --no-color --no-emoji
 assert_eq 'cortado update exits 0' 0 "$status"
+assert_eq 'cortado update leaves a cortado command already in place unchanged' "$link_before" \
+    "$(ls -id "$cmd" | awk '{print $1}') $(link_text "$cmd")"
+assert_contains 'cortado update says the command is in place' "The cortado command is in place: $cmd" "$out"
 assert_contains 'cortado update reports the release' 'Updated to version 99.0.0' "$out"
 assert_contains 'cortado update restarts the new installer, which is current' 'Already up to date (99.0.0)' "$out"
 assert_contains 'cortado update fetches the checksum for the tag' '/releases/download/v99.0.0/SHA256SUMS' "$(cat "$root/curl-calls")"
@@ -332,6 +340,142 @@ run "$cmd" update --uninstall
 assert_eq 'update refuses another installer option' 2 "$status"
 assert_empty 'a refused update option makes no request' "$(cat "$root/curl-calls")"
 assert_rc 'a refused update option keeps the installed copy' 0 test -f "$runtime/cortado.sh"
+
+echo "=== an update creates the cortado command ==="
+# The state a 2.0.0 install is in: an installed copy, and no ~/.local/bin/cortado.
+# no_command: install the current copy, then remove the command it made.
+no_command() {
+    new_case
+    install_sandbox
+    [ "$install_status" -eq 0 ] || exit 1
+    rm -f "$cmd"
+}
+# shellcheck disable=SC2016 # The installer prints this line unexpanded.
+PATH_LINE='export PATH="$HOME/.local/bin:$PATH"'
+# A clone (no .git) of the release: current, so its --update only checks and refreshes.
+clone="$TEST_BASE/clone"
+mkdir -p "$clone" && cp -R "$package/." "$clone/" && rm -rf "$clone/.git" || exit 1
+
+# --- cortado update, from a copy without the command -------------------------------
+no_command
+run "$runtime/cortado.sh" update --no-color --no-emoji
+assert_eq 'cortado update without the command exits 0' 0 "$status"
+assert_contains 'cortado update without the command updates' 'Updated to version 99.0.0' "$out"
+assert_eq 'cortado update creates the command, linked to the installed copy' "$runtime/cortado.sh" "$(link_text "$cmd")"
+assert_contains 'cortado update says it created the command' "Created the cortado command: $cmd" "$out"
+assert_contains 'off the PATH, cortado update says ~/.local/bin is not on it' "$home/.local/bin is not on your PATH" "$out"
+assert_contains 'off the PATH, cortado update prints the line to add' "zsh:  add to ~/.zshrc:   $PATH_LINE" "$out"
+assert_eq 'the command runs the updated copy' 99.0.0 \
+    "$(HOME="$home" CLAUDE_CONFIG_DIR="$cfg" CACHE_DIR="$cfg/cortado-cache" PATH="$BASE_PATH" "$cmd" version 2>&1)"
+assert_match 'the command is created after the update, by the restarted installer' \
+    'Updated to version 99.0.0.*Already up to date \(99.0.0\).*Created the cortado command' "$(printf '%s' "$out" | tr '\n' ' ')"
+
+# --- a clone's --update, already current (first run with ~/.local/bin on PATH) -----
+# The installed copy is older, so the current installer refreshes it first.
+no_command
+RUN_PATH="$FAKE_BIN:$home/.local/bin:$BASE_PATH" run "$clone/install.sh" --update --no-color --no-emoji
+assert_eq 'a current clone --update without the command exits 0' 0 "$status"
+assert_contains 'a current clone --update refreshes the installed copy' "Refreshed the installed Cortado runtime" "$out"
+assert_eq 'a current clone --update creates the command for the installed copy' "$runtime/cortado.sh" "$(link_text "$cmd")"
+assert_not_contains 'on the PATH, the update prints no PATH advice' 'is not on your PATH' "$out"
+# Run again, off the PATH this time: already current and already in place.
+assert_rc 'the command exists before the second --update' 0 test -L "$cmd"
+link_before="$(ls -id "$cmd" | awk '{print $1}') $(link_text "$cmd")"
+run "$clone/install.sh" --update --no-color --no-emoji
+assert_eq 'a second current --update exits 0' 0 "$status"
+assert_contains 'a second current --update is already up to date' 'Already up to date (99.0.0)' "$out"
+assert_eq 'a second current --update leaves the command unchanged' "$link_before" \
+    "$(ls -id "$cmd" | awk '{print $1}') $(link_text "$cmd")"
+
+# --- a cortado the installer did not make is never replaced ----------------------
+no_command
+printf '#!/bin/sh\necho mine\n' > "$cmd" && chmod 700 "$cmd"
+cp "$cmd" "$root/cmd.before"
+run "$runtime/cortado.sh" update --no-color --no-emoji
+assert_eq 'cortado update over a foreign cortado exits 0' 0 "$status"
+assert_rc 'cortado update leaves a foreign cortado a file' 1 test -L "$cmd"
+assert_rc 'cortado update leaves a foreign cortado byte for byte' 0 cmp -s "$root/cmd.before" "$cmd"
+assert_contains 'cortado update says it left a foreign cortado' "Left $cmd as it is: it was not made by this installer" "$out"
+
+# --- a failed update leaves no command behind --------------------------------------
+bad_release="$TEST_BASE/bad-release"
+mkdir -p "$bad_release" && cp "$release/Cortado-source.zip" "$bad_release/" || exit 1
+printf '%064d  Cortado-source.zip\n' 0 > "$bad_release/SHA256SUMS"
+no_command
+RUN_FIXTURE="$bad_release" run "$runtime/cortado.sh" update --no-color --no-emoji
+assert_eq 'a cortado update that fails verification exits 1' 1 "$status"
+assert_contains 'a failed cortado update says why' 'Checksum mismatch' "$out"
+assert_rc 'a failed cortado update creates no command' 1 test -e "$cmd" -o -L "$cmd"
+# A current installer whose refresh of the older installed copy fails.
+no_command
+RUN_FIXTURE="$bad_release" run "$clone/install.sh" --update --no-color --no-emoji
+assert_eq 'a current --update whose refresh fails exits 1' 1 "$status"
+assert_rc 'a current --update whose refresh fails creates no command' 1 test -e "$cmd" -o -L "$cmd"
+
+# --- only an installed copy that Claude Code runs, and that runs, gets a command ---
+# An installed copy whose cortado.sh cannot run.
+no_command
+cp -R "$package/install.sh" "$package/lib" "$package/modules" "$runtime/" && printf '99.0.0\n' > "$runtime/VERSION" || exit 1
+chmod 600 "$runtime/cortado.sh"
+run "$clone/install.sh" --update --no-color --no-emoji
+assert_eq 'a current --update over a copy that cannot run exits 0' 0 "$status"
+assert_rc 'a current --update links no command to a cortado.sh that cannot run' 1 test -e "$cmd" -o -L "$cmd"
+# A statusLine that runs something else: no installed copy to link.
+no_command
+printf '%s\n' '{"statusLine":{"type":"command","command":"echo mine"}}' > "$settings"
+run "$clone/install.sh" --update --no-color --no-emoji
+assert_eq 'a current --update with another statusLine exits 0' 0 "$status"
+assert_rc 'a current --update with another statusLine creates no command' 1 test -e "$cmd" -o -L "$cmd"
+# A clone ahead of the release leaves the installed copy, and the command, alone.
+no_command
+printf '100.0.0\n' > "$clone/VERSION"
+run "$clone/install.sh" --update --no-color --no-emoji
+assert_eq 'a clone ahead of the release exits 0' 0 "$status"
+assert_rc 'a clone ahead of the release creates no command' 1 test -e "$cmd" -o -L "$cmd"
+printf '99.0.0\n' > "$clone/VERSION"
+# --check-update only checks.
+no_command
+run "$clone/install.sh" --check-update --no-color --no-emoji
+assert_eq 'a current --check-update exits 0' 0 "$status"
+assert_rc 'a current --check-update creates no command' 1 test -e "$cmd" -o -L "$cmd"
+
+# --- Homebrew owns its own cortado: an update there creates none ------------------
+# A Homebrew keg's installer, current, beside an installed copy Claude Code runs.
+no_command
+brew_layout 9.9.9
+cp "$REPO_ROOT/install.sh" "$keg/libexec/" && printf '99.0.0\n' > "$keg/libexec/VERSION" || exit 1
+run "$keg/libexec/install.sh" --update --no-color --no-emoji
+assert_eq 'a current Homebrew installer --update exits 0' 0 "$status"
+assert_contains 'a current Homebrew installer --update is up to date' 'Already up to date (99.0.0)' "$out"
+assert_rc 'a Homebrew installer --update creates no command' 1 test -e "$cmd" -o -L "$cmd"
+# Claude Code runs the Homebrew copy through the opt link.
+new_case
+brew_layout 9.9.9
+mkdir -p "$cfg" || exit 1
+jq -n --arg c "$(quoted "$brew/opt/cortado/libexec/cortado.sh")" '{statusLine:{type:"command",command:$c}}' > "$settings"
+run "$clone/install.sh" --update --no-color --no-emoji
+assert_eq 'a current --update for a Homebrew statusLine exits 0' 0 "$status"
+assert_rc 'a current --update for a Homebrew statusLine creates no command' 1 test -e "$home/.local"
+# The installed copy is a link into Homebrew's keg.
+new_case
+brew_layout 9.9.9
+mkdir -p "$cfg" && ln -s "$brew/opt/cortado/libexec" "$runtime" || exit 1
+jq -n --arg c "$(quoted "$runtime/cortado.sh")" '{statusLine:{type:"command",command:$c}}' > "$settings"
+run "$clone/install.sh" --update --no-color --no-emoji
+assert_eq 'a current --update over a copy linked into Homebrew exits 0' 0 "$status"
+assert_rc 'a current --update over a copy linked into Homebrew creates no command' 1 test -e "$home/.local"
+# A config directory inside a Homebrew prefix: the installer never refreshes the
+# copy there, and links no command to it either.
+new_case
+cfg="$root/brew/opt/cortado/claude config"
+runtime="$cfg/cortado"
+settings="$cfg/settings.json"
+install_sandbox
+[ "$install_status" -eq 0 ] || exit 1
+rm -f "$cmd"
+run "$clone/install.sh" --update --no-color --no-emoji
+assert_eq 'a current --update for a config directory in a Homebrew prefix exits 0' 0 "$status"
+assert_rc 'a current --update for a config directory in a Homebrew prefix creates no command' 1 test -e "$cmd" -o -L "$cmd"
 
 echo "=== cortado uninstall ==="
 new_case
@@ -444,6 +588,7 @@ mkdir -p "$root/src/cortado" "$cfg" && cp -R "$package/." "$root/src/cortado/" &
 run_cfg "$cfg" "$root/src/cortado/cortado.sh" update --no-color --no-emoji
 assert_eq 'a release copy named cortado updates against CLAUDE_CONFIG_DIR' 0 "$status"
 assert_contains 'a release copy named cortado checks the release' 'Already up to date (99.0.0)' "$out"
+assert_rc 'an update with nothing installed creates no cortado command' 1 test -e "$home/.local"
 
 # 2. setup never saves a Cortado command as the statusLine to restore.
 new_case
