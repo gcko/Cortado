@@ -18,14 +18,49 @@
 # Remember which settings were inherited before loading trusted defaults.
 CORTADO_STARTUP_ENV=$(compgen -e)
 
-# Determine script directory (handles symlinks)
+# Print the directory of the file that link $1 finally names, plus a "." that
+# keeps any trailing newline. Each relative target is read against its link's
+# physical directory, as the kernel reads it. Fails for a link it cannot follow.
+cortado_link_dir() (
+    local path="$1" target hops=0
+    while :; do
+        case "$path" in */*) ;; *) path="./$path" ;; esac
+        CDPATH='' builtin cd -P -- "${path%/*}/" || return 1
+        path="${PWD%/}/${path##*/}"
+        [ -L "$path" ] || break
+        [ "$hops" -lt 40 ] || return 1
+        hops=$((hops + 1))
+        # Keep a trailing newline in the target name.
+        target=$(command readlink -n "$path" && printf .) || return 1
+        target="${target%.}"
+        case "$target" in
+            /*) path="$target" ;;
+            *) path="${PWD%/}/$target" ;;
+        esac
+    done
+    [ -f "$path" ] || return 1
+    printf '%s.' "$PWD"
+)
+
+# Determine the script directory. Everything sourced below comes from it.
 script_path="${BASH_SOURCE[0]:-$0}"
-case "$script_path" in
-    */../*|*/./*|*//*) SCRIPT_DIR="$(CDPATH='' cd -- "${script_path%/*}/" && pwd)" ;;
-    /*) SCRIPT_DIR="${script_path%/*}"; SCRIPT_DIR="${SCRIPT_DIR:-/}" ;;
-    */*) SCRIPT_DIR="$(CDPATH='' cd -- "${script_path%/*}/" && pwd)" ;;
-    *) SCRIPT_DIR="$PWD" ;;
-esac
+if [ -L "$script_path" ]; then
+    # Started through a link (a cortado command on the PATH). A link that cannot
+    # be followed stops here, so nothing beside the link or in the working
+    # directory is ever loaded in its place.
+    SCRIPT_DIR=$(cortado_link_dir "$script_path") || {
+        printf 'cortado: could not follow the link to cortado.sh: %s\n' "$script_path" >&2
+        exit 1
+    }
+    SCRIPT_DIR="${SCRIPT_DIR%.}"
+else
+    case "$script_path" in
+        */../*|*/./*|*//*) SCRIPT_DIR="$(CDPATH='' cd -- "${script_path%/*}/" && pwd)" ;;
+        /*) SCRIPT_DIR="${script_path%/*}"; SCRIPT_DIR="${SCRIPT_DIR:-/}" ;;
+        */*) SCRIPT_DIR="$(CDPATH='' cd -- "${script_path%/*}/" && pwd)" ;;
+        *) SCRIPT_DIR="$PWD" ;;
+    esac
+fi
 MODULES_DIR="$SCRIPT_DIR/modules"
 CONFIG_FILE="$SCRIPT_DIR/cortado.conf"
 

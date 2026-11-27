@@ -8,6 +8,9 @@
 # Usage:
 #   ./install.sh                Install with interactive module selection
 #   ./install.sh --uninstall    Uninstall and restore previous statusline
+#
+# Installing also links ~/.local/bin/cortado to the installed runtime, and
+# --uninstall removes that link (only that link, and only when it made it).
 #   ./install.sh --force        Install with all defaults (no prompts)
 #   ./install.sh --defaults     Install with core modules enabled
 #   ./install.sh --no-emoji     Disable emojis in installer and config
@@ -1978,6 +1981,7 @@ do_uninstall() {
 
         case $choice in
             1)
+                remove_cortado_command
                 [ -d "$CORTADO_DIR" ] && rm -rf "$CORTADO_DIR" && print_success "Removed Cortado directory"
                 [ -f "$CLAUDE_DIR/cortado.sh" ] && rm "$CLAUDE_DIR/cortado.sh" && print_success "Removed cortado.sh"
 
@@ -1990,6 +1994,7 @@ do_uninstall() {
                 fi
                 ;;
             2)
+                remove_cortado_command
                 [ -d "$CORTADO_DIR" ] && rm -rf "$CORTADO_DIR" && print_success "Removed Cortado directory"
                 [ -f "$CLAUDE_DIR/cortado.sh" ] && rm "$CLAUDE_DIR/cortado.sh" && print_success "Removed cortado.sh"
 
@@ -2009,6 +2014,7 @@ do_uninstall() {
                 ;;
         esac
     else
+        remove_cortado_command
         [ -d "$CORTADO_DIR" ] && rm -rf "$CORTADO_DIR" && print_success "Removed Cortado directory"
         [ -f "$CLAUDE_DIR/cortado.sh" ] && rm "$CLAUDE_DIR/cortado.sh" && print_success "Removed cortado.sh"
 
@@ -2026,6 +2032,135 @@ do_uninstall() {
     echo ""
     print_success "Uninstall complete!"
     print_info "Restart Claude Code to apply changes"
+}
+
+# =============================================================================
+# THE CORTADO COMMAND
+# =============================================================================
+# The installer links ~/.local/bin/cortado to the installed runtime. A cortado
+# there is the installer's own only when it is a symbolic link whose text is
+# exactly this config directory's runtime path. Anything else (a file, a
+# directory, another tool's link, a link to another runtime or to the same one
+# spelled another way) was not made here, and is never replaced or removed.
+
+# Set REPLY to the runtime path the command links to: the same physical path
+# the installer writes into settings.json.
+_cortado_command_target() {
+    local dir
+    dir=$(CDPATH='' cd -- "$CLAUDE_DIR" 2>/dev/null && pwd -P) || return 1
+    REPLY="${dir%/}/cortado/cortado.sh"
+}
+
+# _cortado_command_is_ours <path> <target>
+_cortado_command_is_ours() {
+    local text
+    [ -L "$1" ] || return 1
+    # Keep a trailing newline in the link text, so it is compared exactly.
+    text=$(readlink -n "$1" && printf .) || return 1
+    [ "${text%.}" = "$2" ]
+}
+
+# True when an absolute PATH entry is directory $1, however it is spelled.
+_cortado_command_on_path() {
+    local entry rest="${PATH:-}:"
+    while [ -n "$rest" ]; do
+        entry="${rest%%:*}"
+        rest="${rest#*:}"
+        case "$entry" in
+            /*) [ "$entry" -ef "$1" ] && return 0 ;;
+        esac
+    done
+    return 1
+}
+
+# Link ~/.local/bin/cortado to runtime $1. Never fails the install: anything
+# in the way is reported and left. Sets _CORTADO_COMMAND_ON_PATH=true when the
+# command is in place and runs by name.
+install_cortado_command() {
+    local target="$1" bin cmd linked=false bash_rc
+    _CORTADO_COMMAND_ON_PATH=false
+    case "${HOME:-}" in
+        /*) ;;
+        *)
+            print_warning "Could not create the cortado command: HOME is not an absolute path"
+            return 0
+            ;;
+    esac
+    bin="${HOME%/}/.local/bin"
+    cmd="$bin/cortado"
+    # A link to a directory is used as it is; never chmod an existing one.
+    if [ ! -d "$bin" ]; then
+        if [ -e "$bin" ] || [ -L "$bin" ]; then
+            print_warning "Could not create the cortado command: $bin is not a directory"
+            return 0
+        fi
+        if ! mkdir -p -- "$bin" 2>/dev/null; then
+            print_warning "Could not create the cortado command: could not create $bin"
+            return 0
+        fi
+    fi
+
+    if _cortado_command_is_ours "$cmd" "$target"; then
+        print_success "The cortado command is in place: $cmd"
+    elif [ -e "$cmd" ] || [ -L "$cmd" ]; then
+        print_warning "Left $cmd as it is: it was not made by this installer"
+        return 0
+    else
+        # No -f, so ln never replaces what appeared since the check; -n, so a
+        # link to a directory is not followed.
+        ln -sn -- "$target" "$cmd" 2>/dev/null && linked=true
+        if [ "$linked" = true ] && _cortado_command_is_ours "$cmd" "$target"; then
+            print_success "Created the cortado command: $cmd"
+        else
+            # A directory that appeared in between got the new link inside it.
+            if [ "$linked" = true ] && [ -d "$cmd" ] && [ ! -L "$cmd" ] &&
+                _cortado_command_is_ours "$cmd/${target##*/}" "$target"; then
+                rm -f -- "$cmd/${target##*/}"
+            fi
+            if [ -e "$cmd" ] || [ -L "$cmd" ]; then
+                print_warning "Left $cmd as it is: it was not made by this installer"
+            else
+                print_warning "Could not create the cortado command at $cmd"
+            fi
+            return 0
+        fi
+    fi
+
+    if _cortado_command_on_path "$bin"; then
+        _CORTADO_COMMAND_ON_PATH=true
+        return 0
+    fi
+    # macOS Terminal starts bash as a login shell, which reads ~/.bash_profile.
+    # shellcheck disable=SC2088 # The file is named for the user, not opened here.
+    case "${OSTYPE:-}" in
+        darwin*) bash_rc='~/.bash_profile' ;;
+        *) bash_rc='~/.bashrc' ;;
+    esac
+    print_warning "$bin is not on your PATH. To run cortado by name, add this line, then open a new terminal:"
+    # shellcheck disable=SC2016 # The line is printed for the user's shell to expand.
+    printf '    zsh:  add to ~/.zshrc:   %s\n' 'export PATH="$HOME/.local/bin:$PATH"'
+    # shellcheck disable=SC2016
+    printf '    bash: add to %s:  %s\n' "$bash_rc" 'export PATH="$HOME/.local/bin:$PATH"'
+}
+
+# Remove ~/.local/bin/cortado only when it is this installer's own link.
+remove_cortado_command() {
+    local cmd
+    case "${HOME:-}" in
+        /*) ;;
+        *) return 0 ;;
+    esac
+    cmd="${HOME%/}/.local/bin/cortado"
+    [ -e "$cmd" ] || [ -L "$cmd" ] || return 0
+    if _cortado_command_target && _cortado_command_is_ours "$cmd" "$REPLY"; then
+        if rm -f -- "$cmd"; then
+            print_success "Removed the cortado command: $cmd"
+        else
+            print_warning "Could not remove the cortado command: $cmd"
+        fi
+    else
+        print_warning "Left $cmd as it is: it was not made by this installer"
+    fi
 }
 
 # Copy runtime files (script, VERSION, modules, lib) into an install prefix.
@@ -2453,6 +2588,9 @@ do_install() (
         pending_backup=""
     fi
 
+    # The cortado command links to the runtime now in place.
+    install_cortado_command "$installed_dir/cortado.sh"
+
     # Final message
     echo ""
     echo "================================================================"
@@ -2463,7 +2601,11 @@ do_install() (
     echo ""
     echo "Configuration:"
     echo "  Edit:     $CORTADO_DIR/cortado.conf"
-    printf '  Or run:   %s config\n' "$quoted_path"
+    if [ "$_CORTADO_COMMAND_ON_PATH" = true ]; then
+        printf '  Or run:   %s\n' 'cortado config'
+    else
+        printf '  Or run:   %s config\n' "$quoted_path"
+    fi
     echo "  Modules:  $CORTADO_DIR/modules/"
     echo ""
     echo "Per-directory overrides:"
@@ -2514,7 +2656,7 @@ show_help() {
     echo "  --version, -v      Show current version"
     echo ""
     echo -e "${BOLD}Other Options:${NC}"
-    echo "  --uninstall        Uninstall and optionally restore previous statusline"
+    echo "  --uninstall        Uninstall, remove the cortado command, optionally restore previous statusline"
     echo "  --help, -h         Show this help message"
     echo ""
     echo -e "${BOLD}Examples:${NC}"
