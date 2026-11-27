@@ -54,7 +54,10 @@ Cortado/
 ├── .claude/skills/     # Repository development skills (canonical; see "Repository skills")
 ├── .agents/skills/     # Relative symlinks to .claude/skills/* so Codex reads the same skills
 ├── .shellcheckrc       # ShellCheck policy (see Testing)
-└── README.md
+├── demo.tape, demo.gif # VHS script and the README demo it renders (`vhs demo.tape`)
+├── docs/               # User guides: install, configuration, custom modules, troubleshooting, migration
+├── CHANGELOG.md        # Release history; the README keeps only the latest release
+└── README.md           # Short user entry point that links into docs/
 ```
 
 ## How It Works
@@ -111,7 +114,7 @@ All settings are documented with comments. Key settings:
 
 ## Color Themes
 
-`apply_theme()` in `utils.sh` fills unset indicator and icon variables after config loading. The `default` theme uses the shipped display settings. The `monochrome` theme sets `STATUS_STYLE=ascii` and `USE_ICONS=false` to show ASCII labels and status indicators. See README.md for compatibility with older theme values.
+`apply_theme()` in `utils.sh` fills unset indicator and icon variables after config loading. The `default` theme uses the shipped display settings. The `monochrome` theme sets `STATUS_STYLE=ascii` and `USE_ICONS=false` to show ASCII labels and status indicators. See `docs/configuration.md` for compatibility with older theme values.
 
 ## Module Structure
 
@@ -169,7 +172,7 @@ Both respect `DISPLAY_MODE` for spacing and `STATUS_STYLE` for appearance (emoji
 
 ## Adding a New Module
 
-Create `modules/mymodule.sh` and put the following metadata in its leading comment block. The renderer, installer, and config catalog read the same headers.
+Create `modules/mymodule.sh` and put the following metadata in its leading comment block. The renderer, installer, and config catalog read the same headers. `docs/custom-modules.md` is the user guide to the same headers, for modules kept in `cortado-modules/`; keep the two in step.
 
 | Header | Meaning |
 |---|---|
@@ -297,7 +300,7 @@ A FAIL or SYNTAX line, or a failed ShellCheck comparison, blocks the pull reques
 
 ## Versioning and Releases
 
-`VERSION` is the single source of truth, and only a release changes it. The README version badge, the README footer, the "What's New" section and the version assertion in `tests/test_config_cli.sh` follow it in the same release commit. Releases are `vX.Y.Z` tags on `gcko/Cortado` with a GitHub Release. The installer reads `releases/latest` from `gcko/Cortado`, which is also the `update` module's default `UPDATE_REPO`. The `cortado-release` skill owns the release procedure.
+`VERSION` is the single source of truth, and only a release changes it. The README version badge, the README footer, the README "What's New" section (with the release also added to `CHANGELOG.md`) and the version assertion in `tests/test_config_cli.sh` follow it in the same release commit. Releases are `vX.Y.Z` tags on `gcko/Cortado` with a GitHub Release. The installer reads `releases/latest` from `gcko/Cortado`, which is also the `update` module's default `UPDATE_REPO`. The `cortado-release` skill owns the release procedure.
 
 The local clone may carry `v1.x` tags inherited from pstuart/Barista that do not exist on `gcko/Cortado` and are not ancestors of `main`. Read release tags from the remote (`git ls-remote --tags origin`), never from `git tag -l`.
 
