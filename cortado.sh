@@ -371,6 +371,11 @@ cleanup_module_stderr() {
     # shell may still write to the capture as it exits, so stderr goes
     # nowhere first: with the reader gone, that write would end the render
     # with SIGPIPE.
+    # Claude Code can stop a render that is already exiting. A signal here
+    # would run its exit trap and end this cleanup early, and it would also
+    # stop the rm below, leaving the capture behind. The cleanup is short,
+    # and the processes it starts inherit the ignore, so ignore them to the end.
+    trap '' TERM INT HUP
     exec 2>/dev/null
     stop_module_stderr
     rm -rf -- "$CORTADO_STDERR_CAPTURE" 2>/dev/null || :
