@@ -1984,22 +1984,13 @@ restore_from_backup() {
     # Restore settings.json statusLine
     local settings_statusline=$(printf '%s\n' "$manifest" | jq '.settings_statusline')
     if [ "$settings_statusline" != "null" ] && [ -f "$SETTINGS_FILE" ]; then
-        local tmp_file=$(mktemp)
-        if jq --argjson statusline "$settings_statusline" '.statusLine = $statusline' "$SETTINGS_FILE" > "$tmp_file" 2>/dev/null; then
-            mv "$tmp_file" "$SETTINGS_FILE"
+        if statusline_settings_restore "$CLAUDE_DIR" "$settings_statusline" >/dev/null; then
             print_success "Restored statusLine config in settings.json"
         else
-            rm -f "$tmp_file"
             print_warning "Could not restore statusLine config"
         fi
-    elif [ "$settings_statusline" = "null" ] && [ -f "$SETTINGS_FILE" ]; then
-        local tmp_file=$(mktemp)
-        if jq 'del(.statusLine)' "$SETTINGS_FILE" > "$tmp_file" 2>/dev/null; then
-            mv "$tmp_file" "$SETTINGS_FILE"
-            print_success "Removed statusLine from settings.json (none existed before)"
-        else
-            rm -f "$tmp_file"
-        fi
+    elif [ "$settings_statusline" = "null" ]; then
+        remove_cortado_statusline "Removed statusLine from settings.json (none existed before)"
     fi
 
     echo ""
@@ -2010,6 +2001,22 @@ restore_from_backup() {
 # =============================================================================
 # UNINSTALL
 # =============================================================================
+# Remove statusLine from settings.json only when it runs a cortado.sh; leave
+# any other statusLine (set since Cortado was installed) and say so.
+remove_cortado_statusline() {
+    [ -f "$SETTINGS_FILE" ] || return 0
+    jq -e 'has("statusLine")' "$SETTINGS_FILE" >/dev/null 2>&1 || return 0
+    if ! statusline_runs_cortado "$SETTINGS_FILE"; then
+        print_warning "Left statusLine in settings.json as it is: it does not run Cortado"
+        return 0
+    fi
+    if statusline_settings_remove "$CLAUDE_DIR" >/dev/null; then
+        print_success "$1"
+    else
+        print_warning "Could not remove statusLine from settings.json"
+    fi
+}
+
 do_uninstall() {
     show_banner
     print_header "Uninstalling Cortado..."
@@ -2044,15 +2051,7 @@ do_uninstall() {
                 [ -d "$CORTADO_DIR" ] && rm -rf "$CORTADO_DIR" && print_success "Removed Cortado directory"
                 [ -f "$CLAUDE_DIR/cortado.sh" ] && rm "$CLAUDE_DIR/cortado.sh" && print_success "Removed cortado.sh"
 
-                if [ -f "$SETTINGS_FILE" ]; then
-                    local tmp_file=$(mktemp)
-                    if jq 'del(.statusLine)' "$SETTINGS_FILE" > "$tmp_file" 2>/dev/null; then
-                        mv "$tmp_file" "$SETTINGS_FILE"
-                        print_success "Removed statusLine from settings.json"
-                    else
-                        rm -f "$tmp_file"
-                    fi
-                fi
+                remove_cortado_statusline "Removed statusLine from settings.json"
                 ;;
             *)
                 print_info "Uninstall cancelled"
@@ -2064,15 +2063,7 @@ do_uninstall() {
         [ -d "$CORTADO_DIR" ] && rm -rf "$CORTADO_DIR" && print_success "Removed Cortado directory"
         [ -f "$CLAUDE_DIR/cortado.sh" ] && rm "$CLAUDE_DIR/cortado.sh" && print_success "Removed cortado.sh"
 
-        if [ -f "$SETTINGS_FILE" ]; then
-            local tmp_file=$(mktemp)
-            if jq 'del(.statusLine)' "$SETTINGS_FILE" > "$tmp_file" 2>/dev/null; then
-                mv "$tmp_file" "$SETTINGS_FILE"
-                print_success "Removed statusLine from settings.json"
-            else
-                rm -f "$tmp_file"
-            fi
-        fi
+        remove_cortado_statusline "Removed statusLine from settings.json"
     fi
 
     echo ""
@@ -2789,10 +2780,26 @@ _restrict_umask() {
     umask "$(printf '%04o' $(( 8#$current | 8#022 )))"
 }
 
+# An installer inside an installed copy (<X>/cortado/install.sh, as cortado
+# update and uninstall run it) changes only that copy's config directory <X>.
+_installer_refuse_other_config() {
+    local owner config
+    cortado_runtime_config_dir "$SCRIPT_DIR" || return 0
+    owner="$REPLY"
+    config=$(CDPATH='' cd -P -- "$CLAUDE_DIR" 2>/dev/null && pwd)
+    [ "$config" != "$owner" ] || return 0
+    print_error "This installer belongs to the Cortado copy installed in $owner, but the config directory is $CLAUDE_DIR. Nothing was changed. Run it with CLAUDE_CONFIG_DIR=$owner, or run cortado update or cortado uninstall." >&2
+    exit 1
+}
+
 main() {
     _restrict_umask
     parse_args "$@"
     setup_colors
+
+    case "$INSTALL_MODE" in
+        update|check-update|uninstall) _installer_refuse_other_config ;;
+    esac
 
     # Handle version display
     if [ "$INSTALL_MODE" = "version" ]; then

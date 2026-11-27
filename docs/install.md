@@ -43,13 +43,15 @@ Every install (interactive, `--defaults`, `--minimal` or `--force`) also creates
 - If `~/.local/bin` is not on your `PATH`, the installer says so and prints the line to add: `export PATH="$HOME/.local/bin:$PATH"`, in `~/.zshrc` for zsh, or in `~/.bashrc` for bash (`~/.bash_profile` on macOS). Open a new terminal afterwards.
 - The installer never replaces a `cortado` it did not make. A file, a directory, or a link to anything other than this install's `cortado.sh` is left as it is, and the installer says so and carries on. Running the installer again leaves its own link in place.
 - `cortado` runs with the same settings as the statusline. If you set `CLAUDE_CONFIG_DIR` for Claude Code, set it in your shell too.
+- `cortado update` and `cortado uninstall` act on the config directory the copy is installed in (the folder that holds `cortado/`), even when `CLAUDE_CONFIG_DIR` is not set. If `CLAUDE_CONFIG_DIR` names a different directory, they change nothing and print both, so one install never updates or removes another.
 
 ### Pointing Claude Code at Cortado: `cortado setup`
 
 `cortado setup` sets `statusLine` in `$CLAUDE_CONFIG_DIR/settings.json` (usually `~/.claude/settings.json`) to the copy of Cortado it runs from. From a clone, run `./cortado.sh setup`.
 
 - It changes only `statusLine` and keeps every other setting. A missing `settings.json` is created.
-- It saves the `statusLine` it replaces where the installer does, so `cortado uninstall` can restore it. If a saved one is already there, it keeps that one: the statusline you had before Cortado.
+- It saves the `statusLine` it replaces where the installer does (readable only by you), so `cortado uninstall` can restore it. If a saved one is already there, it keeps that one: the statusline you had before Cortado. A `statusLine` that runs a `cortado.sh` is never saved as the one to restore.
+- If `settings.json` is a symbolic link (to a dotfiles repository, say), the link stays and the file it leads to is updated. A link that leads to no regular file is refused.
 - Running it again when Claude Code already runs this copy changes nothing.
 - It refuses a `settings.json` that is not one JSON object (or not a regular file), says why, and changes nothing.
 - From a Homebrew install it writes the stable `opt` path (for example `/opt/homebrew/opt/cortado/...`), never the versioned `Cellar` path that `brew upgrade` removes. If the `opt` link does not lead to this copy, it changes nothing and says so.
@@ -151,4 +153,6 @@ cortado uninstall            # from any terminal
 ./install.sh --uninstall     # from the clone
 ```
 
-`cortado uninstall` runs the installed copy's `install.sh --uninstall`. The installer offers to restore the statusline you had before, if it backed one up. It removes `~/.local/bin/cortado` only when it is a link to this install's `cortado.sh`, and leaves `~/.local/bin` and everything else in it.
+`cortado uninstall` runs the installed copy's `install.sh --uninstall`. On a Homebrew install it deletes no files: it puts back the saved `statusLine` (or removes Cortado's) and says to run `brew uninstall cortado`.
+
+Uninstalling removes `statusLine` only when it runs a `cortado.sh`. A statusline you set since installing Cortado is left as it is, and the uninstaller says so. The installer offers to restore the statusline you had before, if it backed one up. It removes `~/.local/bin/cortado` only when it is a link to this install's `cortado.sh`, and leaves `~/.local/bin` and everything else in it.

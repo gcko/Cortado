@@ -64,7 +64,9 @@ fi
 MODULES_DIR="$SCRIPT_DIR/modules"
 CONFIG_FILE="$SCRIPT_DIR/cortado.conf"
 
-# Determine Claude config directory (respects CLAUDE_CONFIG_DIR env var)
+# Determine Claude config directory (respects CLAUDE_CONFIG_DIR env var).
+# cortado update and uninstall compare what the environment gave.
+CORTADO_ENV_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-}"
 CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 
 # shellcheck source=lib/config-permissions.sh
