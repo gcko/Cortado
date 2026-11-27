@@ -297,9 +297,26 @@ assert_eq 'Missing dd still renders after the capture fills' '🤖 Opus' "$out"
 assert_file_contains 'Missing dd still logs the exact number of omitted bytes' \
     'model: [truncated 1 bytes]' "$sb/cortado.log"
 
+# signal_launcher <signal>: set launcher to the command that starts the Bash
+# under test so it can trap <signal>. Bash cannot trap HUP if it starts with
+# SIG_IGN, as it may on CI. Force that inheritance and reset it in a fresh
+# process before launching the Bash under test.
+signal_launcher() {
+    launcher=(/bin/bash)
+    [ "$1" = HUP ] || return 0
+    launcher=(/bin/bash -c 'trap "" HUP; exec "$@"' -- python3 -c '
+import os
+import signal
+import sys
+
+signal.signal(signal.SIGHUP, signal.SIG_DFL)
+os.execv(sys.argv[1], sys.argv[1:])
+' /bin/bash)
+}
+
 check_capture_cleanup() (
     set -m
-    local signal="$1" location="$2" expected="$3" dir config tmp capture_root pid retry rc=0
+    local signal="$1" location="$2" expected="$3" dir config tmp capture_root pid retry rc=0 launcher
     dir=$(mktemp -d "$TEST_BASE/signals.XXXXXX") || return 1
     config=$(mktemp -d "$dir/config.XXXXXX") || return 1
     tmp="$dir/tmp"
@@ -315,19 +332,7 @@ check_capture_cleanup() (
         > "$config/cortado.conf"
     chmod 600 "$config/cortado.conf" || return 1
     printf '%s' "$PAYLOAD" > "$dir/payload"
-    local launcher=(/bin/bash)
-    if [ "$signal" = HUP ]; then
-        # Bash cannot trap HUP if it starts with SIG_IGN. Force that inheritance
-        # and reset it in a fresh process before launching the Bash under test.
-        launcher=(/bin/bash -c 'trap "" HUP; exec "$@"' -- python3 -c '
-import os
-import signal
-import sys
-
-signal.signal(signal.SIGHUP, signal.SIG_DFL)
-os.execv(sys.argv[1], sys.argv[1:])
-' /bin/bash)
-    fi
+    signal_launcher "$signal"
     CLAUDE_CONFIG_DIR="$config" CACHE_DIR="$config/cache" TMPDIR="$tmp" \
         "${launcher[@]}" "$SOURCE_TREE/cortado.sh" < "$dir/payload" > "$dir/stdout" 2> "$dir/stderr" &
     pid=$!
@@ -349,7 +354,7 @@ os.execv(sys.argv[1], sys.argv[1:])
     # Cortado's EXIT trap removes the capture before this child can be reaped.
     wait "$pid" 2>/dev/null || rc=$?
     if [ -e "$config/module-left" ]; then
-        printf '  model returned before %s, so the capture was not live\n' "$signal"
+        printf '  model returned before %s (not held, or its read timed out), so the capture was not live\n' "$signal"
         return 1
     fi
     if [ "$rc" -ne "$expected" ]; then
@@ -393,15 +398,16 @@ EOF
 chmod +x "$CLEANUP_SHIM/rm"
 check_late_signal() (
     set -m
-    local signal="$1" dir config pid retry rc=0
+    local signal="$1" dir config pid retry rc=0 launcher
     dir=$(mktemp -d "$TEST_BASE/late.XXXXXX") || return 1
     config="$dir/config"
     mkdir "$config" "$dir/tmp" || return 1
     printf '%s\n' MODULE_ORDER=model MODULE_MODEL=true DEBUG_MODE=true > "$config/cortado.conf"
     chmod 600 "$config/cortado.conf" || return 1
     printf '%s' "$PAYLOAD" > "$dir/payload"
+    signal_launcher "$signal"
     PATH="$CLEANUP_SHIM:$PATH" CLAUDE_CONFIG_DIR="$config" CACHE_DIR="$config/cache" TMPDIR="$dir/tmp" \
-        /bin/bash "$SOURCE_TREE/cortado.sh" < "$dir/payload" > "$dir/stdout" 2> "$dir/stderr" &
+        "${launcher[@]}" "$SOURCE_TREE/cortado.sh" < "$dir/payload" > "$dir/stdout" 2> "$dir/stderr" &
     pid=$!
     trap 'kill -KILL -- "-$pid" 2>/dev/null || :' EXIT
     for ((retry = 0; retry < 250; retry++)); do
@@ -417,6 +423,12 @@ check_late_signal() (
     wait "$pid" 2>/dev/null || rc=$?
     if [ -n "$(find "$dir" -name 'cortado-stderr.*' -print)" ]; then
         printf '  capture remains after %s during cleanup (exit status %s)\n' "$signal" "$rc"
+        return 1
+    fi
+    # The line was printed and the render was exiting cleanly; the ignored
+    # signal must not turn that into a failure.
+    if [ "$rc" -ne 0 ]; then
+        printf '  expected exit status 0 after %s during cleanup, got %s\n' "$signal" "$rc"
         return 1
     fi
     if [ "$(sed $'s/\x1b\\[[0-9;]*m//g' "$dir/stdout")" != '🤖 Opus' ]; then

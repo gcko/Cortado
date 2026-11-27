@@ -372,9 +372,10 @@ cleanup_module_stderr() {
     # nowhere first: with the reader gone, that write would end the render
     # with SIGPIPE.
     # Claude Code can stop a render that is already exiting. A signal here
-    # would run its exit trap and end this cleanup early, and it would also
-    # stop the rm below, leaving the capture behind. The cleanup is short,
-    # and the processes it starts inherit the ignore, so ignore them to the end.
+    # would run its signal trap, whose exit ends this cleanup early, and it
+    # would also stop the rm below, leaving the capture behind. The cleanup
+    # is short, and the processes it starts inherit the ignore, so ignore
+    # those signals to the end.
     trap '' TERM INT HUP
     exec 2>/dev/null
     stop_module_stderr
@@ -986,9 +987,11 @@ main() {
         if CORTADO_STDERR_CAPTURE=$(create_module_stderr "${TMPDIR:-/tmp}") ||
             CORTADO_STDERR_CAPTURE=$(create_module_stderr "$CLAUDE_CONFIG_DIR"); then
             trap cleanup_module_stderr EXIT
-            trap 'exit 143' TERM
-            trap 'exit 130' INT
-            trap 'exit 129' HUP
+            # Each signal trap ignores further signals before its exit runs
+            # the cleanup, so a second signal cannot cut that cleanup short.
+            trap "trap '' TERM INT HUP; exit 143" TERM
+            trap "trap '' TERM INT HUP; exit 130" INT
+            trap "trap '' TERM INT HUP; exit 129" HUP
             module_stderr="$CORTADO_STDERR_CAPTURE/pipe"
         fi
     fi
