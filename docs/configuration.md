@@ -226,7 +226,7 @@ Weather, network, CPU, load, brightness, processes, Docker and Node.js read thei
 
 After a failed request, weather and public IP retry on the next render after 15 seconds, and the other readings after 5 seconds. Each reading has one refresh lock. Clearing the cache discards readings and invalidates pending refresh results, but keeps the locks. A refresh gets up to 5 seconds for directory setup, the probe and publishing the result, plus 1 second to record a failure.
 
-`UPDATE_CHECK_INTERVAL` sets how long a successful release check is cached (86,400 seconds by default). After a failed check, the statusline shows `⬆ --` or `UPD: --`, and the next render after half the interval (at most one hour) tries again.
+`UPDATE_CHECK_INTERVAL` sets how long a successful release check is cached (86,400 seconds by default). After a failed check, the statusline shows `⬆ --` or `UPD: --`, and the next render after half the interval (at most one hour) tries again. When a newer release exists and this copy is a Homebrew install, the notice adds the command that updates it, for example `⬆ v2.2.0 (brew upgrade cortado)`; any other install shows `⬆ v2.2.0`.
 
 ## Presets
 
