@@ -59,7 +59,7 @@ Core modules are on by default. The others are off until you turn them on.
 | **battery** | Battery level (macOS) |
 | **sandbox** | A lock icon when running inside a macOS app sandbox |
 | **version** | The Cortado version, briefly, at the start of each session |
-| **update** | A notice when a new Cortado release is out (checked once a day by default) |
+| **update** | A notice when a new Cortado release is out (checked once a day by default). On a Homebrew install it adds `(brew upgrade cortado)` |
 
 ### System
 

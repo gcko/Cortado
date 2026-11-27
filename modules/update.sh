@@ -12,7 +12,8 @@
 # =============================================================================
 # Checks GitHub for a newer release and shows a notice if one is found.
 # Unavailable checks show "--" and are cached for half the successful interval,
-# capped at one hour.
+# capped at one hour. On a Homebrew copy the notice also names the command that
+# updates it, "(brew upgrade cortado)", because the installer refuses a keg.
 #
 # Configuration options:
 #   UPDATE_CHECK_INTERVAL   - Successful cache lifetime in seconds (default: 86400 = 24h)
@@ -124,12 +125,31 @@ _fetch_cortado_release() {
     printf '%s\n' "${tag#v}"
 }
 
+# Succeed when this copy is a Homebrew keg. The detection lives in
+# lib/statusline-settings.sh, which a render does not load, so it is read only
+# here, when a newer release is already known. A missing file or function
+# counts as "not Homebrew": the notice then keeps its plain shape.
+_update_is_homebrew_copy() {
+    [ -n "${SCRIPT_DIR:-}" ] || return 1
+    if ! declare -F cortado_is_homebrew_copy >/dev/null 2>&1; then
+        [ -r "$SCRIPT_DIR/lib/statusline-settings.sh" ] || return 1
+        # shellcheck source=lib/statusline-settings.sh
+        . "$SCRIPT_DIR/lib/statusline-settings.sh" 2>/dev/null || return 1
+    fi
+    cortado_is_homebrew_copy "$SCRIPT_DIR/"
+}
+
 module_update() {
     local result reading icon
     result=$(_check_cortado_update)
 
     case "$result" in
-        available:*) reading="v${result#available:}" ;;
+        available:*)
+            reading="v${result#available:}"
+            if _update_is_homebrew_copy; then
+                reading="$reading (brew upgrade cortado)"
+            fi
+            ;;
         unknown) reading="--" ;;
         *) return 0 ;;
     esac
