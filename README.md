@@ -40,6 +40,8 @@ The installer asks which modules you want and how they should look, shows a prev
 
 It also adds a `cortado` command in `~/.local/bin`, so you can run `cortado config` from any terminal. If that directory is not on your `PATH`, the installer prints the line to add to your shell's startup file. `cortado update` installs the latest release, `cortado setup` points Claude Code at Cortado again, and `cortado help` lists every command.
 
+Without git, download `get-cortado.sh` from the [latest release](https://github.com/gcko/Cortado/releases/latest), read it, and run `bash get-cortado.sh`: it checks the release against its `SHA256SUMS` before installing ([details](docs/install.md#install-without-git-or-homebrew)).
+
 [Installing and updating](docs/install.md) covers every installer option, updates, manual installation and the full requirements.
 
 ## What's New in v2.1.0 🆕

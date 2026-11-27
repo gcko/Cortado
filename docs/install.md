@@ -69,6 +69,23 @@ Every install (interactive, `--defaults`, `--minimal` or `--force`) also creates
 
 Restart Claude Code to see the change.
 
+## Install without git or Homebrew
+
+Each [release](https://github.com/gcko/Cortado/releases/latest) has a small script, `get-cortado.sh`, that installs that release without git. Download it, read it, then run it with bash:
+
+```bash
+curl -fLO https://github.com/gcko/Cortado/releases/latest/download/get-cortado.sh
+less get-cortado.sh
+bash get-cortado.sh
+```
+
+- It needs curl, unzip, `jq`, and `shasum` or `sha256sum`. It names whichever is missing and stops.
+- It installs the latest published release, never a draft or prerelease. To install a particular release, name it: `bash get-cortado.sh 2.1.0`.
+- It downloads `Cortado-source.zip` and `SHA256SUMS` from that release and checks the zip's SHA-256 before it unpacks anything. A mismatch, a missing or repeated checksum, an unexpected release tag, a download over its size limit or a timeout stops it before anything runs or is installed. Each download has 5 seconds to connect and 60 seconds to finish (8 seconds for the release lookup).
+- Then it runs that release's `install.sh`, so you get the usual installer. `--defaults`, `--minimal`, `--force`, `--no-emoji` and `--no-color` are passed on to it; any other option is refused. The installer's own update check is skipped, because the release is already chosen.
+- It works in a private temporary folder and removes it when it finishes, fails, or is stopped with Ctrl-C, TERM or HUP.
+- The checksum comes from the same release, so it catches a corrupted or altered download, not a bad release. `SHA256SUMS` lists `get-cortado.sh` too: download `SHA256SUMS` beside the script and run `shasum -a 256 -c --ignore-missing SHA256SUMS` (or `sha256sum -c --ignore-missing SHA256SUMS`) to check the script before you run it.
+
 ## Installer options
 
 ```bash
