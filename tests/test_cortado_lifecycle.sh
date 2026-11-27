@@ -55,6 +55,15 @@ install_sandbox() {
 
 others() { jq -cS 'del(.statusLine)' "$1" 2>/dev/null; }
 statusline() { jq -cS '.statusLine' "$1" 2>/dev/null; }
+# tree_state <dir>: every path under <dir>, with link text and file checksums.
+# Portable: GNU diff -r follows links and fails on dangling or looping ones.
+tree_state() {
+    (cd "$1" && find . | LC_ALL=C sort | while IFS= read -r p; do
+        if [ -L "$p" ]; then printf '%s -> %s\n' "$p" "$(readlink "$p")"
+        elif [ -f "$p" ]; then printf '%s %s\n' "$p" "$(cksum < "$p")"
+        else printf '%s/\n' "$p"; fi
+    done)
+}
 leftovers() { find "$cfg" -maxdepth 2 \( -name '.settings.*' -o -name 'snapshot.*' -o -name '*.backup.*' \
     -o -name '.cortado-runtime.*' -o -name '.cortado-previous.*' -o -name '.cortado-update.lock' \) 2>/dev/null; }
 
@@ -472,15 +481,14 @@ for shape in dangling directory loop; do
         directory) ln -s "$root/elsewhere" "$settings" ;;
         loop) ln -s "$cfg/loop.json" "$settings"; ln -s "$settings" "$cfg/loop.json" ;;
     esac
-    cp -pR "$root" "$root.before"
+    before=$(tree_state "$root")
     # Bounded, so a link loop that is followed forever fails instead of hanging.
     out=$(HOME="$home" CLAUDE_CONFIG_DIR="$cfg" PATH="$BASE_PATH" \
         perl -e 'alarm 20; exec @ARGV' /bin/bash "$REPO_ROOT/cortado.sh" setup 2>&1 < /dev/null)
     status=$?
     assert_eq "setup refuses a $shape settings.json link" 1 "$status"
     assert_contains "setup explains a $shape settings.json link" 'Nothing was changed' "$out"
-    assert_rc "setup changes nothing for a $shape link" 0 diff -r "$root.before" "$root"
-    rm -rf "$root.before"
+    assert_eq "setup changes nothing for a $shape link" "$before" "$(tree_state "$root")"
 done
 
 # 4. Homebrew uninstall restores the statusLine, deletes no files, and points at brew.
