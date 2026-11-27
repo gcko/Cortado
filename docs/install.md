@@ -71,7 +71,7 @@ Restart Claude Code to see the change.
 
 ## Install without git or Homebrew
 
-From v2.2.0, each [release](https://github.com/gcko/Cortado/releases/latest) has a small script, `get-cortado.sh`, that installs Cortado without git. Download it, read it, then run it with bash:
+Each [release](https://github.com/gcko/Cortado/releases/latest) from v2.2.0 on has a small script, `get-cortado.sh`, that installs Cortado without git. Download it, read it, then run it with bash:
 
 ```bash
 curl -fLO https://github.com/gcko/Cortado/releases/latest/download/get-cortado.sh
