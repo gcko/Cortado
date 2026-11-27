@@ -5,7 +5,7 @@
 Cortado is a statusline for [Claude Code](https://docs.anthropic.com/en/docs/claude-code). It shows context usage, rate limits, session cost, git status and more on one line, and you choose which modules appear and in what order.
 
 ![Cortado](https://img.shields.io/badge/Cortado-Claude_Code-D97757?style=for-the-badge&logo=anthropic&logoColor=white)
-![Version](https://img.shields.io/badge/Version-2.1.0-green?style=for-the-badge)
+![Version](https://img.shields.io/badge/Version-2.2.0-green?style=for-the-badge)
 ![Shell Script](https://img.shields.io/badge/Shell_Script-Bash-4EAA25?style=for-the-badge&logo=gnu-bash&logoColor=white)
 ![License](https://img.shields.io/badge/License-Apache_2.0-blue?style=for-the-badge)
 
@@ -40,18 +40,18 @@ The installer asks which modules you want and how they should look, shows a prev
 
 It also adds a `cortado` command in `~/.local/bin`, so you can run `cortado config` from any terminal. If that directory is not on your `PATH`, the installer prints the line to add to your shell's startup file. `cortado update` installs the latest release, `cortado setup` points Claude Code at Cortado again, and `cortado help` lists every command.
 
-Without git (from v2.2.0), download `get-cortado.sh` from the [latest release](https://github.com/gcko/Cortado/releases/latest), read it, and run `bash get-cortado.sh`: it checks the release against its `SHA256SUMS` before installing ([details](docs/install.md#install-without-git-or-homebrew)).
+Without git, download `get-cortado.sh` from the [latest release](https://github.com/gcko/Cortado/releases/latest), read it, and run `bash get-cortado.sh`: it checks the release against its `SHA256SUMS` before installing ([details](docs/install.md#install-without-git-or-homebrew)).
 
 [Installing and updating](docs/install.md) covers every installer option, updates, manual installation and the full requirements.
 
-## What's New in v2.1.0 🆕
+## What's New in v2.2.0 🆕
 
-- A `cortado` command on your PATH, set up by the installer.
-- `cortado setup`, `cortado update` and `cortado uninstall` work from the installed copy, without the git clone.
-- `cortado doctor` checks your install and prints the command that fixes each problem.
-- The `Config refused` and `Config partly read` notices say what to run.
+- Install with Homebrew: `brew install gcko/tap/cortado`, then `cortado setup`.
+- Install without git or Homebrew: download `get-cortado.sh` from the release, read it, and run it. It checks the release's checksum first.
+- On Homebrew, the update notice says `brew upgrade cortado`.
+- Updating now creates the `cortado` command if you don't have it yet.
 
-The [changelog](CHANGELOG.md) has the full list, including v2.0.0, Cortado's first release, and the Barista releases before it.
+The [changelog](CHANGELOG.md) has the full list, including the earlier Cortado releases and the Barista releases before them.
 
 ## Modules
 
@@ -201,6 +201,6 @@ Cortado includes code from Barista, which is MIT-licensed. The upstream copyrigh
 
 <div align="center">
 
-*Cortado v2.1.0 - Because your Claude Code deserves a great statusline.*
+*Cortado v2.2.0 - Because your Claude Code deserves a great statusline.*
 
 </div>

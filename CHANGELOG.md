@@ -4,6 +4,16 @@ All notable changes to Cortado, newest first.
 
 Cortado is a fork of [Barista](https://github.com/pstuart/Barista) by Patrick D. Stuart. 2.0.0 is Cortado's first release of its own. The versions from 1.8.0 down are Barista releases.
 
+## 2.2.0
+
+Install Cortado with Homebrew, or without git at all.
+
+- `brew install gcko/tap/cortado`, then `cortado setup`, installs Cortado from the new [gcko/homebrew-tap](https://github.com/gcko/homebrew-tap). The tap tests every formula on macOS and Linux, and opens a pull request for each new Cortado release (gcko/homebrew-tap#1, gcko/homebrew-tap#2).
+- On a Homebrew install, the statusline's update notice says `brew upgrade cortado` (#141).
+- `get-cortado.sh`, attached to each release, installs Cortado without git or Homebrew. It checks the release's checksum before it unpacks or runs anything (#144).
+- `./install.sh --update` and `cortado update` now create the `cortado` command when it is missing, so a 2.0.0 install gets it from its next update (#142).
+- The docs lead with Homebrew, and cover all three ways to install (#143, #144).
+
 ## 2.1.0
 
 A real `cortado` command, with everything you need to set up, update, check and remove Cortado without the git clone.
