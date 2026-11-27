@@ -38,7 +38,7 @@ It installs Cortado in `$CLAUDE_CONFIG_DIR/cortado/` (usually `~/.claude/cortado
 
 ### The `cortado` command
 
-Every install (interactive, `--defaults`, `--minimal` or `--force`) also creates `~/.local/bin/cortado`, a symbolic link to the installed `cortado.sh`, so `cortado config`, `cortado setup`, `cortado update`, `cortado uninstall`, `cortado version` and `cortado help` work from any terminal. The installer creates `~/.local/bin` if it is missing.
+Every install (interactive, `--defaults`, `--minimal` or `--force`) also creates `~/.local/bin/cortado`, a symbolic link to the installed `cortado.sh`, so `cortado config`, `cortado setup`, `cortado update`, `cortado uninstall`, `cortado doctor`, `cortado version` and `cortado help` work from any terminal. The installer creates `~/.local/bin` if it is missing.
 
 - If `~/.local/bin` is not on your `PATH`, the installer says so and prints the line to add: `export PATH="$HOME/.local/bin:$PATH"`, in `~/.zshrc` for zsh, or in `~/.bashrc` for bash (`~/.bash_profile` on macOS). Open a new terminal afterwards.
 - The installer never replaces a `cortado` it did not make. A file, a directory, or a link to anything other than this install's `cortado.sh` is left as it is, and the installer says so and carries on. Running the installer again leaves its own link in place.
