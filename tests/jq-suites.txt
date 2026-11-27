@@ -49,6 +49,7 @@ test_install_settings.sh
 test_install_update.sh
 test_update.sh
 test_update_homebrew.sh
+test_get_cortado.sh
 
 !test_cpu.sh            only the default {"cwd":"/nonexistent"} payload; the cpu module never reads it
 !test_processes.sh      only the default {"cwd":"/nonexistent"} payload; the processes module never reads it

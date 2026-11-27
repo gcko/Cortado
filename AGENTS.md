@@ -248,7 +248,7 @@ Run the local checks below from the repository root before opening a pull reques
 /bin/bash tests/run-suites.sh && echo "tests: all green"
 
 # 2. Bash syntax on every shipped and test script
-for f in cortado.sh install.sh lib/*.sh modules/*.sh tests/*.sh tests/lib/*.sh; do /bin/bash -n "$f" || echo "SYNTAX: $f"; done
+for f in *.sh lib/*.sh modules/*.sh tests/*.sh tests/lib/*.sh; do /bin/bash -n "$f" || echo "SYNTAX: $f"; done
 
 # 3. ShellCheck: no more findings than the merge base had
 /bin/bash <<'BASH'
@@ -262,7 +262,7 @@ sc() (
     cd "$1" || exit 1
     shopt -s nullglob
     local_status=0
-    shellcheck -f json cortado.sh install.sh lib/*.sh modules/*.sh tests/*.sh tests/lib/*.sh > "$2" || local_status=$?
+    shellcheck -f json *.sh lib/*.sh modules/*.sh tests/*.sh tests/lib/*.sh > "$2" || local_status=$?
     if [ "$local_status" -gt 1 ]; then
         cat "$2" >&2
         exit "$local_status"
@@ -383,4 +383,4 @@ The installer (`install.sh`) provides:
 
 `./install.sh --check-update`, `./install.sh --check`, and `./install.sh --update` exit with status 1 and print `Could not determine the latest version` if they cannot find a release.
 
-Archive updates download the tagged Release's `SHA256SUMS` and `Cortado-source.zip` assets. Each download has a 5-second connection deadline and a 60-second total deadline. The installer verifies the published SHA-256 before extracting the archive. An unavailable checksum or a mismatch aborts the update before any files are replaced. The `cortado-release` skill publishes both assets.
+Archive updates download the tagged Release's `SHA256SUMS` and `Cortado-source.zip` assets. Each download has a 5-second connection deadline and a 60-second total deadline. The installer verifies the published SHA-256 before extracting the archive. An unavailable checksum or a mismatch aborts the update before any files are replaced. The `cortado-release` skill publishes both assets, along with `get-cortado.sh`, which is also listed in `SHA256SUMS`.

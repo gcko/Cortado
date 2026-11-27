@@ -205,9 +205,14 @@ the right one.
 
 ## 6. Publish, and confirm it landed
 
-Package exactly the bump commit as `Cortado-source.zip` and write its SHA-256 to `SHA256SUMS`.
-The installer downloads these two named assets. Attach both in the release creation command so
-GitHub CLI uploads them before it publishes the Release.
+Package exactly the bump commit as `Cortado-source.zip`, copy `get-cortado.sh` from the same
+commit, and write the SHA-256 of both to `SHA256SUMS`. `install.sh --update` downloads the zip and
+`SHA256SUMS`; `get-cortado.sh` is the script people without git or Homebrew download and run
+(docs/install.md, "Install without git or Homebrew"), and it checks the zip against `SHA256SUMS`
+the same way. Its own line in `SHA256SUMS` lets a reader check the script before running it; both
+checkers read only the line for `Cortado-source.zip`, so the extra line is safe
+(`tests/test_get_cortado.sh` proves it for both). Attach all three in the release creation command
+so GitHub CLI uploads them before it publishes the Release.
 
 ```bash
 (
@@ -216,28 +221,31 @@ GitHub CLI uploads them before it publishes the Release.
   trap 'rm -rf "$assets"' EXIT
   git archive --format=zip --prefix="Cortado-$VERSION/" \
     --output="$assets/Cortado-source.zip" "$SHA"
+  git show "$SHA:get-cortado.sh" > "$assets/get-cortado.sh"
   (
     cd "$assets"
     if command -v shasum >/dev/null 2>&1; then
-      shasum -a 256 Cortado-source.zip
+      shasum -a 256 Cortado-source.zip get-cortado.sh
     else
-      sha256sum Cortado-source.zip
+      sha256sum Cortado-source.zip get-cortado.sh
     fi
   ) > "$assets/SHA256SUMS"
 
   gh release create "v$VERSION" "$assets/Cortado-source.zip" "$assets/SHA256SUMS" \
+    "$assets/get-cortado.sh" \
     -R gcko/Cortado --target "$SHA" --title "Cortado v$VERSION" --notes-file "<the approved note>"
 
   mkdir "$assets/downloaded"
   gh release download "v$VERSION" -R gcko/Cortado --dir "$assets/downloaded" \
-    --pattern Cortado-source.zip --pattern SHA256SUMS
+    --pattern Cortado-source.zip --pattern SHA256SUMS --pattern get-cortado.sh
   cmp "$assets/Cortado-source.zip" "$assets/downloaded/Cortado-source.zip"
   cmp "$assets/SHA256SUMS" "$assets/downloaded/SHA256SUMS"
+  cmp "$assets/get-cortado.sh" "$assets/downloaded/get-cortado.sh"
 )
 ```
 
-`--target` with a full SHA creates the tag on that commit server-side. Both `cmp` commands must
-exit zero. If publication or verification fails, inspect the existing tag, Release and assets
+`--target` with a full SHA creates the tag on that commit server-side. All three `cmp` commands
+must exit zero. If publication or verification fails, inspect the existing tag, Release and assets
 before retrying. Confirm that the tag is on the bump commit and that installs can see the Release:
 
 ```bash
@@ -245,9 +253,11 @@ git ls-remote --tags origin "refs/tags/v$VERSION"                          # exi
 git fetch --tags origin && git rev-parse "v$VERSION^{commit}"              # equals $SHA
 gh release view "v$VERSION" -R gcko/Cortado --json tagName,url,isDraft     # isDraft false
 gh api repos/gcko/Cortado/releases/latest --jq .tag_name                   # v$VERSION
+curl -fsLo /dev/null -w '%{http_code}\n' \
+  https://github.com/gcko/Cortado/releases/latest/download/get-cortado.sh   # 200: the docs' link works
 ```
 
-The last line is what every install's `update` module and `./install.sh --check-update` read.
+The `releases/latest` line is what every install's `update` module and `./install.sh --check-update` read.
 
 If the Release published but `releases/latest` names an older tag, the new one was published as a
 prerelease or with `--latest=false`; fix it with `gh release edit "v$VERSION" --latest`.
