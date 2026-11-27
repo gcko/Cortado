@@ -23,6 +23,7 @@ Cortado/
 ├── LICENSE, NOTICE     # Apache 2.0, and the upstream Barista MIT notice
 ├── lib/
 │   ├── config-tui.sh   # Runtime config TUI (`cortado config`)
+│   ├── doctor.sh            # `cortado doctor`: read-only install check, no network, writes nothing
 │   ├── config-data.sh       # The one KEY=VALUE parser, typed keys and config policies
 │   ├── config-permissions.sh # Ownership and mode checks for configs and user modules
 │   ├── module-registry.sh    # Header discovery for renderer and catalogs
@@ -213,6 +214,7 @@ A check that fails intermittently goes into `tests/flaky.txt` and is turned off 
 /bin/bash tests/test_config_cli.sh      # cortado config CLI and Barista migration
 /bin/bash tests/test_config_data.sh     # the KEY=VALUE parser, typed keys, Bash opt-in, --migrate --dry-run
 /bin/bash tests/test_install_update.sh  # installer update flags, runtime copy, migration
+/bin/bash tests/test_doctor.sh          # cortado doctor: each check broken on purpose, read-only, no network
 /bin/bash tests/run-suites.sh           # all suites in parallel, or the suites named as arguments
 /bin/bash tests/run-jq-variants.sh      # all suites with Homebrew jq, then the JSON suites with Apple jq on macOS
 /bin/bash tests/render_timing.sh        # p50 and p95 for default renders with fresh caches, then while a weather request hangs

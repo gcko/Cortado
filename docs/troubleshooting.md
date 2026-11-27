@@ -1,5 +1,39 @@
 # Troubleshooting
 
+## Start with `cortado doctor`
+
+```bash
+cortado doctor
+```
+
+`cortado doctor` checks an install from end to end and prints one line per check. Each failure comes with the command that fixes it. It exits 0 when every check passes and 1 otherwise, so a script can use it too. It makes no network request and changes no file. From a clone, run `./cortado.sh doctor`. Add `--no-color` or `--no-emoji` for plain output.
+
+It checks:
+
+- `jq` and Perl are installed. `bc` shows up as information only, because just the optional temperature module uses it.
+- `settings.json` in your Claude config directory exists, is valid JSON, and its `statusLine` command runs a `cortado.sh` (as the command itself, or as the script given to `bash` or `sh`) that exists and can run. A relative path fails, because Claude Code runs the command from the project directory. Doctor says whether that is the copy you ran doctor from or another one. It reads the command as text and never runs it.
+- This copy draws a sample statusline. Doctor feeds it a built-in sample in a temporary config directory, which it deletes afterwards.
+- Each config file Cortado reads (the packaged one, yours in the Claude config directory, and the project's in the current directory) is trusted, and none of its lines is skipped. For a refusal it prints the reason and the `chmod` that fixes it; for skipped lines it counts them, shows the first few, and points to `cortado config --migrate --dry-run` for the full list; [Config refused](#config-refused-or-config-partly-read) explains the rules.
+- The platform Cortado detected, and whether it is supported (macOS and Linux).
+- The last few lines of `cortado.log` and `cortado.log.1`, or "no log" when debug mode is off. These are for reading and never fail a check.
+- The `cortado` command is on your `PATH` and is a link to a `cortado.sh`, not some other program with that name.
+
+A run that finds problems looks like this (paths shortened):
+
+```
+ok    jq: found (jq-1.7.1)
+ok    perl: found (5.34.1)
+FAIL  statusLine: /Users/you/old/cortado.sh not found
+      fix: cortado setup
+FAIL  user config: refused (file is group- or world-writable)
+      /Users/you/.claude/cortado.conf
+      fix: chmod 600 '/Users/you/.claude/cortado.conf'
+
+2 of 9 checks failed. Run the fix commands above, then run cortado doctor again.
+```
+
+The sections below cover the same problems in more detail.
+
 ## Rate limits show `--`
 
 - Send a message. Claude Code includes your 5-hour and 7-day usage in the statusline data only after a session's first reply (seen in Claude Code 2.1.330), so a new session shows `5h:-- 7d:--` until then. No credential setup is needed.

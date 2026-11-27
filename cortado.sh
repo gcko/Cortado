@@ -226,7 +226,12 @@ _CORTADO_MODULE_REGISTRY_UNAVAILABLE=false
 if ! discover_module_registry "$MODULES_DIR" "$CLAUDE_CONFIG_DIR/cortado-modules" true; then
     _CORTADO_MODULE_REGISTRY_UNAVAILABLE=true
 fi
-load_config "$CONFIG_FILE" packaged
+if [ "${1:-}" = doctor ]; then
+    # doctor reports each config's trust itself, so the loader's stderr stays quiet.
+    load_config "$CONFIG_FILE" packaged 2>/dev/null
+else
+    load_config "$CONFIG_FILE" packaged
+fi
 
 USER_CONFIG="$CLAUDE_CONFIG_DIR/cortado.conf"
 # `config --migrate` reads the user file itself, read-only: it must neither
@@ -238,6 +243,12 @@ case "${1:-}" in
             [ "$_cortado_arg" != --migrate ] || _CORTADO_READ_USER_CONFIG=false
         done
         unset _cortado_arg
+        ;;
+    doctor)
+        # doctor changes no file: no Barista migration, and the user config is
+        # read as data below, never sourced under the Bash opt-in.
+        _CORTADO_READ_USER_CONFIG=false
+        _CORTADO_CONF_ALLOW_BASH=false
         ;;
 esac
 # Carry over trusted Barista settings. Use the checked legacy path in place
@@ -258,6 +269,10 @@ elif [[ ! -e "$USER_CONFIG" && ! -L "$USER_CONFIG" ]] &&
     fi
 else
     load_config "$USER_CONFIG"
+fi
+# doctor still reads a trusted cortado.conf, as data, so a forced CORTADO_OS shows.
+if [ "${1:-}" = doctor ] && [ -f "$USER_CONFIG" ]; then
+    load_config "$USER_CONFIG" 2>/dev/null
 fi
 
 # Decide the platform once, after the trusted configs (which may force it) and
@@ -1323,6 +1338,18 @@ cortado_cli_dispatch() {
             fi
             exit $?
             ;;
+        doctor)
+            if [ ! -f "$SCRIPT_DIR/lib/doctor.sh" ]; then
+                echo "cortado: missing lib/doctor.sh (incomplete install)." >&2
+                echo "Re-run ./install.sh from your Cortado checkout." >&2
+                exit 1
+            fi
+            shift
+            # shellcheck source=lib/doctor.sh
+            . "$SCRIPT_DIR/lib/doctor.sh"
+            cortado_doctor_main "$@"
+            exit $?
+            ;;
         version|--version|-v)
             if [ -f "$SCRIPT_DIR/VERSION" ]; then
                 tr -d '[:space:]' < "$SCRIPT_DIR/VERSION"
@@ -1342,6 +1369,7 @@ Usage:
   cortado setup              # point Claude Code's statusLine at this copy
   cortado update             # update this copy to the latest verified release
   cortado uninstall          # remove Cortado and restore your previous statusLine
+  cortado doctor             # check this install and say how to fix what is wrong
   cortado version            # print the version
   cortado help               # this message
 

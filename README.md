@@ -152,6 +152,7 @@ A module is a single Bash file. Put your own in `~/.claude/cortado-modules/` and
 
 ## Troubleshooting
 
+- Run `cortado doctor` first. It checks `jq`, Perl, your `settings.json`, config file permissions, the platform and `cortado.log`, and prints the command that fixes each problem.
 - If rate limits show `--`, send a message. Claude Code includes usage only after a session's first reply.
 - If the line starts with `Config refused` or `Config partly read`, run `cortado config --show` to see which file or line was skipped, and why.
 - If a module is missing, set `DEBUG_MODE="true"`. Module errors then go to `~/.claude/cortado.log` instead of being hidden.
