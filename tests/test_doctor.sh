@@ -205,11 +205,17 @@ assert_match 'a non-command statusLine is a FAIL line' '^FAIL +statusLine: is no
 
 # --- the command in settings.json is never run
 new_case
-marker="$root/was-run"
-write_settings "touch $(quoted "$marker") && /no/such/dir/cortado.sh"
+write_settings "/no/such/dir/cortado.sh"
 doctor
 assert_eq 'a command that cannot be found exits 1' 1 "$status"
 assert_match 'a missing cortado.sh is a FAIL line' '^FAIL +statusLine: .*/no/such/dir/cortado\.sh not found' "$out"
+
+new_case
+marker="$root/was-run"
+write_settings "touch $(quoted "$marker") && /no/such/dir/cortado.sh"
+doctor
+assert_eq 'a command that starts with something else exits 1' 1 "$status"
+assert_match 'a command that runs something else first is not a cortado.sh' '^FAIL +statusLine: does not run a cortado\.sh' "$out"
 assert_eq 'the settings.json command was never executed' no "$([ -e "$marker" ] && echo yes || echo no)"
 
 new_case
@@ -395,6 +401,134 @@ doctor
 assert_eq 'a cortado on PATH from another copy exits 0' 0 "$status"
 assert_match 'the command is found' '^ok +cortado command: ' "$out"
 assert_contains 'it says another copy is on PATH' 'another copy of cortado' "$out"
+
+# ---------------------------------------------------------------------------
+echo "== lines a config skips"
+new_case; healthy_settings
+printf 'MODULE_TIME=false\nfoo bar baz\n' > "$cfg/cortado.conf"; chmod 600 "$cfg/cortado.conf"
+doctor
+assert_eq 'a partly read user config exits 1' 1 "$status"
+assert_match 'it is not reported as simply trusted' '^FAIL +user config: .*1 line skipped' "$out"
+assert_contains 'the skipped line is named by number' 'line 2:' "$out"
+assert_contains 'its fix lists the lines' 'fix: cortado config --migrate --dry-run' "$out"
+assert_not_contains 'the config does not get an ok line' 'ok    user config' "$out"
+
+new_case; healthy_settings
+printf 'DEBUG_MODE=maybe\nMODULE_TIME=false\n$(touch x)\n' > "$cfg/cortado.conf"; chmod 600 "$cfg/cortado.conf"
+doctor
+assert_match 'a mistyped value and shell code are counted' '^FAIL +user config: .*2 lines skipped' "$out"
+
+new_case; healthy_settings
+printf 'NOT_A_CORTADO_SETTING=1\nMODULE_TIME=false\n' > "$cfg/cortado.conf"; chmod 600 "$cfg/cortado.conf"
+doctor
+assert_eq 'an unknown setting name does not change the render, so it does not fail' 0 "$status"
+assert_match 'it is still trusted' '^ok +user config: trusted' "$out"
+
+new_case; healthy_settings
+printf 'MODULE_TIME=false\nfoo bar baz\n' > "$cfg/barista.conf"; chmod 600 "$cfg/barista.conf"
+doctor
+assert_match 'a partly read Barista config is reported too' '^FAIL +user config \(barista\.conf.*1 line skipped' "$out"
+
+new_case; healthy_settings
+marker="$root/was-run"
+printf 'MODULE_ORDER=;;\n$(touch %s)\nMODULE_TIME=false\n' "$(quoted "$marker")" > "$proj/.cortado.conf"
+doctor
+assert_eq 'a partly read project config exits 1' 1 "$status"
+assert_match 'the project config reports its skipped lines' '^FAIL +project config: .*2 lines skipped' "$out"
+assert_contains 'its fix lists them for the project' 'fix: cortado config --migrate --dry-run --project' "$out"
+assert_not_contains 'it is not called read as data' 'read as data' "$out"
+assert_eq 'the project config was never run' no "$([ -e "$marker" ] && echo yes || echo no)"
+
+new_case; healthy_settings
+cp -R "$COPY" "$root/pkg"
+printf 'foo bar baz\n' >> "$root/pkg/cortado.conf"
+DOCTOR_SCRIPT="$root/pkg/cortado.sh" doctor
+unset DOCTOR_SCRIPT
+assert_eq 'a partly read packaged config exits 1' 1 "$status"
+assert_match 'the packaged config reports it' '^FAIL +packaged config: .*1 line skipped' "$out"
+assert_match 'a sample line that starts with Config partly read fails the render' '^FAIL +render: .*Config partly read' "$out"
+
+new_case; healthy_settings
+cp -R "$COPY" "$root/pkg"
+chmod 666 "$root/pkg/cortado.conf"
+DOCTOR_SCRIPT="$root/pkg/cortado.sh" doctor
+unset DOCTOR_SCRIPT
+assert_match 'a sample line that starts with Config refused fails the render' '^FAIL +render: .*Config refused' "$out"
+
+# ---------------------------------------------------------------------------
+echo "== which command settings.json runs"
+for text in "echo $(quoted "$COPY/cortado.sh")" "# $(quoted "$COPY/cortado.sh")" \
+    "false && $(quoted "$COPY/cortado.sh")" "cd /tmp && $(quoted "$COPY/cortado.sh")" \
+    "sh -c $(quoted "$COPY/cortado.sh")" "ls $(quoted "$COPY/cortado.sh")"; do
+    new_case
+    write_settings "$text"
+    doctor
+    assert_eq "not run by: $text (exit)" 1 "$status"
+    assert_match "not run by: $text" '^FAIL +statusLine: does not run a cortado\.sh' "$out"
+    assert_contains "not run by: $text (fix)" 'fix: cortado setup' "$out"
+done
+for text in "bash $(quoted "$COPY/cortado.sh")" "/bin/sh $(quoted "$COPY/cortado.sh")" \
+    "env bash $(quoted "$COPY/cortado.sh")" "env FOO=1 /bin/bash -x $(quoted "$COPY/cortado.sh")" \
+    "FOO=1 $(quoted "$COPY/cortado.sh") 2>/dev/null"; do
+    new_case
+    write_settings "$text"
+    doctor
+    assert_match "run by: $text" '^ok +statusLine: runs this copy' "$out"
+done
+
+new_case
+printf '#!/bin/bash\nexit 0\n' > "$proj/cortado.sh"; chmod 755 "$proj/cortado.sh"
+for text in './cortado.sh' 'cortado.sh' 'bash ./cortado.sh' 'bash cortado.sh' 'bin/cortado.sh'; do
+    write_settings "$text"
+    doctor
+    assert_eq "relative: $text (exit)" 1 "$status"
+    assert_match "relative: $text" '^FAIL +statusLine: .*relative path' "$out"
+    assert_contains "relative: $text (fix)" 'fix: cortado setup' "$out"
+    assert_not_contains "relative: $text is not resolved against doctor's directory" 'runs this copy' "$out"
+done
+
+new_case
+weird="$root/it's \$HOME x"
+cp -R "$COPY" "$weird"
+jq -n --arg c "$(jq -nr --arg p "$weird/cortado.sh" '$p | @sh')" '{statusLine:{type:"command",command:$c}}' > "$settings"
+DOCTOR_SCRIPT="$weird/cortado.sh" doctor
+unset DOCTOR_SCRIPT
+assert_eq 'a path with a quote and a $ that setup wrote is accepted' 0 "$status"
+assert_match 'it is this copy' '^ok +statusLine: runs this copy' "$out"
+doctor
+assert_match 'it is found as another copy from a different one' '^ok +statusLine: runs another copy' "$out"
+
+# ---------------------------------------------------------------------------
+echo "== a program named cortado"
+new_case; healthy_settings
+rm "$bin/cortado"; ln -s /bin/echo "$bin/cortado"
+doctor
+assert_eq 'a cortado that is another program exits 1' 1 "$status"
+assert_match 'it is a FAIL line' '^FAIL +cortado command: another program named cortado' "$out"
+assert_contains 'its fix only looks' 'fix: type -a cortado' "$out"
+assert_not_contains 'it never suggests removing it' 'rm ' "$out"
+
+new_case; healthy_settings
+rm "$bin/cortado"; printf '#!/bin/bash\nexit 0\n' > "$bin/cortado"; chmod 755 "$bin/cortado"
+doctor
+assert_match 'a stub script named cortado fails too' '^FAIL +cortado command: another program named cortado' "$out"
+
+# ---------------------------------------------------------------------------
+echo "== fixes that point somewhere useful"
+new_case; healthy_settings
+fresh_tool_dir perl bc; tools_path "$REPLY"
+doctor
+render_block=$(printf '%s\n' "$out" | awk '/^FAIL +render/ {p=1; next} /^(ok|FAIL|info) / {p=0} p')
+assert_match 'with jq missing the render fails' '^FAIL +render' "$out"
+assert_not_contains 'the render failure does not suggest an update' 'update' "$render_block"
+
+new_case; healthy_settings
+ln -s /nonexistent/gone.conf "$cfg/cortado.conf"
+doctor
+assert_eq 'a dangling config link exits 1' 1 "$status"
+assert_contains 'the fix removes the named link' "fix: rm $(quoted "$cfg/cortado.conf")" "$out"
+assert_not_contains 'it does not suggest ls -ld' 'ls -ld' "$out"
+assert_contains 'it says where the link points' '/nonexistent/gone.conf' "$out"
 
 # ---------------------------------------------------------------------------
 echo "== changes nothing, asks nothing"

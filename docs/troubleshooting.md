@@ -11,12 +11,12 @@ cortado doctor
 It checks:
 
 - `jq` and Perl are installed. `bc` shows up as information only, because just the optional temperature module uses it.
-- `settings.json` in your Claude config directory exists, is valid JSON, and its `statusLine` command points at a `cortado.sh` that exists and can run. Doctor says whether that is the copy you ran doctor from or another one. It reads the command as text and never runs it.
+- `settings.json` in your Claude config directory exists, is valid JSON, and its `statusLine` command runs a `cortado.sh` (as the command itself, or as the script given to `bash` or `sh`) that exists and can run. A relative path fails, because Claude Code runs the command from the project directory. Doctor says whether that is the copy you ran doctor from or another one. It reads the command as text and never runs it.
 - This copy draws a sample statusline. Doctor feeds it a built-in sample in a temporary config directory, which it deletes afterwards.
-- Each config file Cortado reads (the packaged one, yours in the Claude config directory, and the project's in the current directory) is trusted. For a refusal it prints the reason and the `chmod` that fixes it; [Config refused](#config-refused-or-config-partly-read) explains the rules.
+- Each config file Cortado reads (the packaged one, yours in the Claude config directory, and the project's in the current directory) is trusted, and none of its lines is skipped. For a refusal it prints the reason and the `chmod` that fixes it; for skipped lines it counts them, shows the first few, and points to `cortado config --migrate --dry-run` for the full list; [Config refused](#config-refused-or-config-partly-read) explains the rules.
 - The platform Cortado detected, and whether it is supported (macOS and Linux).
 - The last few lines of `cortado.log` and `cortado.log.1`, or "no log" when debug mode is off. These are for reading and never fail a check.
-- The `cortado` command is on your `PATH`.
+- The `cortado` command is on your `PATH` and is a link to a `cortado.sh`, not some other program with that name.
 
 A run that finds problems looks like this (paths shortened):
 

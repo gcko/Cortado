@@ -160,10 +160,12 @@ _doctor_check_tools() {
 
 # --- settings.json -----------------------------------------------------------
 
-# Split command text into words the way a shell would for plain commands, with
-# no expansion beyond ~ and $HOME or $CLAUDE_CONFIG_DIR at the start of a word,
-# set in _DOCTOR_WORDS. Quotes group, a backslash escapes, and an unquoted ; | &
-# < > ( ) ends a word (and is dropped). Nothing is run.
+# Split command text into words the way a shell would for plain commands, set
+# in _DOCTOR_WORDS. Quotes group, a backslash escapes, and an unquoted
+# ; | & < > ( ) ends a word (and is dropped). Text that a shell would take
+# literally (inside single quotes, or escaped) has its $, ` and ~ swapped for
+# placeholder bytes, so only unquoted text can start an expansion. Nothing is run.
+_DOCTOR_DOLLAR=$'\001' _DOCTOR_TICK=$'\002' _DOCTOR_TILDE=$'\003'
 _doctor_split() {
     local text="$1" i c word='' state=none have=false
     _DOCTOR_WORDS=()
@@ -171,15 +173,16 @@ _doctor_split() {
         c="${text:i:1}"
         case "$state" in
             single)
-                if [ "$c" = "'" ]; then state=none; else word+="$c"; fi
+                if [ "$c" = "'" ]; then state=none; else _doctor_literal "$c"; word+="$REPLY"; fi
                 ;;
             double)
                 case "$c" in
                     '"') state=none ;;
                     '\')
                         i=$((i + 1))
-                        word+="${text:i:1}"
+                        _doctor_literal "${text:i:1}"; word+="$REPLY"
                         ;;
+                    '~') word+="$_DOCTOR_TILDE" ;;
                     *) word+="$c" ;;
                 esac
                 ;;
@@ -189,7 +192,7 @@ _doctor_split() {
                     '"') state=double have=true ;;
                     '\')
                         i=$((i + 1))
-                        word+="${text:i:1}" have=true
+                        _doctor_literal "${text:i:1}"; word+="$REPLY" have=true
                         ;;
                     [[:space:]\;\|\&\<\>\(\)])
                         if [ "$have" = true ] || [ -n "$word" ]; then _DOCTOR_WORDS+=("$word"); fi
@@ -203,9 +206,20 @@ _doctor_split() {
     if [ "$have" = true ] || [ -n "$word" ]; then _DOCTOR_WORDS+=("$word"); fi
 }
 
+# REPLY is $1, with a character that would expand replaced by its placeholder.
+_doctor_literal() {
+    case "$1" in
+        '$') REPLY="$_DOCTOR_DOLLAR" ;;
+        '`') REPLY="$_DOCTOR_TICK" ;;
+        '~') REPLY="$_DOCTOR_TILDE" ;;
+        *) REPLY="$1" ;;
+    esac
+}
+
 # Expand a leading ~ or $HOME or ${HOME}, $CLAUDE_CONFIG_DIR or
-# ${CLAUDE_CONFIG_DIR} in a word, by plain text replacement. Sets REPLY; fails
-# when the word still holds an expansion that was not understood.
+# ${CLAUDE_CONFIG_DIR} in a word, by plain text replacement, then restore the
+# placeholders. Sets REPLY; fails (REPLY empty) when an unquoted expansion is
+# left that this does not understand.
 _doctor_expand_word() {
     local w="$1" home="${HOME:-}" cfg="${CLAUDE_CONFIG_DIR:-}"
     case "$w" in
@@ -218,52 +232,87 @@ _doctor_expand_word() {
         '$CLAUDE_CONFIG_DIR'|'$CLAUDE_CONFIG_DIR/'*) w="$cfg${w#\$CLAUDE_CONFIG_DIR}" ;;
         '${CLAUDE_CONFIG_DIR}'|'${CLAUDE_CONFIG_DIR}/'*) w="$cfg${w#\$\{CLAUDE_CONFIG_DIR\}}" ;;
     esac
-    REPLY="$w"
-    case "$w" in *'$'*|*'`'*) return 1 ;; esac
-    return 0
+    # What the expansion above produced is data too, but a $ left in unquoted
+    # text is an expansion this cannot do.
+    case "$w" in
+        *'$'*|*'`'*) REPLY=''; return 1 ;;
+    esac
+    w="${w//$_DOCTOR_DOLLAR/$}"
+    w="${w//$_DOCTOR_TICK/\`}"
+    REPLY="${w//$_DOCTOR_TILDE/\~}"
 }
 
-# Find the cortado.sh (or cortado command) a statusLine command would start.
-# Sets _DOCTOR_TARGET to its path and _DOCTOR_TARGET_IS_COMMAND to true when it
-# is the command word itself, so it must be executable. Fails when none is named.
+# Find the cortado.sh (or cortado command) a statusLine command runs. It is the
+# command only as the first word (after NAME=value words and env), or as the
+# script a shell is given (bash, sh and the like, with or without a path).
+# Anything later (echo X, X after &&, a comment) is not run as Cortado.
+# Sets _DOCTOR_TARGET, _DOCTOR_TARGET_IS_COMMAND (the word itself must be
+# executable) and _DOCTOR_TARGET_RELATIVE (a path Claude Code would read from
+# its own working directory, not this one). Fails when none is named.
 _doctor_find_target() {
-    local word expanded base command_index=-1 index=0 REPLY
+    local -a words=()
+    local word n idx=0 cmd base REPLY
     _doctor_split "$1"
-    _DOCTOR_TARGET='' _DOCTOR_TARGET_IS_COMMAND=false
+    _DOCTOR_TARGET='' _DOCTOR_TARGET_IS_COMMAND=false _DOCTOR_TARGET_RELATIVE=false
     for word in ${_DOCTOR_WORDS[@]+"${_DOCTOR_WORDS[@]}"}; do
-        case "$word" in
-            [A-Za-z_]*=*) ;;
-            *) [ "$command_index" -ge 0 ] || command_index=$index ;;
-        esac
-        index=$((index + 1))
+        # A word with an expansion that cannot be followed matches nothing.
+        if _doctor_expand_word "$word"; then words+=("$REPLY"); else words+=($'\004'); fi
     done
-    index=0
-    for word in ${_DOCTOR_WORDS[@]+"${_DOCTOR_WORDS[@]}"}; do
-        _doctor_expand_word "$word" || :
-        expanded="$REPLY"
-        base="${expanded##*/}"
-        case "$base" in
-            cortado.sh|cortado)
-                case "$expanded" in
-                    *'$'*|*'`'*) ;;
-                    */*)
-                        case "$expanded" in
-                            /*) ;;
-                            *) expanded="$PWD/$expanded" ;;
-                        esac
-                        _DOCTOR_TARGET="$expanded"
-                        ;;
-                    *) _DOCTOR_TARGET=$(command -v "$expanded" 2>/dev/null) || _DOCTOR_TARGET="$expanded" ;;
+    n=${#words[@]}
+    while [ "$idx" -lt "$n" ]; do
+        case "${words[idx]}" in [A-Za-z_]*=*) idx=$((idx + 1)) ;; *) break ;; esac
+    done
+    [ "$idx" -lt "$n" ] || return 1
+    cmd="${words[idx]}"
+    base="${cmd##*/}"
+    if [ "$base" = env ]; then
+        idx=$((idx + 1))
+        while [ "$idx" -lt "$n" ]; do
+            case "${words[idx]}" in -*|*=*) idx=$((idx + 1)) ;; *) break ;; esac
+        done
+        [ "$idx" -lt "$n" ] || return 1
+        cmd="${words[idx]}"
+        base="${cmd##*/}"
+    fi
+    case "$base" in
+        cortado.sh|cortado)
+            _DOCTOR_TARGET="$cmd"
+            _DOCTOR_TARGET_IS_COMMAND=true
+            ;;
+        bash|sh|dash|zsh|ksh)
+            idx=$((idx + 1))
+            while [ "$idx" -lt "$n" ]; do
+                case "${words[idx]}" in
+                    --) idx=$((idx + 1)); break ;;
+                    --*) idx=$((idx + 1)) ;;
+                    # -c reads a command string, not a script.
+                    -*c*) return 1 ;;
+                    -*) idx=$((idx + 1)) ;;
+                    *) break ;;
                 esac
-                if [ -n "$_DOCTOR_TARGET" ]; then
-                    [ "$index" -ne "$command_index" ] || _DOCTOR_TARGET_IS_COMMAND=true
-                    return 0
-                fi
-                ;;
-        esac
-        index=$((index + 1))
-    done
-    return 1
+            done
+            [ "$idx" -lt "$n" ] || return 1
+            cmd="${words[idx]}"
+            case "${cmd##*/}" in cortado.sh|cortado) ;; *) return 1 ;; esac
+            _DOCTOR_TARGET="$cmd"
+            ;;
+        *) return 1 ;;
+    esac
+    case "$_DOCTOR_TARGET" in
+        /*) ;;
+        */*) _DOCTOR_TARGET_RELATIVE=true ;;
+        *)
+            # A bare cortado as the command is looked up on PATH; any other
+            # bare name is a file in whatever directory Claude Code runs from.
+            if [ "$_DOCTOR_TARGET_IS_COMMAND" = true ] && [ "$_DOCTOR_TARGET" = cortado ]; then
+                _DOCTOR_TARGET=$(command -v cortado 2>/dev/null) || _DOCTOR_TARGET=cortado
+                case "$_DOCTOR_TARGET" in /*) ;; *) _DOCTOR_TARGET=cortado ;; esac
+            else
+                _DOCTOR_TARGET_RELATIVE=true
+            fi
+            ;;
+    esac
+    return 0
 }
 
 _doctor_check_settings() {
@@ -317,6 +366,11 @@ _doctor_check_settings() {
     target="$_DOCTOR_TARGET"
     _doctor_clean "$target" 200
     q="$REPLY"
+    if [ "$_DOCTOR_TARGET_RELATIVE" = true ]; then
+        _doctor_fail "statusLine: $q is a relative path, so it only works from one directory" "$setup_fix" \
+            'Claude Code runs the command from the project directory.'
+        return
+    fi
     if [ ! -e "$target" ]; then
         _doctor_fail "statusLine: $q not found" "$setup_fix"
         return
@@ -355,7 +409,7 @@ _doctor_check_settings() {
 # --- render ------------------------------------------------------------------
 
 _doctor_render() {
-    local sandbox payload out status line errline dir REPLY
+    local sandbox payload out status line errline dir warning REPLY
     if ! sandbox=$(mktemp -d "${TMPDIR:-/tmp}/cortado-doctor.XXXXXX" 2>/dev/null); then
         _doctor_fail 'render: could not make a temporary directory to test in' \
             'export TMPDIR="$HOME/tmp" && mkdir -p "$TMPDIR"'
@@ -384,10 +438,26 @@ _doctor_render() {
     esac
     if [ "$status" -ne 0 ]; then
         _doctor_clean "${out:-${errline:-no output}}" 100
-        _doctor_fail 'render: this copy could not draw a sample statusline' \
-            "$_DOCTOR_SELF update" "$REPLY"
+        if ! command -v jq >/dev/null 2>&1; then
+            # The jq line above is the cause; an update would not help.
+            _doctor_fail 'render: this copy could not draw a sample statusline' '' "$REPLY" \
+                'See the jq line above.'
+        else
+            _doctor_fail 'render: this copy could not draw a sample statusline' \
+                "$_DOCTOR_SELF update" "$REPLY"
+        fi
         return
     fi
+    case "$line" in
+        'Config refused'*|'Config partly read'*)
+            warning="Config refused"
+            case "$line" in 'Config partly read'*) warning="Config partly read" ;; esac
+            _doctor_clean "$line" 60
+            _doctor_fail "render: the sample line starts with \"$warning\"" '' "$REPLY" \
+                'See the config lines below for the file and how to fix it.'
+            return
+            ;;
+    esac
     _doctor_clean "$line" 60
     _doctor_ok 'render: this copy draws a sample statusline' "$REPLY"
 }
@@ -398,6 +468,12 @@ _doctor_render() {
 # lib/config-permissions.sh. Sets REPLY (empty when no command applies).
 _doctor_trust_fix() {
     local path="$1" reason="$2" file="$1" dir qf qd
+    if [ -L "$path" ] && [ ! -e "$path" ]; then
+        # A dangling link: whatever the reason says, the link is what to fix.
+        _doctor_quote "$path"
+        REPLY="rm $REPLY"
+        return
+    fi
     if _doctor_resolve "$path"; then file="$REPLY"; fi
     dir="${file%/*}"
     [ -n "$dir" ] || dir=/
@@ -412,6 +488,42 @@ _doctor_trust_fix() {
         *'parent must belong'*) REPLY="mv $qf \"\$HOME/\"   # move it somewhere you own" ;;
         *) REPLY="ls -ld $qf $qd" ;;
     esac
+}
+
+# Count the lines of a config the parser skips, with the parser's own reader
+# (read_config_kv): the same policy the statusline applies, and nothing applied.
+# A trusted config's setting Cortado does not have never reaches a module, so
+# it is counted apart; every other skipped line changes what is read.
+_DOCTOR_SKIPPED=()
+_DOCTOR_SKIPPED_N=0
+_DOCTOR_UNKNOWN_N=0
+_doctor_note_skipped() {
+    local REPLY
+    if [ "${CONFIG_POLICY_KIND:-}" = unknown ] && [ "$_DOCTOR_SCAN_SCOPE" != project ]; then
+        _DOCTOR_UNKNOWN_N=$((_DOCTOR_UNKNOWN_N + 1))
+        return 0
+    fi
+    _DOCTOR_SKIPPED_N=$((_DOCTOR_SKIPPED_N + 1))
+    if [ "${#_DOCTOR_SKIPPED[@]}" -lt 3 ]; then
+        _doctor_clean "line $1: $2" 80
+        _DOCTOR_SKIPPED+=("$REPLY")
+    fi
+}
+
+# _doctor_scan_config <path> <packaged|user|project>
+_doctor_scan_config() {
+    local policy=trusted_config_setting_allowed
+    _DOCTOR_SCAN_SCOPE="$2"
+    _DOCTOR_SKIPPED=() _DOCTOR_SKIPPED_N=0 _DOCTOR_UNKNOWN_N=0
+    [ "$2" != project ] || policy=project_config_setting_allowed
+    read_config_kv "$1" "$policy" : _doctor_note_skipped 2>/dev/null || :
+}
+
+# The line count and the command that lists the lines, for a config that was
+# trusted. Sets REPLY to the summary, or fails when nothing was skipped.
+_doctor_skipped_summary() {
+    [ "$_DOCTOR_SKIPPED_N" -gt 0 ] || return 1
+    if [ "$_DOCTOR_SKIPPED_N" -eq 1 ]; then REPLY='1 line skipped'; else REPLY="$_DOCTOR_SKIPPED_N lines skipped"; fi
 }
 
 # _doctor_check_config <label> <path> <scope>
@@ -432,13 +544,28 @@ _doctor_check_config() {
         return
     fi
     if reason=$(_trusted_config_path "$path" "$scope" 2>/dev/null); then
-        _doctor_ok "$label: trusted" "$shown"
+        _doctor_scan_config "$path" "$scope"
+        if _doctor_skipped_summary; then
+            fix="$_DOCTOR_SELF config --migrate --dry-run"
+            [ "$scope" != packaged ] || fix="$_DOCTOR_SELF update"
+            _doctor_fail "$label: trusted, but $REPLY" "$fix" "$shown" "${_DOCTOR_SKIPPED[@]}"
+        elif [ "$_DOCTOR_UNKNOWN_N" -gt 0 ]; then
+            _doctor_ok "$label: trusted" "$shown" "$_DOCTOR_UNKNOWN_N setting name(s) Cortado does not have, ignored"
+        else
+            _doctor_ok "$label: trusted" "$shown"
+        fi
         return
     fi
     _doctor_clean "$reason" 100
     reason="$REPLY"
     _doctor_trust_fix "$path" "$reason"
     fix="$REPLY"
+    if [ -L "$path" ] && [ ! -e "$path" ]; then
+        _doctor_clean "$(command readlink "$path" 2>/dev/null)" 120
+        _doctor_fail "$label: refused ($reason)" "$fix" "$shown" "a link to $REPLY, which does not exist" \
+            'Remove the link, or point it at a file: ln -sfn FILE LINK'
+        return
+    fi
     _doctor_fail "$label: refused ($reason)" "$fix" "$shown"
 }
 
@@ -455,7 +582,14 @@ _doctor_check_configs() {
     [ -f "$project" ] || project="$PWD/.barista.conf"
     if [ -f "$project" ]; then
         _doctor_clean "$project" 200
-        _doctor_ok 'project config: read as data, never run' "$REPLY"
+        local shown="$REPLY"
+        _doctor_scan_config "$project" project
+        if _doctor_skipped_summary; then
+            _doctor_fail "project config: $REPLY" "$_DOCTOR_SELF config --migrate --dry-run --project" \
+                "$shown" "${_DOCTOR_SKIPPED[@]}"
+        else
+            _doctor_ok 'project config: read as data, never run' "$shown"
+        fi
     else
         _doctor_info 'project config: none in this directory' "$PWD"
     fi
@@ -529,12 +663,22 @@ _doctor_check_log() {
 # --- the cortado command -----------------------------------------------------
 
 _doctor_check_command() {
-    local found q link="${HOME:-}/.local/bin/cortado" self="$SCRIPT_DIR/cortado.sh" REPLY qs
+    local found q resolved rq link="${HOME:-}/.local/bin/cortado" self="$SCRIPT_DIR/cortado.sh" REPLY qs
     local rc
     _doctor_quote "$self"; qs="$REPLY"
     if found=$(command -v cortado 2>/dev/null) && [ -n "$found" ]; then
         _doctor_clean "$found" 200
         q="$REPLY"
+        resolved="$found"
+        if _doctor_resolve "$found"; then resolved="$REPLY"; fi
+        if [ "${resolved##*/}" != cortado.sh ]; then
+            _doctor_clean "$resolved" 200
+            rq="$REPLY"
+            _doctor_fail "cortado command: another program named cortado" 'type -a cortado' \
+                "$q resolves to $rq, which is not a Cortado cortado.sh." \
+                'Check what it is. Cortado may be shadowed by it, or installed under another name.'
+            return
+        fi
         if [ "$found" -ef "$self" ]; then
             _doctor_ok "cortado command: $q" 'this copy'
         else
