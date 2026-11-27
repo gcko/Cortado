@@ -1133,13 +1133,16 @@ render_statusline() {
     fi
 
     # Build status line sections
+    # Each notice names the command that explains it best: doctor prints a
+    # refusal's reason and its chmod fix, and config --show lists the lines
+    # Cortado skipped. ASCII, so it holds under COLOR_THEME=monochrome.
     local sections=""
     if [ "${CONFIG_REFUSALS[0]+set}" ]; then
-        sections="Config refused"
+        sections="Config refused: run cortado doctor"
     fi
     # A trusted config line the data parser did not apply may change the line.
     if [ "${CONFIG_UNREAD_RENDER:-0}" -gt 0 ]; then
-        sections="${sections:+$sections$'\n'}Config partly read"
+        sections="${sections:+$sections$'\n'}Config partly read: run cortado config --show"
     fi
 
     # Process modules in specified order. Split MODULE_ORDER with IFS scoped to

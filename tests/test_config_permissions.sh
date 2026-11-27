@@ -211,7 +211,7 @@ assert_not_contains 'A total metadata outage ignores the refused override' OVERR
 assert_eq 'Both config refusals produce one short notice' 1 \
     "$(grep -oF 'Config refused' "$TEST_BASE/stdout" | wc -l | tr -d ' ')"
 assert_contains 'A total metadata outage joins the notice with the default separator' \
-    'Config refused | ' "$rendered"
+    'Config refused: run cortado doctor | ' "$rendered"
 assert_file_contains 'A metadata outage explains the reason on stderr' \
     'could not read permission metadata' "$TEST_BASE/stderr"
 
