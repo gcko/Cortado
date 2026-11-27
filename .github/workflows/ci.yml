@@ -78,7 +78,7 @@ jobs:
       - name: Check shell syntax
         run: |
           failed=0
-          for script in cortado.sh install.sh lib/*.sh modules/*.sh tests/*.sh tests/lib/*.sh; do
+          for script in *.sh lib/*.sh modules/*.sh tests/*.sh tests/lib/*.sh; do
             /bin/bash -n "$script" || { printf 'SYNTAX: %s\n' "$script"; failed=1; }
           done
           exit "$failed"
@@ -103,7 +103,7 @@ jobs:
             cd "$1" || exit 1
             shopt -s nullglob
             local_status=0
-            shellcheck -f json cortado.sh install.sh lib/*.sh modules/*.sh tests/*.sh tests/lib/*.sh > "$2" || local_status=$?
+            shellcheck -f json *.sh lib/*.sh modules/*.sh tests/*.sh tests/lib/*.sh > "$2" || local_status=$?
             if [ "$local_status" -gt 1 ]; then
               cat "$2" >&2
               exit "$local_status"
