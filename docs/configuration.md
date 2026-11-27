@@ -64,7 +64,7 @@ Every config file is data. Cortado never runs it.
 - A later line for the same key wins. An `export` prefix is ignored.
 - To put a color code in a separator or icon, type the escape byte itself inside the quotes.
 
-Cortado skips any other kind of line, such as `$(...)`, backticks, `$HOME`, `$'...'`, a leading `~`, a function or an `if`. It also skips a value that doesn't fit its setting, such as `CONTEXT_WARNING_THRESHOLD=high`. When it skips something, the statusline shows `Config partly read` and renders everything else. A name Cortado doesn't know is only listed, since no module reads it.
+Cortado skips any other kind of line, such as `$(...)`, backticks, `$HOME`, `$'...'`, a leading `~`, a function or an `if`. It also skips a value that doesn't fit its setting, such as `CONTEXT_WARNING_THRESHOLD=high`. When it skips something, the statusline shows `Config partly read: run cortado config --show` and renders everything else. A name Cortado doesn't know is only listed, since no module reads it.
 
 `cortado config --show` names each skipped line, and `cortado config --migrate --dry-run` lists them with line numbers.
 

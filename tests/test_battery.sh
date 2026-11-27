@@ -25,7 +25,7 @@ check_render 'battery preserves a measured zero' 'CRIT: 0% ⚡' zero
 # The parser refuses a mistyped int and says so (#33); only a config sourced
 # under the opt-in still hands the module a non-numeric threshold to coerce.
 check_render 'battery reports a mistyped low threshold and keeps the default' \
-    'Config partly read | LOW: 15% ⚡' low '' 'BATTERY_LOW_THRESHOLD=20abc'
+    'Config partly read: run cortado config --show | LOW: 15% ⚡' low '' 'BATTERY_LOW_THRESHOLD=20abc'
 CORTADO_CONF_ALLOW_BASH=1 check_render 'battery coerces a non-numeric low threshold to its number' 'LOW: 15% ⚡' low '' \
     'BATTERY_LOW_THRESHOLD=20abc'
 check_render 'battery shows absence when pmset fails' 'BAT: --' failed

@@ -50,9 +50,9 @@ The sections below cover the same problems in more detail.
 
 ## `Config refused` or `Config partly read`
 
-`Config partly read` means Cortado skipped lines it couldn't read as data, or values of the wrong type. Run `cortado config --show` to see each one, or `cortado config --migrate --dry-run` for a list with line numbers. [The file format](configuration.md#file-format) explains what Cortado accepts.
+The statusline shows `Config partly read: run cortado config --show` when Cortado skipped lines it couldn't read as data, or values of the wrong type. Run `cortado config --show` to see each one, or `cortado config --migrate --dry-run` for a list with line numbers. `cortado doctor` also reports which file has skipped lines. [The file format](configuration.md#file-format) explains what Cortado accepts.
 
-`Config refused` means Cortado skipped a whole config file because it couldn't prove the file is yours. Run `cortado config --show` in a terminal to see the file and the reason on stderr. When a trusted config turns on debug mode, the same details go to `cortado.log`.
+The statusline shows `Config refused: run cortado doctor` when Cortado skipped a whole config file because it couldn't prove the file is yours. Run `cortado doctor` to see the file, the reason and the `chmod` that fixes it. `cortado config --show` prints the reason on stderr too. When a trusted config turns on debug mode, the same details go to `cortado.log`.
 
 Cortado trusts a config file when:
 

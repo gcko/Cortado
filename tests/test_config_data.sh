@@ -238,7 +238,7 @@ new_sandbox
 user_config "${base[@]}" 'MODEL_ICON="$(touch "$MARK")X"'
 out=$(render env)
 marker_absent 'a $(...) line in the user config does not run'
-assert_eq 'the line renders what it could read and says so' $'Config partly read | 🤖 Opus' "$out"
+assert_eq 'the line renders what it could read and says so' $'Config partly read: run cortado config --show | 🤖 Opus' "$out"
 
 new_sandbox
 user_config "${base[@]}" 'MODEL_ICON=`touch "$MARK"`'
@@ -289,7 +289,7 @@ assert_eq 'a key repeated later in the file takes the later value' 'LAST Opus' "
 
 new_sandbox
 user_config "${base[@]}" 'MODEL_ICON=KEPT' 'MODEL_ICON="$(touch "$MARK")"'
-assert_eq 'an unread later line keeps the earlier value' $'Config partly read | KEPT Opus' "$(render env)"
+assert_eq 'an unread later line keeps the earlier value' $'Config partly read: run cortado config --show | KEPT Opus' "$(render env)"
 
 new_sandbox
 printf 'MODULE_ORDER="model"\r\nMODULE_MODEL="true"\r\nUSE_ICONS="true"\r\nMODEL_ICON="CRLF"\r\n' > "$sb/cortado.conf"
@@ -298,11 +298,11 @@ assert_eq 'a CRLF user config renders its values' 'CRLF Opus' "$(render env)"
 
 new_sandbox
 user_config "${base[@]}" "MODEL_ICON=$long_value" 'MODEL_ICON=SHORT'
-assert_eq 'a very long line is skipped and the next line applies' $'Config partly read | SHORT Opus' "$(render env)"
+assert_eq 'a very long line is skipped and the next line applies' $'Config partly read: run cortado config --show | SHORT Opus' "$(render env)"
 
 new_sandbox
 user_config "${base[@]}" 'MODULE_MODEL=maybe'
-assert_eq 'a mistyped value is reported and the default applies' $'Config partly read | 🤖 Opus' "$(render env)"
+assert_eq 'a mistyped value is reported and the default applies' $'Config partly read: run cortado config --show | 🤖 Opus' "$(render env)"
 
 new_sandbox
 user_config "${base[@]}" 'GIT_FOO=1' 'MODEL_ICON=SAME'
@@ -528,7 +528,7 @@ chmod 700 "$TEST_BASE/failing-cp/cp"
 out=$(render env PATH="$TEST_BASE/failing-cp:$PATH")
 marker_absent 'a legacy barista.conf read in place does not run'
 assert_rc 'the failed copy left no cortado.conf' 1 test -e "$sb/cortado.conf"
-assert_eq 'the legacy file renders what it could read and says so' 'Config partly read | 🤖 Opus' "$out"
+assert_eq 'the legacy file renders what it could read and says so' 'Config partly read: run cortado config --show | 🤖 Opus' "$out"
 
 echo "=== installer ==="
 # shellcheck source=install.sh
