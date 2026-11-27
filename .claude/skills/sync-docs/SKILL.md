@@ -1,6 +1,6 @@
 ---
 name: sync-docs
-description: Use when reconciling Cortado's docs (README, AGENTS.md, cortado.conf and module header comments) with the code before a pull request or release, or whenever the documentation may be stale.
+description: Use when reconciling Cortado's docs (README, docs/, CHANGELOG, AGENTS.md, cortado.conf and module header comments) with the code before a pull request or release, or whenever the documentation may be stale.
 ---
 
 # sync-docs
@@ -16,9 +16,10 @@ a diff-and-reconcile pass, not a rewrite.
   every install, so a stray edit there runs on every statusline render. If a doc is right and the
   code is wrong, report it; do not fix it here.
 - **Never touch the version.** `VERSION`, the README badge, the README footer, the "What's New"
-  heading and the assertion in `tests/test_config_cli.sh` belong to `cortado-release`.
-- **Never rewrite release history.** The README's past "What's New" sections record what shipped
-  then. Correct a claim in them only if it was false when written.
+  heading, the `CHANGELOG.md` headings and the assertion in `tests/test_config_cli.sh` belong to
+  `cortado-release`.
+- **Never rewrite release history.** `CHANGELOG.md` and the README's "What's New" section record
+  what shipped then. Correct a claim in them only if it was false when written.
 - **Never edit strings the code prints.** `./install.sh --help`, `cortado.sh help` and the
   `cortado config` usage text are code. A mismatch between them and the README is a finding: report
   it, or fix the README side if the code is right.
@@ -34,7 +35,12 @@ a diff-and-reconcile pass, not a rewrite.
 
 | File | Owns | Rule |
 |---|---|---|
-| `README.md` | The user's reference: what Cortado is, the module tables, installation and installer options, `cortado config`, configuration, migrating from Barista, troubleshooting, uninstall, credits and license. | Every module, flag, option, theme and file it names must exist in the code, and every one the code ships must appear. Keep the coffee-themed headings and emoji: they are the house style. |
+| `README.md` | The short entry point: what Cortado is, the demo, a quick install, the latest release, the module tables, reading the statusline, and short configure, custom-module and troubleshooting sections that link into `docs/`. Credits and license. | Keep it short: detail belongs in `docs/`, with a link. Every module it names must exist, and every module the code ships must have a row. Plain, descriptive headings. |
+| `docs/install.md` | Requirements, installer options, updating, manual install, uninstall. | Every installer flag the code accepts appears here, and nothing else. |
+| `docs/configuration.md` | `cortado config`, config files and their rules, per-project settings, the settings reference, background refreshes, presets. | Every `cortado config` option the code accepts appears here. Each default matches the code. |
+| `docs/custom-modules.md` | The user guide to writing a module in `cortado-modules/`. | Its header table agrees with `AGENTS.md`, "Adding a New Module". `tests/test_module_catalog.sh` runs the quick start's first three code blocks, so keep them in order: module file, config, permissions. |
+| `docs/troubleshooting.md`, `docs/migrating-from-barista.md` | Fixes for common problems; what carries over from Barista. | Each message and file name it quotes must be one the code prints or uses. |
+| `CHANGELOG.md` | Release history, newest first. | Written by `cortado-release`. The README's "What's New" holds only the newest entry. |
 | `AGENTS.md` | **Canonical** repository contract: architecture tree, how it works, conventions, Pre-PR Checks, PR workflow, versioning, review tiers, parallel work, the skills table. | Every process command list is defined here once; other docs link to it. Never rename or move it: Codex loads it by name, and `CLAUDE.md` imports it. |
 | `CLAUDE.md` | Claude-Code-only addenda. | Line 1 stays the bare `@AGENTS.md` import. Anything also true for Codex belongs in `AGENTS.md`. |
 | `cortado.conf` comments | The per-setting reference every install ships with. | Comment lines only. Each documented key must be one the code reads, with the default the code uses. |
@@ -67,7 +73,7 @@ is its mechanical backstop, since nothing else enforces tone.
 harness has it, but this repository does not vendor it, so everything needed to apply the standard
 by hand is here.
 
-In scope: `README.md`. Out of scope, deliberately: `AGENTS.md`
+In scope: `README.md`, `CHANGELOG.md` and `docs/*.md`. Out of scope, deliberately: `AGENTS.md`
 and `CLAUDE.md` (agent contracts loaded verbatim), the skills (agent instructions), and config and
 code comments.
 
@@ -76,8 +82,9 @@ The standard, in order of how often it is violated:
 - No em dashes, en dashes, or curly quotes in prose you write. Use a period, a comma, a colon, or
   parentheses.
 - No mechanical boldface, and no inline-header lists where every item starts with a bolded label.
-  The README's existing feature lists predate this rule; do not add new ones.
-- Sentence case in new headings, except the house-style coffee headings already there.
+  The changelog's feature lists predate this rule; do not add new ones.
+- Sentence case in new headings. Headings say what the section holds; keep the coffee name to the
+  tagline.
 - Prefer `is`/`are`/`has` over "serves as", "stands as", "boasts", "features".
 - Cut the AI-vocabulary words: crucial, pivotal, seamless, robust, leverage, delve, showcase,
   underscore, testament, landscape (figurative), tapestry.
@@ -87,8 +94,8 @@ The standard, in order of how often it is violated:
 Never drop a fact to make a sentence flow, and never add one to make it land: the pass keeps the
 information and changes only the shape.
 
-The existing README has em dashes that predate this standard. Check (e) therefore scans only the
-lines a pass adds, so it stops new drift without forcing a rewrite. A full tone pass over the README
+The 2026-11-27 rewrite brought the README and `docs/` to this standard. Check (e) scans only the
+lines a pass adds, so it stops new drift without forcing a rewrite. A full tone pass over the docs
 is its own docs pull request, with the owner's yes.
 
 ## Extract the code truth
@@ -102,14 +109,14 @@ echo "# registry (cortado.sh)";    sed -n '/^get_module_function()/,/^}/p' corta
 echo "# config catalog";           grep -oE '^    "[a-z-]+:(true|false):' lib/config-tui.sh | cut -d'"' -f2 | cut -d: -f1 | sort | tr '\n' ' '; echo
 echo "# MODULE_* in cortado.conf"; grep -oE '^MODULE_[A-Z_]+=' cortado.conf | grep -v ORDER | sed 's/^MODULE_//; s/=$//' | tr 'A-Z_' 'a-z-' | sort | tr '\n' ' '; echo
 echo "# README module rows";       grep -oE '^\| \*\*[a-z-]+\*\* \|' README.md | grep -oE '[a-z-]+' | sort | tr '\n' ' '; echo
-# Installer flags: the parser, its help, and the README
+# Installer flags: the parser, its help, and the docs
 echo "# install.sh flags";         sed -n '/^parse_args()/,/^}/p' install.sh | grep -oE -- '--[a-z-]+' | sort -u | tr '\n' ' '; echo
 echo "# install.sh --help";        sed -n '/^show_help()/,/^}/p' install.sh | grep -oE -- '--[a-z-]+' | sort -u | tr '\n' ' '; echo
-echo "# README installer flags";   grep -oE -- '\./install\.sh --[a-z-]+' README.md | awk '{print $2}' | sort -u | tr '\n' ' '; echo
-# cortado config options: the parser, its usage, and the README
+echo "# docs installer flags";     grep -ohE -- '\./install\.sh --[a-z-]+' README.md docs/*.md | awk '{print $2}' | sort -u | tr '\n' ' '; echo
+# cortado config options: the parser, its usage, and the docs
 echo "# config parser";            sed -n '/^cortado_config_main()/,/^}/p' lib/config-tui.sh | grep -oE -- '--[a-z-]+' | sort -u | tr '\n' ' '; echo
 echo "# config usage";             sed -n '/^_cfg_usage()/,/^}/p' lib/config-tui.sh | grep -oE -- '--[a-z-]+' | sort -u | tr '\n' ' '; echo
-echo "# README config options";    grep -oE -- 'cortado config --[a-z-]+' README.md | awk '{print $3}' | sort -u | tr '\n' ' '; echo
+echo "# docs config options";      grep -ohE -- 'cortado config --[a-z-]+' README.md docs/*.md | awk '{print $3}' | sort -u | tr '\n' ' '; echo
 # Themes and the files Cortado keeps
 echo "# themes (apply_theme)";     sed -n '/^apply_theme()/,/^}/p' modules/utils.sh | grep -oE '^ +[a-z]+\)' | tr -d ' )' | sort -u | tr '\n' ' '; echo
 echo "# CLAUDE_CONFIG_DIR files";  grep -rhoE 'CLAUDE_CONFIG_DIR(:-\$HOME/\.claude)?\}?/[A-Za-z._-]+' cortado.sh modules lib | sed -E 's|.*/||' | sort -u | tr '\n' ' '; echo
@@ -183,7 +190,7 @@ counts are the most common drift.
    bash -n cortado.conf && for f in modules/*.sh; do bash -n "$f"; done && echo "syntax ok"
 
    # e. Tone: no em/en dashes or curly quotes in the human-facing lines this pass added.
-   if git diff HEAD -U0 -- README.md | grep -E '^\+[^+]' \
+   if git diff HEAD -U0 -- README.md CHANGELOG.md docs/ | grep -E '^\+[^+]' \
         | sed 's/`[^`]*`//g' | grep -n '—\|–\|[“”‘’]'; then
      echo "TONE DRIFT: reapply Voice and tone to the lines listed above"
    else

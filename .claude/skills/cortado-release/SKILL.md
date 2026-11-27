@@ -54,13 +54,15 @@ zero commits, empty diffs, exit 0, exactly like a release with nothing in it.
   (step 6 on the existing number) before starting another. With no tag on `origin`, this is the
   first release; see [The first release](#the-first-release).
 - **The version literals agree.** `VERSION`, the README badge, the README "What's New" heading, the
-  README footer and the assertion in `tests/test_config_cli.sh` name one version:
+  README footer, the newest `CHANGELOG.md` entry and the assertion in `tests/test_config_cli.sh` name
+  one version:
 
   ```bash
   V=$(tr -d '[:space:]' < VERSION)
   grep -c "Version-$V-green" README.md                      # 1
   grep -c "^## What's New in v$V" README.md                 # 1
   grep -c "Cortado v$V - " README.md                         # 1
+  grep -c "^## $V$" CHANGELOG.md                            # 1
   grep -cF "\"$V\" \"\$ver\"" tests/test_config_cli.sh      # 1
   ```
 
@@ -175,9 +177,11 @@ sed -i '' "s/^\*Cortado v$PREV - /*Cortado v$VERSION - /" README.md
 sed -i '' "s/\"$PREV\" \"\$ver\"/\"$VERSION\" \"\$ver\"/" tests/test_config_cli.sh
 ```
 
-`sed -i ''` is the macOS form; on Linux drop the `''`. Then write the README's "What's New": add a
-`## What's New in v$VERSION 🆕` section above the current one with the release note's claims, and
-demote the old heading to `### v$PREV`. Re-run the step 1 literal check against `$VERSION` (every
+`sed -i ''` is the macOS form; on Linux drop the `''`. Then write the release history. Add a
+`## $VERSION` section to `CHANGELOG.md`, above the newest entry, with the release note's claims. In
+the README, replace the `## What's New in v$PREV 🆕` section with `## What's New in v$VERSION 🆕`
+holding the same claims, and keep its link to the changelog: the README shows only the latest
+release. Re-run the step 1 literal check against `$VERSION` (every
 count 1), run the Pre-PR Checks, and open the pull request:
 
 ```bash
@@ -254,7 +258,7 @@ With no release tag on `origin` there is no range for step 2 to diff. Say so in 
 build the evidence from what `gcko/Cortado` has shipped since it became its own project: the rename
 (`7503194`, which moved every path and so makes the first release a major) and the merged pull
 requests (`gh pr list -R gcko/Cortado --state merged`). The release note's upgrade section must
-cover the move from Barista: the README's "Migrating from Barista" section is the source.
+cover the move from Barista: `docs/migrating-from-barista.md` is the source.
 
 ## 6.5 Write the release note for a person
 

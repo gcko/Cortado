@@ -69,16 +69,17 @@ module_payload_probe() {
 }
 MODULE
 
-# Print code block $1 of the README's custom-module recipe.
+# Print code block $1 of the custom-module guide's quick start. Its code blocks
+# sit inside a numbered list, so strip the list's three-space indent.
 recipe_block() {
     awk -v want="$1" '
-        /^### Crafting Custom Modules$/ { recipe=1; next }
+        /^## Quick start$/ { recipe=1; next }
         recipe && /^## / { exit }
-        recipe && /^```/ { if (code) code=0; else { n++; code=1 }; next }
-        recipe && code && n==want { print }
-    ' "$ROOT/README.md"
+        recipe && /^ *```/ { if (code) code=0; else { n++; code=1 }; next }
+        recipe && code && n==want { sub(/^   /, ""); print }
+    ' "$ROOT/docs/custom-modules.md"
 }
-# Install the README recipe's module and config, as the user would.
+# Install the guide's module and config, as the user would.
 recipe_setup() {
     recipe_block 1 > "$user_dir/mycustom.sh"
     recipe_block 2 > "$CLAUDE_CONFIG_DIR/cortado.conf"
@@ -164,9 +165,9 @@ fi
 
 if section_is recipe; then
     recipe_setup
-    assert_eq 'the README recipe produces the custom segment' '🤖 Opus | 🎯 My Output' "$(recipe_render)"
+    assert_eq 'the custom-module guide produces the custom segment' '🤖 Opus | 🎯 My Output' "$(recipe_render)"
 
-    recipe_text=$(awk '/^### Crafting Custom Modules$/ { p=1; next } p && /^## / { exit } p' "$ROOT/README.md")
+    recipe_text=$(awk '/^## Quick start$/ { p=1; next } p && /^## / { exit } p' "$ROOT/docs/custom-modules.md")
     assert_contains 'the recipe gives the module directory command' 'chmod 700' "$recipe_text"
     assert_contains 'the recipe gives the module file command' 'chmod 600' "$recipe_text"
 
