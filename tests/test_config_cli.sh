@@ -35,7 +35,7 @@ if section_is basics; then
     echo "=== config CLI tests ==="
 
     ver=$("$CORTADO" version 2>/dev/null | tr -d '[:space:]')
-    assert_eq "version prints VERSION file" "1.8.0" "$ver"
+    assert_eq "version prints VERSION file" "2.0.0" "$ver"
 
     help_out=$("$CORTADO" help 2>&1)
     assert_contains "help mentions config" "config" "$help_out"
