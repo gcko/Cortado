@@ -17,7 +17,18 @@ Cortado started as a fork of [Barista](https://github.com/pstuart/Barista) by Pa
 
 ## Install
 
-You need Claude Code, macOS or Linux (including WSL), and `jq` (`brew install jq` on macOS).
+You need Claude Code, and macOS or Linux (including WSL).
+
+With [Homebrew](https://brew.sh):
+
+```bash
+brew install gcko/tap/cortado
+cortado setup
+```
+
+`cortado setup` points Claude Code at Cortado. Restart Claude Code to see it, and update later with `brew upgrade cortado`.
+
+From source, which also needs `jq` (`brew install jq` on macOS):
 
 ```bash
 git clone https://github.com/gcko/Cortado.git

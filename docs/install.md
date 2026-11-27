@@ -17,6 +17,19 @@ Platform notes:
 - Rate-limit tracking works on macOS and Linux, including WSL.
 - On any other platform (Git Bash, Cygwin, BSD) the statusline reads `cortado: unsupported platform`. On Git Bash or Cygwin you can try the Linux modules by setting `CORTADO_OS=linux` in the environment or in `cortado.conf`, but that setup is unsupported. BSD has no such opt-in.
 
+## Install with Homebrew
+
+```bash
+brew install gcko/tap/cortado
+cortado setup
+```
+
+- The formula lives in [gcko/homebrew-tap](https://github.com/gcko/homebrew-tap). It installs `jq` for you, and Perl on Linux (macOS includes it). Installing by the full name, as above, makes Homebrew trust only the Cortado formula, not the whole tap.
+- `cortado setup` points Claude Code's `statusLine` at Homebrew's stable `opt` path, so it keeps working after an upgrade (see [`cortado setup`](#pointing-claude-code-at-cortado-cortado-setup)). Restart Claude Code to see the statusline, and run `cortado doctor` to check the install.
+- Update with `brew update && brew upgrade cortado`. `cortado update` only tells you to do that, and the statusline's update notice names `brew upgrade cortado`. For each Cortado release, the tap opens a pull request that moves the formula to it, after installing and testing it on macOS and Linux.
+- Your settings stay in your Claude config directory (usually `~/.claude`), outside Homebrew, so upgrading or reinstalling never touches them.
+- To remove it, run `cortado uninstall` first, which restores the statusline you had before, then `brew uninstall cortado`.
+
 ## Install from source
 
 ```bash
@@ -24,8 +37,6 @@ git clone https://github.com/gcko/Cortado.git
 cd Cortado
 ./install.sh
 ```
-
-Cortado doesn't have a Homebrew formula yet, so install from source.
 
 The interactive installer:
 
