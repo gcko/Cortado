@@ -10,6 +10,9 @@ CLAUDE_CONFIG_DIR=$(mktemp -d)
 export CLAUDE_CONFIG_DIR
 export CACHE_DIR="$CLAUDE_CONFIG_DIR/cortado-cache"
 trap 'rm -rf "$CLAUDE_CONFIG_DIR"' EXIT
+# An update can create ~/.local/bin/cortado, so HOME is a sandbox too.
+export HOME="$CLAUDE_CONFIG_DIR/home"
+mkdir -p "$HOME" || exit 1
 # shellcheck source=tests/lib/assert.sh
 . "$REPO_ROOT/tests/lib/assert.sh" indented
 
