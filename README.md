@@ -27,6 +27,8 @@ cd Cortado
 
 The installer asks which modules you want and how they should look, shows a preview, and backs up your current statusline. Restart Claude Code to see the new one. To skip the questions and install the core modules, run `./install.sh --defaults`.
 
+It also adds a `cortado` command in `~/.local/bin`, so you can run `cortado config` from any terminal. If that directory is not on your `PATH`, the installer prints the line to add to your shell's startup file.
+
 [Installing and updating](docs/install.md) covers every installer option, updates, manual installation and the full requirements.
 
 ## What's New in v2.0.0 🆕
@@ -162,7 +164,7 @@ A module is a single Bash file. Put your own in `~/.claude/cortado-modules/` and
 ./install.sh --uninstall
 ```
 
-The installer offers to restore the statusline you had before.
+The installer offers to restore the statusline you had before, and removes the `cortado` command it added.
 
 ## Contributing
 

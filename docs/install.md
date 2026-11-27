@@ -36,6 +36,14 @@ The interactive installer:
 
 It installs Cortado in `$CLAUDE_CONFIG_DIR/cortado/` (usually `~/.claude/cortado/`) and points `statusLine` in Claude Code's `settings.json` at `cortado/cortado.sh`. Restart Claude Code to see the new statusline.
 
+### The `cortado` command
+
+Every install (interactive, `--defaults`, `--minimal` or `--force`) also creates `~/.local/bin/cortado`, a symbolic link to the installed `cortado.sh`, so `cortado config`, `cortado version` and `cortado help` work from any terminal. The installer creates `~/.local/bin` if it is missing.
+
+- If `~/.local/bin` is not on your `PATH`, the installer says so and prints the line to add: `export PATH="$HOME/.local/bin:$PATH"`, in `~/.zshrc` for zsh, or in `~/.bashrc` for bash (`~/.bash_profile` on macOS). Open a new terminal afterwards.
+- The installer never replaces a `cortado` it did not make. A file, a directory, or a link to anything other than this install's `cortado.sh` is left as it is, and the installer says so and carries on. Running the installer again leaves its own link in place.
+- `cortado` runs with the same settings as the statusline. If you set `CLAUDE_CONFIG_DIR` for Claude Code, set it in your shell too.
+
 ## Installer options
 
 ```bash
@@ -53,7 +61,7 @@ It installs Cortado in `$CLAUDE_CONFIG_DIR/cortado/` (usually `~/.claude/cortado
 ./install.sh --skip-update-check  # Skip the automatic update check during install
 ./install.sh --version            # Show the current version
 
-./install.sh --uninstall     # Uninstall and restore your previous statusline
+./install.sh --uninstall     # Uninstall, remove the cortado command, restore your previous statusline
 ./install.sh --help          # Show all options
 ```
 
@@ -108,7 +116,14 @@ The next update clears a lock left by an installer that is no longer running. Th
    }
    ```
 
-3. Restart Claude Code.
+3. Optionally, add the `cortado` command. Cortado runs correctly through a link:
+
+   ```bash
+   mkdir -p ~/.local/bin
+   ln -s "$CLAUDE_DIR/cortado/cortado.sh" ~/.local/bin/cortado
+   ```
+
+4. Restart Claude Code.
 
 ## Uninstall
 
@@ -116,4 +131,4 @@ The next update clears a lock left by an installer that is no longer running. Th
 ./install.sh --uninstall
 ```
 
-The installer offers to restore the statusline you had before, if it backed one up.
+The installer offers to restore the statusline you had before, if it backed one up. It removes `~/.local/bin/cortado` only when it is a link to this install's `cortado.sh`, and leaves `~/.local/bin` and everything else in it.

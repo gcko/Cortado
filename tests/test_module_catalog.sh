@@ -109,11 +109,16 @@ restore_order() {
 
 # On Darwin the permission check calls /usr/bin/stat, so a stub on PATH cannot
 # fake its metadata. Inject faults into a linked tree whose check reads stat
-# from PATH; everything else is the tree under test.
+# from PATH; everything else is the tree under test. cortado.sh is copied, not
+# linked: started through a link it loads the libraries beside the real file.
 fault_tree="$TEST_BASE/fault-tree"
 mkdir -p "$fault_tree/lib" || exit 1
 for entry in "$tree"/*; do
-    [ "${entry##*/}" = lib ] || ln -s "$entry" "$fault_tree/" || exit 1
+    case "${entry##*/}" in
+        lib) ;;
+        cortado.sh) cp -p "$entry" "$fault_tree/" || exit 1 ;;
+        *) ln -s "$entry" "$fault_tree/" || exit 1 ;;
+    esac
 done
 for entry in "$tree"/lib/*; do
     [ "${entry##*/}" = config-permissions.sh ] || ln -s "$entry" "$fault_tree/lib/" || exit 1
