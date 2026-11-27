@@ -16,8 +16,9 @@
 #   --no-color         No colours in the installer output
 #   -h, --help         Show this help
 #
-# Read it before you run it. It never pipes anything into a shell and never
-# runs downloaded text other than the verified release's install.sh.
+# Read it before you run it. It never pipes anything into a shell, and runs
+# nothing from outside the verified release (its install.sh, and the files that
+# installer loads from the same verified zip).
 # Needs: curl, unzip, jq, and shasum or sha256sum. Bash 3.2 or newer.
 # =============================================================================
 

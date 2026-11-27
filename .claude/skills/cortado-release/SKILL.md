@@ -253,9 +253,11 @@ git ls-remote --tags origin "refs/tags/v$VERSION"                          # exi
 git fetch --tags origin && git rev-parse "v$VERSION^{commit}"              # equals $SHA
 gh release view "v$VERSION" -R gcko/Cortado --json tagName,url,isDraft     # isDraft false
 gh api repos/gcko/Cortado/releases/latest --jq .tag_name                   # v$VERSION
+curl -fsLo /dev/null -w '%{http_code}\n' \
+  https://github.com/gcko/Cortado/releases/latest/download/get-cortado.sh   # 200: the docs' link works
 ```
 
-The last line is what every install's `update` module and `./install.sh --check-update` read.
+The `releases/latest` line is what every install's `update` module and `./install.sh --check-update` read.
 
 If the Release published but `releases/latest` names an older tag, the new one was published as a
 prerelease or with `--latest=false`; fix it with `gh release edit "v$VERSION" --latest`.
