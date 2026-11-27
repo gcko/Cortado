@@ -4,6 +4,18 @@ All notable changes to Cortado, newest first.
 
 Cortado is a fork of [Barista](https://github.com/pstuart/Barista) by Patrick D. Stuart. 2.0.0 is Cortado's first release of its own. The versions from 1.8.0 down are Barista releases.
 
+## 2.1.0
+
+A real `cortado` command, with everything you need to set up, update, check and remove Cortado without the git clone.
+
+- The installer puts `cortado` in `~/.local/bin` and tells you how to add it to your PATH if needed. It never replaces a `cortado` it did not create (#133).
+- Cortado runs correctly through a symlink. A link no longer loads the `lib/` and module files next to it (#133).
+- `cortado setup` points Claude Code at the copy you run it from. It keeps your other settings, keeps a symlinked `settings.json` a link, and on Homebrew writes the stable path (#136).
+- `cortado update` and `cortado uninstall` work from the installed copy, which now includes its installer. They act only on the copy they run from, and refuse, changing nothing, if `CLAUDE_CONFIG_DIR` names another one (#136).
+- Uninstall removes the statusLine only when it runs Cortado (#136).
+- `cortado doctor` checks an install end to end and prints the command that fixes each problem. It makes no network request and changes no file (#137).
+- The statusline notices now say what to run: `Config refused: run cortado doctor` and `Config partly read: run cortado config --show` (#138).
+
 ## 2.0.0
 
 Barista becomes Cortado: a new name, a new home at gcko/Cortado, and the Apache 2.0 license. This release also changes how config files are read, so check the breaking changes before you upgrade.

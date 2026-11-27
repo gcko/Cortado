@@ -5,7 +5,7 @@
 Cortado is a statusline for [Claude Code](https://docs.anthropic.com/en/docs/claude-code). It shows context usage, rate limits, session cost, git status and more on one line, and you choose which modules appear and in what order.
 
 ![Cortado](https://img.shields.io/badge/Cortado-Claude_Code-D97757?style=for-the-badge&logo=anthropic&logoColor=white)
-![Version](https://img.shields.io/badge/Version-2.0.0-green?style=for-the-badge)
+![Version](https://img.shields.io/badge/Version-2.1.0-green?style=for-the-badge)
 ![Shell Script](https://img.shields.io/badge/Shell_Script-Bash-4EAA25?style=for-the-badge&logo=gnu-bash&logoColor=white)
 ![License](https://img.shields.io/badge/License-Apache_2.0-blue?style=for-the-badge)
 
@@ -31,17 +31,14 @@ It also adds a `cortado` command in `~/.local/bin`, so you can run `cortado conf
 
 [Installing and updating](docs/install.md) covers every installer option, updates, manual installation and the full requirements.
 
-## What's New in v2.0.0 🆕
+## What's New in v2.1.0 🆕
 
-The first release of Cortado as its own project.
+- A `cortado` command on your PATH, set up by the installer.
+- `cortado setup`, `cortado update` and `cortado uninstall` work from the installed copy, without the git clone.
+- `cortado doctor` checks your install and prints the command that fixes each problem.
+- The `Config refused` and `Config partly read` notices say what to run.
 
-- Barista is now Cortado. Your Barista settings carry over: see [Migrating from Barista](docs/migrating-from-barista.md).
-- Config files are read as data and never run. Lines that run commands are skipped; `cortado config --migrate --dry-run` lists them.
-- Cortado refuses a config file it can't prove is yours, and says so with `Config refused`.
-- Rate limits need no credential, spend-limit usage is shown when Claude Code sends it, and a missing reading always shows `--`.
-- A custom module is one file in `cortado-modules/`.
-
-The [changelog](CHANGELOG.md) has the full list, including every breaking change, and the Barista releases before it.
+The [changelog](CHANGELOG.md) has the full list, including v2.0.0, Cortado's first release, and the Barista releases before it.
 
 ## Modules
 
@@ -191,6 +188,6 @@ Cortado includes code from Barista, which is MIT-licensed. The upstream copyrigh
 
 <div align="center">
 
-*Cortado v2.0.0 - Because your Claude Code deserves a great statusline.*
+*Cortado v2.1.0 - Because your Claude Code deserves a great statusline.*
 
 </div>
