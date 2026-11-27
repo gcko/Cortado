@@ -271,6 +271,7 @@ printf '# retired\n' > "$runtime/modules/zz-retired.sh"
 printf 'mine\n' > "$runtime/my-notes.txt"
 cp "$runtime/cortado.conf" "$root/conf.before"
 cp "$settings" "$root/settings.before"
+assert_rc 'the command exists before the update' 0 test -L "$cmd"
 link_before="$(ls -id "$cmd" | awk '{print $1}') $(link_text "$cmd")"
 run "$cmd" update --no-color --no-emoji
 assert_eq 'cortado update exits 0' 0 "$status"
@@ -369,7 +370,7 @@ assert_eq 'the command runs the updated copy' 99.0.0 \
 assert_match 'the command is created after the update, by the restarted installer' \
     'Updated to version 99.0.0.*Already up to date \(99.0.0\).*Created the cortado command' "$(printf '%s' "$out" | tr '\n' ' ')"
 
-# --- a clone's --update, already current, with ~/.local/bin on PATH ----------------
+# --- a clone's --update, already current (first run with ~/.local/bin on PATH) -----
 # The installed copy is older, so the current installer refreshes it first.
 no_command
 RUN_PATH="$FAKE_BIN:$home/.local/bin:$BASE_PATH" run "$clone/install.sh" --update --no-color --no-emoji
@@ -377,7 +378,8 @@ assert_eq 'a current clone --update without the command exits 0' 0 "$status"
 assert_contains 'a current clone --update refreshes the installed copy' "Refreshed the installed Cortado runtime" "$out"
 assert_eq 'a current clone --update creates the command for the installed copy' "$runtime/cortado.sh" "$(link_text "$cmd")"
 assert_not_contains 'on the PATH, the update prints no PATH advice' 'is not on your PATH' "$out"
-# Run again: already current and already in place.
+# Run again, off the PATH this time: already current and already in place.
+assert_rc 'the command exists before the second --update' 0 test -L "$cmd"
 link_before="$(ls -id "$cmd" | awk '{print $1}') $(link_text "$cmd")"
 run "$clone/install.sh" --update --no-color --no-emoji
 assert_eq 'a second current --update exits 0' 0 "$status"

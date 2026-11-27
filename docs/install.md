@@ -101,12 +101,13 @@ cortado update               # from any terminal
 `./install.sh --update` and `cortado update` also create `~/.local/bin/cortado` when it is missing, with the same rules as an install (see [The `cortado` command](#the-cortado-command)): a `cortado` the installer did not make is left as it is, and the `PATH` line is printed when `~/.local/bin` is not on your `PATH`. A link already in place is left unchanged. This also happens when you are already on the latest release.
 
 - The command is added once the installed copy is on the release, so an update that fails adds none.
-- Only the installed copy that `settings.json` runs at `~/.claude/cortado/cortado.sh` gets the command. With no install, a statusline that runs something else, or a `~/.claude/cortado` that is a symbolic link, the update creates nothing.
-- A Homebrew install gets none: Homebrew provides its own `cortado`. `--check-update` only checks, and creates nothing either.
+- Only the installed copy that `settings.json` runs, at `cortado/cortado.sh` in your Claude config directory (usually `~/.claude`), gets the command. With no install, a statusline that runs something else, or an installed copy that is a symbolic link, the update creates nothing.
+- A Homebrew install gets none: Homebrew provides its own `cortado`.
+- `--check-update` creates nothing. If you accept the update it offers, run `./install.sh --update` once more to add the command.
 
 ### The installed copy
 
-`cortado update` always replaces the installed copy this way. From the clone, when `settings.json` runs the installed copy at `~/.claude/cortado/cortado.sh`, `--update` refreshes that copy too:
+`cortado update` always replaces the installed copy this way. From the clone, when `settings.json` runs the installed copy at `cortado/cortado.sh` in your Claude config directory, `--update` refreshes that copy too:
 
 - It builds the new copy beside the old one, carries over your `cortado.conf` and any other files you added, then swaps the two.
 - If a step fails, or Ctrl-C, TERM or HUP interrupts the update, the old copy goes back in place. If it can't go back, the installer leaves it unchanged and prints where it is.
